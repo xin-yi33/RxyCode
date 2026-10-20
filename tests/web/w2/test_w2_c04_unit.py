@@ -12,8 +12,14 @@ from sqlalchemy.orm import Session
 
 REPO = Path(__file__).resolve().parents[3]
 _SRC = REPO / "packages" / "rxycode-server" / "src"
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+_WORKER = REPO / "packages" / "rxycode-worker" / "src"
+# Worker src is imported unconditionally so the create span's telemetry.span
+# row (W7-C04) always lands on the event log — event seqs below are +1 versus
+# a server-only import, and keeping this deterministic avoids order-dependent
+# sys.path pollution from sibling test modules.
+for _path in (_SRC, _WORKER):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from rxycode_server.events.store import append_event, prune_through, replay
 from rxycode_server.main import create_app
@@ -117,7 +123,8 @@ def test_w2_c04_contract(postgres_url: str):
         )
     first = client.get(f"/api/v1/runs/{created.run_id}/events", params={"after_seq": 40})
     assert first.status_code == 200
-    assert _sse_ids(first.text) == [41, 42]
+    # seq 1 run.created, seq 2 telemetry.span, seqs 3..43 the seeded deltas.
+    assert _sse_ids(first.text) == [41, 42, 43]
     assert first.text.count("id: 41") == 1
     assert first.text.count("id: 42") == 1
     again = client.get(
@@ -125,7 +132,7 @@ def test_w2_c04_contract(postgres_url: str):
         params={"after_seq": 41},
         headers={"Last-Event-ID": "0"},
     )
-    assert _sse_ids(again.text) == [42]
+    assert _sse_ids(again.text) == [42, 43]
     del run_id
 
 
@@ -185,4 +192,4 @@ def test_w2_c04_negative(postgres_url: str):
         run_id=run_id,
         event_type="assistant.delta",
         payload={"n": "after-prune"},
-    ) == 43
+    ) == 44

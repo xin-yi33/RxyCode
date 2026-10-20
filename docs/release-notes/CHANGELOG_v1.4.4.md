@@ -100,7 +100,30 @@
 - 三个 pip 装包服务透传 `PIP_INDEX_URL`（默认 `https://pypi.org/simple`，不设即不变）——本机容器到 pypi.org 全程 SSL EOF 时可用镜像完成 bootstrap。
 - secrets 全走环境变量，文件内无明文；`cloud:*` 目标才执行，Full=审批语义而非隔离级别。
 
-### 验证
+### W9 后端：注册登录、提交任务、准入
+
+- **持久化会话（B1）**：浏览器会话改为 `auth_sessions` 表行——cookie token 的 HMAC 摘要是行键，TTL 7 天（`expires_at` 墙钟时间），滑动续期（`last_seen_at` 超 1 天未动才写库刷新）；注销写 `revoked_at`，被禁用用户（`users.disabled_at`）即刻全域失效。API 重启、副本迁移后旧 cookie 仍有效；进程内存里的 `sessions`/`oauth_states` 字典已从主网关移除（device 网关等无 DB 的辅助 app 保留字典回退）。OAuth state 同样落库（`oauth_states`，10 分钟过期 + 浏览器绑定），跨副本可完成回调。
+- **注册与登录**：`POST /api/v1/auth/register|login|logout` 全部走 `require_write`（Origin 白名单 + CSRF 双提交）。注册模式 `RXYCODE_WEB_REGISTRATION`：`invite`（默认，需一次性邀请码）/`open`/`closed`；邀请码只存 SHA-256 摘要，用满/过期一律 `INVITE_INVALID`。密码 `scrypt$16384$8$1$` 格式（stdlib scrypt，16 字节随机盐，`compare_digest` 校验）；未知邮箱同样跑一次 scrypt（固定 dummy hash）保持时序一致；错误口令与不存在账号同回 `INVALID_CREDENTIALS`。注册在同一事务里建 User/Organization/Membership/默认项目并直接发会话；`/api/v1/auth/register|login` 有进程内固定窗口限流（每 IP 10/分、每邮箱 5/分，超限 `RATE_LIMITED`）。
+- **`/api/v1/me` 契约**：严格按 §5.1 的嵌套-only 形状返回 `{user:{id,kind,email,display_name,github_id}, organization:{id,tenant_id}, membership:{role}, default_project_id}`——`email`/`display_name` 收进 `user` 内，顶层不再带 `user_id/tenant_id/capabilities`；`register`/`login` 返回同一 body（`local_login` 保留旧扁平响应）。`capabilities` 走独立端点；`capabilities.github` 仅在 client_id/secret/redirect_uri 三者齐全时为真，`github/start` 未配置时 503 `AUTH_PROVIDER_NOT_CONFIGURED`。存量 local/github 用户缺默认项目时在 `/me` 或 `POST /tasks` 处惰性补建"默认项目"。
+- **注册安全修补**：邀请码消费改为单条原子条件更新（`UPDATE invites SET used=used+1 WHERE code_hash=:h AND used<max_uses AND (expires_at IS NULL OR expires_at>now()) RETURNING`），与用户插入同事务——并发抢同一 `max_uses=1` 邀请码只有一个 201、另一个 `INVITE_INVALID`，`EMAIL_TAKEN` 回滚连带撤回消费。`logout` 改为在**实际返回的** 204 响应上 `delete_cookie("rxy_session")`（原实现对注入 Response 删除后又返回新 Response，`Set-Cookie` 丢失）。
+- **Admin CLI**：`python -m rxycode_server.admin`（`RXYCODE_WEB_DATABASE_URL` 取库）：`invite create --uses/--days/--note`（明文码只打印一次）、`invite list`、`user reset-password --email`（新密码从 stdin 读，撤销该用户全部会话）、`user disable --email`（置 `disabled_at` + 撤销会话）。
+- **任务提交（B2）**：`POST /api/v1/tasks` 按 (tenant, request_id) 幂等——同摘要重放直接返回原 run（202，不新建会话），不同摘要 409 `REQUEST_CONFLICT`；否则先建会话（标题取消息前 40 字符、去换行）再调 `create_run`，run 创建失败（配额/冲突/活跃）时删除刚建的会话并映射错误：`RunAlreadyActive`→409 `RUN_ACTIVE`、`RunConflict`→409、`QuotaRefused`→429 `QUOTA_EXCEEDED`+`reason`。目标恒为服务端推导的 `cloud:{tenant}:{project}`，不信任请求体 target/model。`POST /api/v1/sessions/{id}/runs` 同语义（会话须属本租户，单会话单活跃 Run 不变式保持）。`runs.created_at` 落库并在每次建 run 时刷新 `sessions.updated_at`。
+- **历史接口**：`GET /api/v1/sessions` 返回本租户 50 条最新会话（`updated_at` 降序，各带 `last_run{run_id,status}|null`）；`GET /api/v1/sessions/{id}/runs` 按 `created_at desc, id desc` 游标分页（opaque cursor 编码 `created_at+run_id`），`final_preview` 取该 run `assistant.final` 事件前 200 字符；`GET /api/v1/runs/{id}` 补 `created_at/message/permission_profile`。worker `claimable_run_ids` 改按 `created_at, id` 排序——早建先认领（FIFO）。
+- **准入默认值（B4）**：`Limits` 增加 `window_seconds` 与 `queue_max`——窗口模式下任务数/token 只计窗口内 run（token 用 `usage_records` 真实计量加本次估算），`queue_max` 在获取 worker 前统计全局 `pending` 数、超限以 `kind="queue"` 拒绝。`create_app` 仅在 `RXYCODE_QUOTA_*`/`RXYCODE_QUEUE_MAX` 任一存在时安装 gate（`window_seconds=86400`，缺省项取 `DEFAULT_LIMITS`）；都不设时行为与旧版完全一致。compose 给 api 侧默认：并发 1、任务 30/天、token 2M/天、队列 10；同时移除 worker 的 `RXYCODE_WORKER_RUN_TIMEOUT`（v1.4.4 已改为整回合预算裁决）并同步 runbook。
+- **SDK**：`apps/web/src/sdk/client.ts` 的 `Me` 更新为 §5.1 嵌套契约（`user/organization/membership/default_project_id`），新增 `getCapabilities/register/login/logout/createTask/createRun/listSessions/listSessionRuns/getRun` 类型化方法。
+- **迁移**：`006_auth_and_runs`（幂等，沿用 005 的列存在性检查）——users 加 `email`(唯一)/`password_hash`/`display_name`/`created_at`/`default_project_id`/`disabled_at`，新表 `auth_sessions`/`oauth_states`/`invites`，runs 加 `created_at`+`(session_id,created_at)` 索引并把 `target_id` 扩到 varchar(128)（`cloud:{tenant}:{project}` 需 71 字符），sessions 加 `updated_at`。
+- **验证**：`tests/web/w9` 全新独立套件（专用 `rxy-w9-pg:55439`，每测试重置 schema + migrate 到 head）22 passed；`tests/web/w8` 160 passed/4 skipped；`w2` auth 3 passed；threat-model 7 passed；`w5_c04/w6_c05` 会话注入回归通过；`npm --prefix apps/web run typecheck` 通过。既有问题（非本次引入）：`test_w5_c06_contract` 因 compose 一次性服务无 healthcheck 在 HEAD 上同样失败；`w6_c04` 的 bun 渲染断言在本机环境返回空。
+
+### W9 事件链修复
+
+- **`run.status` 全覆盖**：所有改写 `runs.status` 的路径现在都在**同一事务**内追加 `run.status` 事件 + Outbox 行（seq 仍按 `max(runs.event_seq, max(run_events.seq))+1` 分配并回写 `event_seq`）——supervisor `claim`/`commit_terminal`/`request_cancel`/`confirm_cancel`、`recovery.py` 的 `recovery_required`、park→`waiting_approval`、resume→`pending`（含 `api/approvals.py::_resume_question` 与 `approvals/service.py` 审批裁决/过期/取消路径）、`runs/service.py::complete_run`、`notifications/service.py` 直接终态写、以及 `settle_run`；payload 带 `{"status": ...}`，有 lease epoch 时附 `epoch`。`api/runs.py::cancel_run` 原有的 `cancel_requested` 事件不重复发。
+- **tool 投影**：`event/tool_begin`→`tool.started`（`{"call_id","tool","title"}`，title 依次取 `arguments.description`→`command`→`path`/`filePath`，截 300 字符）；`event/tool_end`→`tool.completed`/`tool.failed`（协议 `ToolEnd` 没有 `exit_code`/`duration_ms` 字段，未虚构）。
+- **delta 合并**：`_RunEmit` 内缓冲连续同 `intermediate` 标志的 `assistant.delta` 文本——缓冲年龄 ≥300ms（新 delta 到达时判定）、≥2KB、非 delta 投影前、标志翻转、显式 `flush()` 任一触发出行；进程内与受限子进程（`TurnChannel.emit`）两条执行路径的成功/失败/取消/park 出口都在外层 `finally` 调 `emit.flush()`，保证残缓冲落库。
+- **notify.* 审计**：`event/message_delta|progress|reasoning_snapshot|token_usage` 不再写审计行；其余方法 payload 为 `{"params": model_dump(mode="json")}`、字符串值递归截 2000 字符，不再是 Python repr（不含 `method='...'`）。
+- **journal 上限分流**：原 500 行共享计数改为 `assistant.delta` 与 `notify.*` 各自 2000 行上限；`tool.*`/`approval.*`/`question.*`/`run.status`/`assistant.final`/`usage.*` 永不被丢弃。
+- **`event/agent_needs_input`（P9）**：经实证 appserver `NeedsInputClassifier` 对 `approval/request`/`question/request` 仍会发该通知（与 W8 Harness park 直接落 `approval.requested`/`question.requested` 的路径并存），分支保留但按 payload 的 kind 只投影**一条**对应行——不再同时产出 approval+question 两行。
+- **SSE 心跳**：follow 模式 15 秒无新事件发 `: ping\n\n`（模块常量 `SSE_HEARTBEAT_SECONDS`，测试可 monkeypatch），防止代理在长 thinking/审批等待期断连；replay 与终态即停语义不变。
+- **验证**：新增 `tests/web/w9/test_event_projection.py`（15 条：tool 投影、100 delta 合并 ≤5 行且文本完整、delta/tool 交错保序、>500 delta 不丢 tool/final、notify JSON 可解析、claim/终态/取消/park/resume 的 DB 状态行、flag 翻转与显式 flush、SSE 心跳）；`tests/web/w9` 38 passed；旧契约断言同步修正——`w7_c05`（alembic head `006_auth_and_runs`）、`w2_c03`（create span 的 `telemetry.span` 行计入事件总数）、`w2_c04`（worker 可导入时 seq +1，改为确定性断言）、`w3_c02`（默认项目自动补建后登录态非空 + github/start 需配置凭据）。
 
 - `tests/web/w8` 全套件：168 passed, 4 skipped（AF_UNIX/bwrap 在 Windows 预期跳过）。
 - 三条复合验收链（真实 Postgres+Harness+journal：审批挂起→新实例续接→Final Answer；journal unknown→recovery_required；重复续接复用 journal 不重放副作用）：19 passed。
@@ -117,5 +140,5 @@
 ### 后续规划（W9–W11，2026-10-20）
 
 - 重写 W8 之后的施工文档 `docs/plans/opus5-plan/rxycode -web/phases/PHASE-W9-PRODUCT-CLOSURE-AND-DEPLOYMENT.md`（`docs/plans/` 被 gitignore，仅本地；GPT 草稿归档为 `research/W9-gpt-draft-2026-10-20-superseded.md`）。
-- 文档中登记的已核实缺口（尚未修复）：网页没有创建 Run 的 HTTP 路由，也没有输入框；worker 不往事件日志写 `run.status`，前端在终态后会无限重连；登录会话存在进程内存，API 重启即失效；没有注册；`notify.*` 审计行存的是 Python repr 字符串，每个流式 token 写两行；`tool_begin` 未投影；`_JOURNAL_CAP` 会丢弃长任务的工具行和审批行；队列按随机 id 排序；准入默认值等于不限；演示任务因完成门禁反复判 stale 用掉 773,379 token。
+- 文档中登记的已核实缺口——其中以下已被上述 W9 后端批次修复：`run.status` 事件缺失、notify.* repr 审计行、流式 token 逐条写（已合并）、`tool_begin` 未投影、`_JOURNAL_CAP` 误丢 tool/approval 行、队列随机序、准入无默认、无注册/无持久会话/无建 Run 路由。尚未修复：网页端创建 Run 的输入框（B2 只到 API 层）、前端在终态后停止 follow 的产品化收尾、`stale` 误判导致的 token 浪费。
 - 已定：邮箱 + 密码 + 邀请码注册（GitHub 可选）、控制台面板、首台服务器选境外区域、镜像预构建、W9/W10/W11 分期与日期。

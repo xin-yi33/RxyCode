@@ -886,7 +886,9 @@ def test_w8_c01_runemit_channel_mode(tmp_path: Path) -> None:
         emit.project("assistant.final", {"text": "done", "run_id": "r1"})
     finally:
         monkey_fail.undo()
-    assert ("assistant.delta", {"text": "hi"}) in captured
+    # deltas coalesce and carry the intermediate flag; projecting a non-delta
+    # row commits the buffer first.
+    assert ("assistant.delta", {"text": "hi", "intermediate": False}) in captured
     assert ("assistant.final", {"text": "done", "run_id": "r1"}) in captured
 
 

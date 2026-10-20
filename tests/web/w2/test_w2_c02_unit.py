@@ -20,7 +20,7 @@ if str(_SRC) not in sys.path:
 
 from rxycode_server.main import create_app, serve
 from rxycode_server.persistence.migrate import upgrade_head
-from rxycode_server.persistence.models import Organization, Project, User
+from rxycode_server.persistence.models import OAuthState, Organization, Project, User
 
 ORIGIN = "http://127.0.0.1"
 SECRET = "local-web-secret-value-32bytes!!"
@@ -137,7 +137,10 @@ def test_w2_c02_contract(postgres_url: str):
     assert started.status_code == 200
     state = started.json()["state"]
     challenge = started.json()["code_challenge"]
-    verifier = app.state.oauth_states[state].verifier
+    with Session(create_engine(postgres_url)) as db:
+        verifier = db.scalars(
+            select(OAuthState.verifier).where(OAuthState.state == state)
+        ).one()
     digest = hashlib.sha256(verifier.encode()).digest()
     expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     assert challenge == expected

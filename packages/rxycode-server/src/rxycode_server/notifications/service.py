@@ -546,7 +546,13 @@ def publish_run_status(
                 return {"notification_id": None, "status": status}
             if run.status in _TERMINAL and run.status != status:
                 return {"notification_id": None, "status": run.status}
-            run.status = status
+            if run.status != status:
+                run.status = status
+                from rxycode_server.events.store import append_run_status
+
+                append_run_status(db, run, status)
+            else:
+                run.status = status
             if _silenced(db, tenant_id, user_id, run_id):
                 db.commit()
                 return {"notification_id": None, "status": status}

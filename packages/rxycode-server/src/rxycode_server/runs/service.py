@@ -303,6 +303,9 @@ def complete_run(
                 raise RunConflict(run_id)
             if row.status not in {"succeeded", "failed", "cancelled"}:
                 row.status = "succeeded"
+                from rxycode_server.events.store import append_run_status
+
+                append_run_status(db, row, "succeeded")
                 db.commit()
             final = row.status
     finally:

@@ -7,11 +7,12 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from rxycode_server.persistence.models import Approval, Outbox, Run, RunEvent
+from rxycode_server.events.store import append_event_in, append_run_status
+from rxycode_server.persistence.models import Approval, Run, RunEvent
 
 
 def _engine(database_url: str):
@@ -52,23 +53,7 @@ def _lease_is_current(run: Run, worker_id: str, epoch: int, now: datetime) -> bo
 
 
 def _append(db: Session, run: Run, event_type: str, payload: dict[str, Any]) -> None:
-    retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
-    seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
-    run.event_seq = seq
-    event_id = uuid.uuid4().hex
-    db.add(
-        RunEvent(
-            event_id=event_id,
-            run_id=run.id,
-            tenant_id=run.tenant_id,
-            seq=seq,
-            type=event_type,
-            payload=payload,
-            at=datetime.now(timezone.utc),
-        )
-    )
-    db.flush()
-    db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
+    append_event_in(db, run, event_type, payload)
 
 
 def _lock_run(db: Session, tenant_id: str, run_id: str) -> Run:
@@ -151,6 +136,7 @@ def request_approval(
                 },
             )
             run.status = "waiting_approval"
+            append_run_status(db, run, "waiting_approval", epoch)
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1
@@ -224,6 +210,7 @@ def request_question(
                 },
             )
             run.status = "waiting_approval"
+            append_run_status(db, run, "waiting_approval", epoch)
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1
@@ -360,6 +347,7 @@ def answer_question(
                 },
             )
             run.status = "pending"
+            append_run_status(db, run, "pending")
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1
@@ -520,6 +508,7 @@ def _mark_expired(db: Session, row: Approval) -> None:
         },
     )
     run.status = "cancelled"
+    append_run_status(db, run, "cancelled")
     run.lease_owner = None
     run.lease_until = None
     run.revision = int(run.revision or 0) + 1
@@ -578,6 +567,7 @@ def decide_approval(
             run.lease_owner = None
             run.lease_until = None
             run.status = "pending" if decision == "approved" else "cancelled"
+            append_run_status(db, run, str(run.status))
             run.revision = int(run.revision or 0) + 1
             revision = int(row.revision)
             db.commit()
@@ -626,6 +616,7 @@ def cancel_approval(
                 },
             )
             run.status = "cancelled"
+            append_run_status(db, run, "cancelled")
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1
@@ -712,6 +703,7 @@ def pause_under_lock(
                 },
             )
             run.status = "waiting_approval"
+            append_run_status(db, run, "waiting_approval", epoch)
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1
@@ -783,6 +775,7 @@ def settle_run(
             if not _lease_is_current(run, worker_id, epoch, now):
                 return False
             run.status = status
+            append_run_status(db, run, status, epoch)
             run.lease_owner = None
             run.lease_until = None
             run.revision = int(run.revision or 0) + 1

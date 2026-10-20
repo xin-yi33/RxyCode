@@ -75,11 +75,35 @@ _CLAIMABLE_SQL = "','".join(_CLAIMABLE)
 #: spend under this version so the ledger row is honest, not absent.
 _PRICE_VERSION = "2026-10"
 
-_JOURNAL_CAP = 500
+_JOURNAL_CAP = 2000
 
-#: Projection rows that must survive the intermediate-event cap: a flooded
-#: run may lose deltas, but its terminal answer is never dropped (audit r3).
-_TERMINAL_PROJECTIONS = frozenset({"assistant.final"})
+#: notify.* audit rows are skipped for streaming methods that already carry
+#: a real projection — they used to cost a second Python-repr row per token.
+_NO_AUDIT_METHODS = frozenset(
+    {
+        "event/message_delta",
+        "event/progress",
+        "event/reasoning_snapshot",
+        "event/token_usage",
+    }
+)
+
+#: Consecutive assistant.delta texts coalesce into one row per window or per
+#: size cap; a flag change, any non-delta row, or an explicit flush commits
+#: the buffer. No timer thread — the check runs when the next delta lands.
+_DELTA_MAX_AGE = 0.3
+_DELTA_MAX_BYTES = 2048
+
+
+def _truncate_strings(value: Any, limit: int = 2000) -> Any:
+    """Recursively cap string leaves for the structured notify.* audit row."""
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, dict):
+        return {key: _truncate_strings(item, limit) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_truncate_strings(item) for item in value]
+    return value
 
 #: Per-database-call bound inside the lease watchdog. A stalled store cannot
 #: stall the watchdog past the lease TTL: each probe is wrapped in wait_for
@@ -206,7 +230,7 @@ def claimable_run_ids(database_url: str, *, limit: int = 1) -> list[str]:
                         OR lease_until IS NULL
                         OR lease_until < :now
                       )
-                    ORDER BY id
+                    ORDER BY created_at, id
                     LIMIT :limit
                     """
                 ),
@@ -903,8 +927,23 @@ def _projection_rows(
         )
     elif method == "event/tool_begin":
         call_id = str(body.get("call_id") or "")
+        tool_name = str(body.get("tool_name") or "")
         if call_id:
-            tool_names[call_id] = str(body.get("tool_name") or "")
+            tool_names[call_id] = tool_name
+        arguments = body.get("arguments")
+        title = ""
+        if isinstance(arguments, dict):
+            for key in ("description", "command", "path", "filePath"):
+                value = arguments.get(key)
+                if value:
+                    title = str(value)
+                    break
+        rows.append(
+            (
+                "tool.started",
+                {"call_id": call_id, "tool": tool_name, "title": title[:300]},
+            )
+        )
     elif method == "event/tool_end":
         call_id = str(body.get("call_id") or "")
         ok = bool(body.get("ok"))
@@ -916,24 +955,6 @@ def _projection_rows(
                     "tool": tool_names.get(call_id, ""),
                     "status": str(body.get("status") or ("completed" if ok else "failed")),
                     "summary": str(body.get("summary") or ""),
-                },
-            )
-        )
-    elif method == "event/agent_needs_input":
-        # The wire's only waiting-for-input signal; the service that journals
-        # approval.requested itself isn't reachable in-process, so project
-        # both buckets the reducer reads.
-        request_id = str(body.get("request_id") or "")
-        preview = str(body.get("preview") or "")
-        rows.append(("question.requested", {"question_id": request_id, "prompt": preview}))
-        rows.append(
-            (
-                "approval.requested",
-                {
-                    "approval_id": request_id,
-                    "status": "pending",
-                    "tool": "",
-                    "command": preview,
                 },
             )
         )
@@ -979,9 +1000,11 @@ class _RunEmit:
     """Per-run emit callback: journals protocol ``event/*`` notifications and
     projects them into the reducer vocabulary on the run's own event log.
 
-    Both surfaces are capped against floods — except ``assistant.final``,
-    which is a terminal projection and always persisted: a run that floods
-    the channel must never lose its answer (audit r3-F4).
+    Flood control is per kind (W9-B3): ``assistant.delta`` rows coalesce and
+    cap at ``_JOURNAL_CAP`` per run, ``notify.*`` audit rows cap at the same
+    number, and every structural projection — ``tool.*``, ``approval.*``,
+    ``question.*``, ``run.status``, ``assistant.final``, ``usage.*`` — is
+    never dropped.
     """
 
     def __init__(
@@ -997,6 +1020,10 @@ class _RunEmit:
         self.tool_names: dict[str, str] = {}
         self.journaled = 0
         self.projected = 0
+        self.delta_rows = 0
+        self._delta_parts: list[str] = []
+        self._delta_intermediate = False
+        self._delta_since = 0.0
         # Confined turns carry no platform credentials: ``emitter`` is the
         # parent's TurnChannel.emit — the row lands on the same event log.
         self._emitter = emitter
@@ -1031,13 +1058,7 @@ class _RunEmit:
         params = getattr(notification, "params", None)
         return dict(params) if isinstance(params, dict) else {}
 
-    def project(self, event_type: str, body: dict[str, Any]) -> None:
-        """Write one UI-facing projection row — the event types the web
-        ``eventReducer`` consumes (``assistant.final``/``assistant.delta``/
-        ``tool.*``/``question.*``)."""
-        terminal = event_type in _TERMINAL_PROJECTIONS
-        if not terminal and self.projected >= _JOURNAL_CAP:
-            return
+    def _write(self, event_type: str, body: dict[str, Any]) -> None:
         self.projected += 1
         try:
             self._append(event_type, body)
@@ -1049,6 +1070,47 @@ class _RunEmit:
                 exc_info=True,
             )
 
+    def flush(self) -> None:
+        """Commit the coalesced delta buffer as one ``assistant.delta`` row —
+        called on turn end (success, failure, pause) so the tail of a stream
+        is never stranded in memory."""
+        if not self._delta_parts:
+            return
+        text = "".join(self._delta_parts)
+        intermediate = self._delta_intermediate
+        self._delta_parts.clear()
+        if self.delta_rows >= _JOURNAL_CAP:
+            return
+        self.delta_rows += 1
+        self._write("assistant.delta", {"text": text, "intermediate": intermediate})
+
+    def project(self, event_type: str, body: dict[str, Any]) -> None:
+        """Write one UI-facing projection row — the event types the web
+        ``eventReducer`` consumes (``assistant.final``/``assistant.delta``/
+        ``tool.*``/``question.*``). Deltas buffer instead."""
+        if event_type == "assistant.delta":
+            if self.delta_rows >= _JOURNAL_CAP:
+                return
+            text = str(body.get("text") or "")
+            intermediate = bool(body.get("intermediate"))
+            now = time.monotonic()
+            if self._delta_parts and (
+                intermediate != self._delta_intermediate
+                or now - self._delta_since >= _DELTA_MAX_AGE
+            ):
+                self.flush()
+            if not self._delta_parts:
+                self._delta_intermediate = intermediate
+                self._delta_since = now
+            self._delta_parts.append(text)
+            if sum(len(part) for part in self._delta_parts) >= _DELTA_MAX_BYTES:
+                self.flush()
+            return
+        # A non-delta row commits the buffer first: the event log's seq order
+        # then matches the order things happened on the wire.
+        self.flush()
+        self._write(event_type, body)
+
     def __call__(self, notification: Any) -> None:
         """Journal protocol ``event/`` notifications onto the run's own event
         log — the same rows the SSE endpoint replays. Capped per run."""
@@ -1056,12 +1118,12 @@ class _RunEmit:
         if not isinstance(method, str) or not method.startswith("event/"):
             return
         body = self._params(notification)
-        if self.journaled < _JOURNAL_CAP:
+        if method not in _NO_AUDIT_METHODS and self.journaled < _JOURNAL_CAP:
             self.journaled += 1
             try:
                 self._append(
                     f"notify.{method}",
-                    {"text": str(notification)[:1500]},
+                    {"params": _truncate_strings(body)},
                 )
             except Exception:
                 _LOG.warning("run %s: journal emit failed", self.run_id, exc_info=True)
@@ -5064,6 +5126,12 @@ async def run_sandboxed_turn() -> int:
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
+        # Tail deltas land on every exit — success, failure, and ahead of the
+        # park persist below so the log reads delta -> approval.requested.
+        try:
+            emit.flush()
+        except Exception:
+            _LOG.warning("run %s: delta flush failed", run_id, exc_info=True)
         if harness_pause is not None:
             # Persist the parked turn WITH its checkpoint through the parent
             # before this process exits. A refusal fails the turn closed:

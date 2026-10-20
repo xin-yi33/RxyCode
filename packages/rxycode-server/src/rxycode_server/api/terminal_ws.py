@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
-from rxycode_server.api.auth import _SESSION_TTL, _hash_token, current_record, require_write
+from rxycode_server.api.auth import _lookup_session, current_record, require_write
 
 router = APIRouter()
 
@@ -42,10 +41,7 @@ def _record(websocket: WebSocket):
     raw = websocket.cookies.get("rxy_session", "")
     if not raw:
         return None
-    record = websocket.app.state.sessions.get(_hash_token(websocket.app.state.secret, raw))
-    if record is None or time.monotonic() - record.created > _SESSION_TTL:
-        return None
-    return record
+    return _lookup_session(websocket.app, raw)
 
 
 @router.post("/api/v1/terminals", status_code=201)

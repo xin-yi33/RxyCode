@@ -157,6 +157,12 @@ services:
       # Public-demo request throttle: per-client-IP fixed window enforced by
       # the app's RateLimitMiddleware (stock Caddy ships no limiter plugin).
       RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-240}
+      # WEB-W9: registration mode and the single-tenant admission ceiling.
+      RXYCODE_WEB_REGISTRATION: ${RXYCODE_WEB_REGISTRATION:-invite}
+      RXYCODE_QUOTA_CONCURRENCY: ${RXYCODE_QUOTA_CONCURRENCY:-1}
+      RXYCODE_QUOTA_TASKS_PER_DAY: ${RXYCODE_QUOTA_TASKS_PER_DAY:-30}
+      RXYCODE_QUOTA_TOKENS_PER_DAY: ${RXYCODE_QUOTA_TOKENS_PER_DAY:-2000000}
+      RXYCODE_QUEUE_MAX: ${RXYCODE_QUEUE_MAX:-10}
       PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_api.py"]
@@ -267,7 +273,6 @@ services:
       RXYCODE_WORKER_ID: ${RXYCODE_WORKER_ID:-}
       RXYCODE_WORKER_POLL_SECONDS: ${RXYCODE_WORKER_POLL_SECONDS:-2}
       RXYCODE_WORKER_LEASE_TTL: ${RXYCODE_WORKER_LEASE_TTL:-120}
-      RXYCODE_WORKER_RUN_TIMEOUT: ${RXYCODE_WORKER_RUN_TIMEOUT:-900}
       RXYCODE_WORKER_WORKSPACES: /work/runs
       # Public-stack contract: only tenant-bound cloud:* targets execute,
       # always confined; local:* placements are refused. full/full_auto

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -11,6 +12,59 @@ from sqlalchemy.pool import NullPool
 
 
 _LOG = logging.getLogger(__name__)
+
+
+def _emit_run_status(
+    conn, run_id: str, tenant_id: str, status: str, epoch: int | None = None
+) -> None:
+    """Append ``run.status`` (+ outbox) inside the caller's open transaction —
+    the same ``max(event_seq, max(seq))+1`` rule the service-layer writers
+    use, so the status column and the event row commit atomically."""
+    payload: dict[str, Any] = {"status": status}
+    if epoch is not None:
+        payload["epoch"] = int(epoch)
+    seq = conn.execute(
+        text(
+            """
+            UPDATE runs
+            SET event_seq = GREATEST(
+                    event_seq,
+                    COALESCE((SELECT MAX(seq) FROM run_events WHERE run_id = runs.id), 0)
+                ) + 1
+            WHERE id = :id
+            RETURNING event_seq
+            """
+        ),
+        {"id": run_id},
+    ).scalar_one()
+    event_id = conn.execute(text("SELECT gen_random_uuid()::text")).scalar()
+    conn.execute(
+        text(
+            """
+            INSERT INTO run_events
+                (event_id, run_id, tenant_id, seq, type, payload, at)
+            VALUES
+                (:event_id, :run_id, :tenant_id, :seq, 'run.status',
+                 CAST(:payload AS jsonb), clock_timestamp())
+            """
+        ),
+        {
+            "event_id": event_id,
+            "run_id": run_id,
+            "tenant_id": tenant_id,
+            "seq": int(seq),
+            "payload": json.dumps(payload),
+        },
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO outbox (id, event_id, dispatch_status, attempts)
+            VALUES (gen_random_uuid()::text, :event_id, 'pending', 0)
+            """
+        ),
+        {"event_id": event_id},
+    )
 
 #: In-flight leased-run spans, run_id -> (tracer, span). Opened at claim,
 #: closed by the terminal commit/cancel path. Telemetry is best-effort: a
@@ -179,6 +233,7 @@ def claim(database_url: str, run_id: str, worker_id: str, *, ttl_seconds: int = 
                     "run_id": run_id,
                 },
             )
+            _emit_run_status(conn, run_id, str(row.tenant_id), status, epoch)
     finally:
         engine.dispose()
     if row.status not in _ACTIVE or held:
@@ -270,6 +325,7 @@ def commit_terminal(
                 conn=conn,
                 run_status=status,
             )
+            _emit_run_status(conn, run_id, str(row.tenant_id), status, epoch)
         _release_quota(database_url, run_id)
         from rxycode_server.notifications.service import notify_run_terminal
 
@@ -335,6 +391,7 @@ def request_cancel(database_url: str, run_id: str) -> str:
                 ),
                 {"event_id": event_id},
             )
+            _emit_run_status(conn, run_id, row.tenant_id, "cancel_requested")
     finally:
         engine.dispose()
     return "cancel_requested"
@@ -385,6 +442,7 @@ def confirm_cancel(
                 conn=conn,
                 run_status=status,
             )
+            _emit_run_status(conn, run_id, str(row.tenant_id), status, epoch)
         _release_quota(database_url, run_id)
     finally:
         engine.dispose()

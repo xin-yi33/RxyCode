@@ -122,6 +122,10 @@ def _session_app(proxy, user_id: str, tenant_id: str, database: Path):
     )
     app.state.preview_proxy = proxy
     token = secrets.token_urlsafe(32)
+    # Test-injected session store: create_app keeps browser sessions in the
+    # database now; this sqlite-backed app has no auth tables, so the legacy
+    # per-process dict carries the fixture session (WEB-W9-B1 fallback).
+    app.state.sessions = {}
     app.state.sessions[_hash_token(app.state.secret, token)] = AuthRecord(
         user_id=user_id,
         tenant_id=tenant_id,

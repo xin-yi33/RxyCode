@@ -133,12 +133,27 @@ def test_threat_tampered_session(postgres_url: str) -> None:
     )
     assert refused.status_code == 403
 
-    # An expired session cookie must not authenticate: age the record past TTL.
-    from rxycode_server.api.auth import _SESSION_TTL, _hash_token
+    # An expired session cookie must not authenticate: age the durable row
+    # past its expiry (WEB-W9-B1: sessions live in auth_sessions now).
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import create_engine, update
+    from sqlalchemy.orm import Session
+
+    from rxycode_server.api.auth import _hash_token
+    from rxycode_server.persistence.models import AuthSession
 
     raw = attacker.cookies.get("rxy_session")
-    record = app.state.sessions[_hash_token(app.state.secret, raw)]
-    record.created = time.monotonic() - _SESSION_TTL - 1
+    digest = _hash_token(app.state.secret, raw)
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.execute(
+            update(AuthSession)
+            .where(AuthSession.token_hash == digest)
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(minutes=1))
+        )
+        db.commit()
+    engine.dispose()
     assert attacker.get("/api/v1/me").status_code == 401
 
 

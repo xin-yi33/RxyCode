@@ -1,6 +1,54 @@
-export type Me = { user_id: string; tenant_id: string }
+export type Capabilities = {
+  mode: string
+  password: boolean
+  registration: "invite" | "open" | "closed"
+  github: boolean
+  local: boolean
+}
+
+export type Me = {
+  user: {
+    id: string
+    kind: string
+    email: string | null
+    display_name: string | null
+    github_id: string | null
+  }
+  organization: { id: string; tenant_id: string }
+  membership: { role: string }
+  default_project_id: string | null
+}
 
 export type Project = { id: string; name: string }
+
+export type RunAccepted = {
+  run_id: string
+  status: string
+  session_id: string
+  events_url: string
+}
+
+export type RunSummary = {
+  run_id: string
+  status: string
+  created_at: string | null
+  message: string
+  permission_profile: string
+  final_preview: string
+}
+
+export type RunDetail = RunSummary & {
+  session_id: string
+  event_seq: number
+}
+
+export type SessionListItem = {
+  id: string
+  title: string
+  project_id: string
+  updated_at: string | null
+  last_run: { run_id: string; status: string } | null
+}
 
 export class ApiError extends Error {
   readonly status: number
@@ -63,12 +111,35 @@ async function writeJson(
   return response.json()
 }
 
-export type SessionInfo = { id: string; title: string; project_id: string }
+export type SessionInfo = {
+  id: string
+  title: string
+  project_id: string
+  updated_at?: string | null
+  last_run?: { run_id: string; status: string } | null
+}
 
 export function createClient() {
   return {
     getMe(signal?: AbortSignal): Promise<Me> {
       return readJson("/api/v1/me", signal) as Promise<Me>
+    },
+    getCapabilities(signal?: AbortSignal): Promise<Capabilities> {
+      return readJson("/api/v1/auth/capabilities", signal) as Promise<Capabilities>
+    },
+    register(body: {
+      email: string
+      password: string
+      invite_code?: string
+      display_name?: string
+    }): Promise<Me> {
+      return writeJson("/api/v1/auth/register", body) as Promise<Me>
+    },
+    login(email: string, password: string): Promise<Me> {
+      return writeJson("/api/v1/auth/login", { email, password }) as Promise<Me>
+    },
+    logout(): Promise<void> {
+      return writeJson("/api/v1/auth/logout", {}).then(() => undefined)
     },
     localLogin(secret: string): Promise<Me> {
       return writeJson("/api/v1/auth/local/login", {}, {
@@ -87,6 +158,49 @@ export function createClient() {
     createSession(projectId: string, title: string): Promise<SessionInfo> {
       const path = `/api/v1/projects/${encodeURIComponent(projectId)}/sessions`
       return writeJson(path, { title }) as Promise<SessionInfo>
+    },
+    createTask(body: {
+      message: string
+      request_id: string
+      permission_profile: "confirm" | "full"
+      project_id?: string
+    }): Promise<RunAccepted> {
+      return writeJson("/api/v1/tasks", body) as Promise<RunAccepted>
+    },
+    createRun(
+      sessionId: string,
+      body: {
+        message: string
+        request_id: string
+        permission_profile: "confirm" | "full"
+      },
+    ): Promise<RunAccepted> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs`
+      return writeJson(path, body) as Promise<RunAccepted>
+    },
+    listSessions(signal?: AbortSignal): Promise<SessionListItem[]> {
+      return readJson("/api/v1/sessions", signal).then((body) => {
+        const record = body as { sessions?: SessionListItem[] }
+        return record.sessions ?? []
+      })
+    },
+    listSessionRuns(
+      sessionId: string,
+      options: { limit?: number; before?: string } = {},
+      signal?: AbortSignal,
+    ): Promise<{ runs: RunSummary[]; next_cursor: string | null }> {
+      const query = new URLSearchParams()
+      if (options.limit) query.set("limit", String(options.limit))
+      if (options.before) query.set("before", options.before)
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs?${query}`
+      return readJson(path, signal) as Promise<{
+        runs: RunSummary[]
+        next_cursor: string | null
+      }>
+    },
+    getRun(runId: string, signal?: AbortSignal): Promise<RunDetail> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}`
+      return readJson(path, signal) as Promise<RunDetail>
     },
     githubStart(): Promise<{ authorization_url: string; state: string }> {
       return readJson("/api/v1/auth/github/start") as Promise<{

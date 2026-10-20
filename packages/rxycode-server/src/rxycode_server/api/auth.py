@@ -1,4 +1,14 @@
-"""GitHub OAuth with PKCE, local login, and the cookie session."""
+"""GitHub OAuth with PKCE, registration, password login, and the cookie session.
+
+WEB-W9-B1: browser sessions are durable rows in ``auth_sessions`` — a cookie
+token's HMAC digest is the row key, expiry is wall-clock (7 days, sliding:
+the row renews once it has not been seen for over a day), and a revoked or
+disabled user's session never authorizes again, across restarts and
+replicas. OAuth ``state`` rows live in ``oauth_states`` so a different
+replica can finish the callback. Registration is gated by
+``app.state.registration`` (``invite``/``open``/``closed``) and invites are
+single-use hashes — plaintext codes are never stored.
+"""
 
 from __future__ import annotations
 
@@ -9,25 +19,38 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from rxycode_server.persistence.models import Membership, Organization, User
+from rxycode_server.persistence.models import (
+    AuthSession,
+    Invite,
+    Membership,
+    OAuthState,
+    Organization,
+    Project,
+    User,
+)
 
 router = APIRouter()
-_SESSION_TTL = 12 * 60 * 60
-_STATE_TTL = 10 * 60
-
-
-@dataclass
-class OAuthState:
-    verifier: str
-    browser: str
-    created: float
+_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+_SESSION_TTL = timedelta(days=7)
+_SESSION_RENEW_AFTER = timedelta(days=1)
+_STATE_TTL = timedelta(minutes=10)
+_REGISTRATION_MODES = ("invite", "open", "closed")
+_DEFAULT_PROJECT_NAME = "默认项目"
+_DUMMY_HASH = (
+    "scrypt$16384$8$1$"
+    + base64.b64encode(b"rxycode-dummy-s1").decode()
+    + "$"
+    + base64.b64encode(b"0" * 32).decode()
+)
 
 
 @dataclass
@@ -53,6 +76,98 @@ def _hash_token(secret: str, token: str) -> str:
     return hmac.new(secret.encode(), token.encode(), "sha256").hexdigest()
 
 
+def invite_digest(code: str) -> str:
+    """SHA-256 digest of a plaintext invite code — the only thing ever stored."""
+    return hashlib.sha256(code.encode()).hexdigest()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
+    return (
+        "scrypt$16384$8$1$"
+        + base64.b64encode(salt).decode()
+        + "$"
+        + base64.b64encode(derived).decode()
+    )
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, n_s, r_s, p_s, salt_b64, hash_b64 = stored.split("$", 5)
+        n, r, p = int(n_s), int(r_s), int(p_s)
+        if scheme != "scrypt" or n < 2 or (n & (n - 1)) or r < 1 or p < 1:
+            return False
+        expected = base64.b64decode(hash_b64)
+        derived = hashlib.scrypt(
+            password.encode(),
+            salt=base64.b64decode(salt_b64),
+            n=n,
+            r=r,
+            p=p,
+            dklen=len(expected) or 32,
+        )
+        return hmac.compare_digest(derived, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def _normalize_email(raw: str) -> str:
+    return raw.strip().lower()
+
+
+def _check_email(email: str) -> None:
+    parts = email.split("@")
+    if (
+        not email
+        or len(email) > 254
+        or len(parts) != 2
+        or not parts[0]
+        or not parts[1]
+        or "." not in parts[1]
+    ):
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+
+
+def _aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+class _Window:
+    """Fixed-window counter — per replica, resets on restart (spec's intent)."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.buckets: dict[tuple[str, int], int] = {}
+
+    def hit(self, key: str) -> bool:
+        window = int(time.monotonic()) // 60
+        bucket = (key, window)
+        seen = self.buckets.get(bucket, 0)
+        if seen >= self.limit:
+            return False
+        self.buckets[bucket] = seen + 1
+        if len(self.buckets) > 4096:
+            self.buckets = {k: v for k, v in self.buckets.items() if k[1] >= window - 1}
+        return True
+
+
+class AuthRateLimit:
+    """Per-IP 10/min + per-email 5/min on /auth/register and /auth/login."""
+
+    def __init__(self) -> None:
+        self.ip = _Window(10)
+        self.email = _Window(5)
+
+    def check(self, route: str, ip: str, email: str) -> None:
+        if not self.ip.hit(f"{route}:ip:{ip}") or not self.email.hit(
+            f"{route}:email:{email}"
+        ):
+            raise HTTPException(status_code=429, detail="RATE_LIMITED")
+
+
 def _secure(request: Request) -> bool:
     return bool(request.app.state.secure)
 
@@ -67,29 +182,80 @@ def require_write(request: Request) -> None:
         raise HTTPException(status_code=403, detail="FORBIDDEN")
 
 
+def _lookup_session(app, raw: str) -> AuthRecord | None:
+    digest = _hash_token(app.state.secret, raw)
+    # Tests and tooling may still inject a session into a per-process dict
+    # (the standalone device gateway keeps all of its sessions there);
+    # production create_app never sets it, so the durable row is authoritative.
+    record = getattr(app.state, "sessions", {}).get(digest)
+    if record is not None:
+        if time.monotonic() - record.created > _SESSION_TTL_SECONDS:
+            return None
+        return record
+    engine = getattr(app.state, "engine", None)
+    if engine is None:
+        return None
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        row = db.get(AuthSession, digest)
+        if row is None or row.revoked_at is not None or _aware(row.expires_at) <= now:
+            return None
+        user = db.get(User, row.user_id)
+        if user is None or user.disabled_at is not None:
+            return None
+        if now - _aware(row.last_seen_at) > _SESSION_RENEW_AFTER:
+            row.last_seen_at = now
+            row.expires_at = now + _SESSION_TTL
+            db.commit()
+        return AuthRecord(
+            user_id=row.user_id,
+            tenant_id=row.tenant_id,
+            created=_aware(row.created_at).timestamp(),
+        )
+
+
 def current_record(request: Request) -> AuthRecord:
     raw = request.cookies.get("rxy_session", "")
     if not raw:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED")
-    record = request.app.state.sessions.get(_hash_token(request.app.state.secret, raw))
-    if record is None or time.monotonic() - record.created > _SESSION_TTL:
+    record = _lookup_session(request.app, raw)
+    if record is None:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED")
     return record
 
 
-def _drop_current(request: Request) -> None:
+def _drop_current(request: Request, db: Session | None = None) -> None:
     raw = request.cookies.get("rxy_session", "")
     if not raw:
         return
-    request.app.state.sessions.pop(_hash_token(request.app.state.secret, raw), None)
+    digest = _hash_token(request.app.state.secret, raw)
+    getattr(request.app.state, "sessions", {}).pop(digest, None)
+    if getattr(request.app.state, "engine", None) is None:
+        return
+    if db is not None:
+        row = db.get(AuthSession, digest)
+        if row is not None and row.revoked_at is None:
+            row.revoked_at = datetime.now(timezone.utc)
 
 
-def _issue(request: Request, user_id: str, tenant_id: str) -> str:
+def _issue(request: Request, db: Session | None, user_id: str, tenant_id: str) -> str:
     token = secrets.token_urlsafe(32)
-    request.app.state.sessions[_hash_token(request.app.state.secret, token)] = AuthRecord(
-        user_id=user_id,
-        tenant_id=tenant_id,
-        created=time.monotonic(),
+    digest = _hash_token(request.app.state.secret, token)
+    if getattr(request.app.state, "engine", None) is None:
+        request.app.state.sessions[digest] = AuthRecord(
+            user_id=user_id, tenant_id=tenant_id, created=time.monotonic()
+        )
+        return token
+    now = datetime.now(timezone.utc)
+    db.add(
+        AuthSession(
+            token_hash=digest,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            created_at=now,
+            expires_at=now + _SESSION_TTL,
+            last_seen_at=now,
+        )
     )
     return token
 
@@ -102,7 +268,7 @@ def _set_session(response: Response, token: str, *, secure: bool) -> None:
         secure=secure,
         samesite="lax",
         path="/",
-        max_age=_SESSION_TTL,
+        max_age=_SESSION_TTL_SECONDS,
     )
 
 
@@ -140,6 +306,80 @@ def _github_account(db: Session, github_id: str) -> tuple[User, str]:
     db.add(Membership(id=uuid.uuid4().hex, tenant_id=org.tenant_id, user_id=user.id, role="owner"))
     db.flush()
     return user, org.tenant_id
+
+
+def _tenant_for(db: Session, user_id: str) -> str:
+    row = db.scalars(
+        select(Membership.tenant_id).where(Membership.user_id == user_id).limit(1)
+    ).first()
+    return row or ""
+
+
+def _ensure_default_project(db: Session, tenant_id: str) -> str:
+    """Create the tenant's catch-all project — 默认项目 — and return its id."""
+    project = Project(
+        id=uuid.uuid4().hex,
+        tenant_id=tenant_id,
+        name=_DEFAULT_PROJECT_NAME,
+        repo_config={},
+    )
+    db.add(project)
+    db.flush()
+    return project.id
+
+
+def _default_project_id(db: Session, user: User | None, tenant_id: str) -> str | None:
+    if user is None:
+        return None
+    if not user.default_project_id:
+        user.default_project_id = _ensure_default_project(db, tenant_id)
+    return user.default_project_id
+
+
+def _capabilities(request: Request) -> dict[str, object]:
+    state = request.app.state
+    return {
+        "mode": state.mode,
+        "password": True,
+        "registration": getattr(state, "registration", "invite"),
+        "github": bool(
+            getattr(state, "github_client_id", "")
+            and getattr(state, "github_client_secret", "")
+            and getattr(state, "github_redirect_uri", "")
+        ),
+        "local": state.mode == "local",
+    }
+
+
+def _me_body(record: AuthRecord, db: Session) -> dict[str, object]:
+    user = db.get(User, record.user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
+    default_project_id = _default_project_id(db, user, record.tenant_id)
+    org = db.scalars(
+        select(Organization).where(Organization.tenant_id == record.tenant_id)
+    ).one_or_none()
+    role = db.scalars(
+        select(Membership.role).where(
+            Membership.user_id == record.user_id,
+            Membership.tenant_id == record.tenant_id,
+        )
+    ).first()
+    return {
+        "user": {
+            "id": user.id,
+            "kind": user.kind,
+            "email": user.email,
+            "display_name": user.display_name,
+            "github_id": user.github_id,
+        },
+        "organization": {
+            "id": org.id if org is not None else "",
+            "tenant_id": record.tenant_id,
+        },
+        "membership": {"role": role or ""},
+        "default_project_id": default_project_id,
+    }
 
 
 def exchange_github_code(request: Request, code: str, verifier: str) -> str:
@@ -184,6 +424,123 @@ def issue_csrf(request: Request, response: Response) -> dict[str, str]:
     return {"csrf_token": token}
 
 
+@router.get("/api/v1/auth/capabilities")
+def capabilities(request: Request) -> dict[str, object]:
+    return _capabilities(request)
+
+
+@router.post("/api/v1/auth/register", status_code=201)
+def register(
+    request: Request,
+    response: Response,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    require_write(request)
+    email = _normalize_email(str(payload.get("email") or ""))
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check("register", request.client.host if request.client else "-", email)
+    _check_email(email)
+    password = str(payload.get("password") or "")
+    if not 8 <= len(password) <= 128:
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    mode = getattr(request.app.state, "registration", "invite")
+    if mode not in _REGISTRATION_MODES:
+        mode = "invite"
+    if mode == "closed":
+        raise HTTPException(status_code=403, detail="REGISTRATION_CLOSED")
+    if mode == "invite":
+        # Atomic consumption: a concurrent registrar cannot spend the same
+        # seat, and an EMAIL_TAKEN rollback below returns the seat too.
+        code = str(payload.get("invite_code") or "").strip()
+        now = datetime.now(timezone.utc)
+        claimed = db.execute(
+            update(Invite)
+            .where(
+                Invite.code_hash == invite_digest(code),
+                Invite.used < Invite.max_uses,
+                or_(Invite.expires_at.is_(None), Invite.expires_at > now),
+            )
+            .values(used=Invite.used + 1)
+            .returning(Invite.code_hash)
+        ).first()
+        if claimed is None:
+            raise HTTPException(status_code=403, detail="INVITE_INVALID")
+    tenant_id = uuid.uuid4().hex
+    user = User(
+        id=uuid.uuid4().hex,
+        kind="email",
+        email=email,
+        password_hash=hash_password(password),
+        display_name=str(payload.get("display_name") or "").strip() or None,
+    )
+    org = Organization(id=uuid.uuid4().hex, tenant_id=tenant_id)
+    db.add(user)
+    db.add(org)
+    db.add(
+        Membership(
+            id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, role="owner"
+        )
+    )
+    try:
+        user.default_project_id = _ensure_default_project(db, tenant_id)
+        db.flush()
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="EMAIL_TAKEN") from None
+    _set_session(
+        response,
+        _issue(request, db, user.id, tenant_id),
+        secure=_secure(request),
+    )
+    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
+
+
+@router.post("/api/v1/auth/login")
+def password_login(
+    request: Request,
+    response: Response,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    require_write(request)
+    email = _normalize_email(str(payload.get("email") or ""))
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check("login", request.client.host if request.client else "-", email)
+    user = db.scalars(select(User).where(User.email == email).limit(1)).first()
+    # Always run one scrypt so unknown-email and wrong-password look alike.
+    stored = user.password_hash if user is not None and user.password_hash else _DUMMY_HASH
+    if user is None or not verify_password(str(payload.get("password") or ""), stored):
+        raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+    if user.disabled_at is not None:
+        raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+    _drop_current(request, db)
+    tenant_id = _tenant_for(db, user.id)
+    _set_session(response, _issue(request, db, user.id, tenant_id), secure=_secure(request))
+    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
+
+
+@router.post("/api/v1/auth/logout", status_code=204)
+def logout(
+    request: Request,
+    db: Session = Depends(db_session),
+) -> Response:
+    require_write(request)
+    _drop_current(request, db)
+    # The injected Response is replaced by this one — clear the cookie on the
+    # response actually returned, with the same attrs the setter used.
+    response = Response(status_code=204)
+    response.delete_cookie(
+        "rxy_session",
+        path="/",
+        secure=_secure(request),
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
 @router.post("/api/v1/auth/local/login")
 def local_login(
     request: Request,
@@ -196,23 +553,34 @@ def local_login(
     if not _same(provided, request.app.state.secret):
         raise HTTPException(status_code=403, detail="FORBIDDEN")
     require_write(request)
-    _drop_current(request)
+    _drop_current(request, db)
     user, org = _local_account(db)
-    _set_session(response, _issue(request, user.id, org.tenant_id), secure=_secure(request))
+    _set_session(response, _issue(request, db, user.id, org.tenant_id), secure=_secure(request))
     return {"user_id": user.id, "tenant_id": org.tenant_id}
 
 
 @router.get("/api/v1/auth/github/start")
-def github_start(request: Request, response: Response) -> dict[str, str]:
+def github_start(
+    request: Request, response: Response, db: Session = Depends(db_session)
+) -> dict[str, str]:
+    if not (
+        request.app.state.github_client_id
+        and request.app.state.github_client_secret
+        and request.app.state.github_redirect_uri
+    ):
+        raise HTTPException(status_code=503, detail="AUTH_PROVIDER_NOT_CONFIGURED")
     verifier = secrets.token_urlsafe(48)
     digest = hashlib.sha256(verifier.encode()).digest()
     challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    request.app.state.oauth_states[state] = OAuthState(
-        verifier=verifier,
-        browser=_hash_token(request.app.state.secret, nonce),
-        created=time.monotonic(),
+    db.add(
+        OAuthState(
+            state=state,
+            verifier=verifier,
+            browser_hash=_hash_token(request.app.state.secret, nonce),
+            expires_at=datetime.now(timezone.utc) + _STATE_TTL,
+        )
     )
     response.set_cookie(
         "rxy_oauth",
@@ -221,7 +589,7 @@ def github_start(request: Request, response: Response) -> dict[str, str]:
         secure=_secure(request),
         samesite="lax",
         path="/",
-        max_age=_STATE_TTL,
+        max_age=int(_STATE_TTL.total_seconds()),
     )
     query = httpx.QueryParams(
         {
@@ -248,37 +616,28 @@ def github_callback(
     code: str,
     db: Session = Depends(db_session),
 ) -> dict[str, str]:
-    record = request.app.state.oauth_states.get(state)
+    row = db.get(OAuthState, state)
     nonce = request.cookies.get("rxy_oauth", "")
-    browser_ok = bool(record) and bool(nonce) and _same(
-        _hash_token(request.app.state.secret, nonce),
-        record.browser,
+    browser_ok = (
+        row is not None
+        and bool(nonce)
+        and _same(_hash_token(request.app.state.secret, nonce), row.browser_hash)
     )
-    if record is None or not browser_ok or time.monotonic() - record.created > _STATE_TTL:
+    expired = row is None or _aware(row.expires_at) <= datetime.now(timezone.utc)
+    if row is None or not browser_ok or expired:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
-    request.app.state.oauth_states.pop(state, None)
-    github_id = exchange_github_code(request, code, record.verifier)
-    _drop_current(request)
+    verifier = row.verifier
+    db.delete(row)
+    db.flush()
+    github_id = exchange_github_code(request, code, verifier)
     user, tenant_id = _github_account(db, github_id)
-    _set_session(response, _issue(request, user.id, tenant_id), secure=_secure(request))
+    if user.disabled_at is not None:
+        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
+    _drop_current(request, db)
+    _set_session(response, _issue(request, db, user.id, tenant_id), secure=_secure(request))
     return {"user_id": user.id, "tenant_id": tenant_id}
 
 
 @router.get("/api/v1/me")
 def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]:
-    record = current_record(request)
-    user = db.get(User, record.user_id)
-    org = db.scalars(select(Organization).where(Organization.tenant_id == record.tenant_id)).one()
-    role = db.scalars(
-        select(Membership.role).where(
-            Membership.user_id == record.user_id,
-            Membership.tenant_id == record.tenant_id,
-        )
-    ).one()
-    if user is None:
-        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
-    return {
-        "user": {"id": user.id, "kind": user.kind, "github_id": user.github_id},
-        "organization": {"id": org.id, "tenant_id": org.tenant_id},
-        "membership": {"role": role},
-    }
+    return _me_body(current_record(request), db)

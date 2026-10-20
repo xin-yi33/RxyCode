@@ -163,6 +163,11 @@ def _persist_unknown(
                 if updated is None:
                     return False
                 target_id = updated[0]
+                from rxycode_worker.supervisor import _emit_run_status
+
+                _emit_run_status(
+                    conn, run_id, tenant_id, "recovery_required", epoch
+                )
             else:
                 return False
             conn.execute(

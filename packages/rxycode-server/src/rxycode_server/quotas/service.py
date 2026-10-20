@@ -17,7 +17,7 @@ from typing import Protocol
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from rxycode_server.persistence.models import Run, RunEvent
+from rxycode_server.persistence.models import Run, RunEvent, UsageRecord
 
 DEFAULT_LIMITS_TASKS = 100_000
 DEFAULT_LIMITS_TOKENS = 10_000_000
@@ -58,13 +58,24 @@ class ModelClient(Protocol):
 
 @dataclass(frozen=True)
 class Limits:
-    """Server-side ceilings for one user inside one tenant."""
+    """Server-side ceilings for one user inside one tenant.
+
+    ``window_seconds`` (WEB-W9-B4): when set, tasks/tokens only count runs
+    created inside the trailing window (daily accounting uses ``86400``);
+    ``None`` keeps the original all-history accounting. In window mode token
+    usage is the real ``usage_records.tokens`` sum for those runs, and the
+    incoming message's estimate is added at reserve time.
+    ``queue_max``: global cap on ``pending`` runs, checked before any worker
+    slot is acquired; hitting it refuses with ``kind="queue"``.
+    """
 
     tasks: int
     tokens: int
     concurrency: int
     preview_fee: int
     sandbox_fee: int
+    window_seconds: int | None = None
+    queue_max: int | None = None
 
 
 DEFAULT_LIMITS = Limits(
@@ -212,7 +223,7 @@ class QuotaGate:
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
             {"key": f"{tenant_id}:{user_id}"},
         )
-        usage = _usage(db, tenant_id)
+        usage = _usage(db, tenant_id, self._limits.window_seconds)
         incoming = _token_count(message)
         limits = self._limits
         if usage.tasks >= limits.tasks:
@@ -223,6 +234,12 @@ class QuotaGate:
             return self._refuse(tenant_id, user_id, "preview")
         if usage.sandbox_fee + 1 > limits.sandbox_fee:
             return self._refuse(tenant_id, user_id, "sandbox")
+        if limits.queue_max is not None:
+            pending = db.scalar(
+                select(func.count()).select_from(Run).where(Run.status == "pending")
+            )
+            if int(pending or 0) >= limits.queue_max:
+                return self._refuse(tenant_id, user_id, "queue")
         held = _active_slots(db, tenant_id, user_id, self._worker_ttl)
         try:
             worker_id = self.capacity.acquire(
@@ -255,6 +272,7 @@ class QuotaGate:
             "concurrency": self._limits.concurrency,
             "preview": self._limits.preview_fee,
             "sandbox": self._limits.sandbox_fee,
+            "queue": self._limits.queue_max or 0,
         }[kind]
         event: dict[str, object] = {
             "type": "quota.exceeded",
@@ -322,7 +340,27 @@ def _active_slots(db: Session, tenant_id: str, user_id: str, ttl_seconds: float)
     return held
 
 
-def _usage(db: Session, tenant_id: str) -> _Usage:
+def _usage(db: Session, tenant_id: str, window_seconds: int | None = None) -> _Usage:
+    if window_seconds is not None:
+        # WEB-W9-B4: only runs created inside the trailing window count; token
+        # usage is the real usage_records.tokens sum for those runs.
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+        run_ids = db.scalars(
+            select(Run.id).where(
+                Run.tenant_id == tenant_id,
+                Run.created_at.isnot(None),
+                Run.created_at >= cutoff,
+            )
+        ).all()
+        usage = _Usage(tasks=len(run_ids))
+        if run_ids:
+            tokens = db.scalar(
+                select(func.coalesce(func.sum(UsageRecord.tokens), 0)).where(
+                    UsageRecord.run_id.in_(run_ids)
+                )
+            )
+            usage.tokens = int(tokens or 0)
+        return usage
     task_count = db.scalar(select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id))
     events = db.scalars(
         select(RunEvent).where(RunEvent.tenant_id == tenant_id, RunEvent.type == "run.created")

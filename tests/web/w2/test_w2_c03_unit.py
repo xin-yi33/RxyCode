@@ -88,7 +88,9 @@ def test_w2_c03_contract(postgres_url: str):
     assert loaded["permission_profile"] == "workspace-write"
     assert loaded["session_id"] == session_id
     assert first.events_url == f"/api/v1/runs/{first.run_id}/events"
-    assert _counts(postgres_url) == (1, 1, 1)
+    # run.created + telemetry.span rows from the create span and the
+    # idempotent-replay span (W7-C04 exports spans onto the event log).
+    assert _counts(postgres_url) == (1, 3, 3)
     engine = create_engine(postgres_url)
     with engine.connect() as conn:
         tenant_id, status = conn.execute(
@@ -115,7 +117,7 @@ def test_w2_c03_contract(postgres_url: str):
         create_run(postgres_url, **{**kwargs, "session_id": other_session})
     with pytest.raises(RunConflict):
         create_run(postgres_url, **{**kwargs, "message": "different payload"})
-    assert _counts(postgres_url) == (1, 1, 1)
+    assert _counts(postgres_url) == (1, 3, 3)
     with pytest.raises(RunAlreadyActive):
         create_run(
             postgres_url,
@@ -126,7 +128,7 @@ def test_w2_c03_contract(postgres_url: str):
             permission_profile="workspace-write",
             request_id="req-other",
         )
-    assert _counts(postgres_url) == (1, 1, 1)
+    assert _counts(postgres_url) == (1, 3, 3)
 
 
 def test_w2_c03_negative(postgres_url: str, tmp_path: Path):

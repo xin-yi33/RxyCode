@@ -449,7 +449,7 @@ def test_w7_c05_contract(compose_stack: dict[str, Any]) -> None:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "005_harness_checkpoint", revision
+            assert revision == "006_auth_and_runs", revision
             for table in ("runs", "run_events", "outbox", "users", "projects"):
                 found = conn.execute(
                     text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
@@ -770,17 +770,6 @@ def test_w7_c05_projection_vocabulary() -> None:
     assert rows[0][1]["tool"] == "shell"
 
     rows = drain._projection_rows(
-        "event/agent_needs_input",
-        {"request_id": "ap1", "preview": "approve rm -rf?"},
-        tool_names,
-        run_id="r9",
-    )
-    kinds = {kind for kind, _payload in rows}
-    assert kinds == {"question.requested", "approval.requested"}
-    approval = dict(rows)["approval.requested"]
-    assert approval["approval_id"] == "ap1"
-
-    rows = drain._projection_rows(
         "event/todo_updated",
         {"snapshot": {"items": [{"id": "t1", "content": "build it", "status": "in_progress"}]}},
         tool_names,
@@ -805,7 +794,7 @@ def test_w7_c05_projection_terminal_survives_cap() -> None:
     from rxycode_worker import drain
 
     emitter = drain._RunEmit("sqlite+pysqlite:///:memory:", "t1", "r-cap")
-    emitter.projected = drain._JOURNAL_CAP  # cap already exhausted
+    emitter.delta_rows = drain._JOURNAL_CAP  # delta cap already exhausted
     import rxycode_server.events.store as store
 
     captured: list[tuple[str, dict[str, Any]]] = []

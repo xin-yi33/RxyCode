@@ -86,7 +86,11 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_S3_ENDPOINT` / `_BUCKET` | no | `http://minio:9000` / `rxycode-artifacts` | artifact store |
 | `RXYCODE_PREVIEW_TOKEN` | no | empty | optional extra preview-token check at the gateway |
 | `RXYCODE_WEB_RATE_LIMIT_RPM` | no | `240` | public-demo throttle: requests/min per client IP at the app layer; `0` disables |
-| `RXYCODE_WORKER_ID` / `_POLL_SECONDS` / `_LEASE_TTL` / `_RUN_TIMEOUT` / `_MODEL` | no | hostname / `2` / `120` / `900` / active | drain worker tuning |
+| `RXYCODE_WEB_REGISTRATION` | no | `invite` | registration mode: `invite` requires a one-shot code (mint via `python -m rxycode_server.admin invite create`), `open` allows anyone, `closed` refuses all registration |
+| `RXYCODE_QUOTA_CONCURRENCY` | no | `1` | per-user active-run ceiling |
+| `RXYCODE_QUOTA_TASKS_PER_DAY` / `RXYCODE_QUOTA_TOKENS_PER_DAY` | no | `30` / `2000000` | per-user rolling-24h task count / real token usage (`usage_records` sum) |
+| `RXYCODE_QUEUE_MAX` | no | `10` | global pending-run cap; extra submissions refuse with `QUOTA_EXCEEDED`/`queue` |
+| `RXYCODE_WORKER_ID` / `_POLL_SECONDS` / `_LEASE_TTL` / `_MODEL` | no | hostname / `2` / `120` / active | drain worker tuning |
 | `RXYCODE_WORKER_EXECUTION` | no | `cloud-only` | placement gate: `cloud-only` accepts only tenant-bound `cloud:*` targets (the shipped public mode); `sandboxed-local` is the dev opt-in that also accepts `local:*` — still confined |
 | `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | when set, worker writes a real model entry (openai-compatible) into its config and executes turns against this endpoint |
 | `RXYCODE_API_KEY` | no | empty | credential for the deployed endpoint; referenced via `api_key_env`, never written into config.yaml |

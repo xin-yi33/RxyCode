@@ -59,6 +59,49 @@ def append_event(
         engine.dispose()
 
 
+def append_event_in(
+    db: Session,
+    run: Run,
+    event_type: str,
+    payload: dict,
+) -> int:
+    """Append one event and its outbox row inside the caller's open session
+    transaction — the same ``max(event_seq, max(seq))+1`` seq rule
+    ``append_event`` uses, without opening a new connection."""
+    retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
+    seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
+    run.event_seq = seq
+    event_id = uuid.uuid4().hex
+    db.add(
+        RunEvent(
+            event_id=event_id,
+            run_id=run.id,
+            tenant_id=run.tenant_id,
+            seq=seq,
+            type=event_type,
+            payload=payload,
+            at=datetime.now(timezone.utc),
+        )
+    )
+    db.flush()
+    db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
+    return seq
+
+
+def append_run_status(
+    db: Session,
+    run: Run,
+    status: str,
+    epoch: int | None = None,
+) -> int:
+    """The W9-B3 ``run.status`` row — always atomic with the status write that
+    produced it, so the SSE stream can never show a status the log lacks."""
+    payload: dict[str, object] = {"status": status}
+    if epoch is not None:
+        payload["epoch"] = int(epoch)
+    return append_event_in(db, run, "run.status", payload)
+
+
 def replay(database_url: str, *, tenant_id: str, run_id: str, after_seq: int) -> dict:
     """Return seqs after the cursor, or CURSOR_EXPIRED when the gap was pruned."""
     engine, db = _session(database_url)

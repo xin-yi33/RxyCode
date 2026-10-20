@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Callable
 
 from fastapi import APIRouter, Query, Request
@@ -74,6 +75,15 @@ def _pull(database_url: str, tenant_id: str, run_id: str, cursor: int, sent: set
 
 _TERMINAL = {"succeeded", "failed", "cancelled", "recovery_required"}
 
+#: Follow-mode keepalive — an SSE comment line never reaches a client's
+#: onmessage, it only keeps intermediaries (Funnel, Caddy, the browser) from
+#: reaping an idle stream during long thinking or an approval wait.
+HEARTBEAT_SECONDS = 15.0
+
+
+def _ping() -> str:
+    return ": ping\n\n"
+
 
 def _run_status(database_url: str, run_id: str) -> str:
     from sqlalchemy import create_engine, text
@@ -101,6 +111,7 @@ async def iter_frames(
     pubsub = None
     sent: set[int] = set()
     cursor = after_seq
+    last_activity = time.monotonic()
     try:
         yield ": open\n\n"
         if redis_client is not None:
@@ -129,6 +140,12 @@ async def iter_frames(
                 return
             if _run_status(database_url, run_id) in _TERMINAL and not frames:
                 return
+            now = time.monotonic()
+            if frames:
+                last_activity = now
+            elif now - last_activity >= HEARTBEAT_SECONDS:
+                last_activity = now
+                yield _ping()
             if pubsub is not None:
                 pubsub.get_message(timeout=0.05)
             await asyncio.sleep(0.25)

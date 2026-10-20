@@ -123,6 +123,8 @@ def _question_flags(
 
 
 def _resume_question(database_url: str, tenant_id: str, run_id: str) -> None:
+    from rxycode_server.events.store import append_run_status
+
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with Session(engine) as db:
@@ -131,6 +133,7 @@ def _resume_question(database_url: str, tenant_id: str, run_id: str) -> None:
                 return
             if row.status in {"leased", "running"}:
                 row.status = "pending"
+                append_run_status(db, row, "pending")
                 row.lease_owner = None
                 row.lease_until = None
                 row.revision = int(row.revision or 0) + 1

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from rxycode_server.api.auth import current_record, db_session, require_write
+from rxycode_server.api.runs import _aware, _last_runs
 from rxycode_server.persistence.models import Project, SessionRow
 
 router = APIRouter()
@@ -103,14 +104,24 @@ def list_sessions(
     if project is None:
         raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
     rows = db.scalars(
-        select(SessionRow).where(
+        select(SessionRow)
+        .where(
             SessionRow.project_id == project.id,
             SessionRow.tenant_id == record.tenant_id,
         )
+        .order_by(SessionRow.updated_at.desc())
     ).all()
+    latest = _last_runs(db, record.tenant_id, [row.id for row in rows])
     return {
         "sessions": [
-            {"id": row.id, "title": row.title, "project_id": project.id} for row in rows
+            {
+                "id": row.id,
+                "title": row.title,
+                "project_id": project.id,
+                "updated_at": stamp.isoformat() if (stamp := _aware(row.updated_at)) else None,
+                "last_run": latest.get(row.id),
+            }
+            for row in rows
         ]
     }
 
@@ -152,4 +163,11 @@ def get_session(
     ).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
-    return {"id": row.id, "title": row.title, "project_id": row.project_id}
+    stamp = _aware(row.updated_at)
+    return {
+        "id": row.id,
+        "title": row.title,
+        "project_id": row.project_id,
+        "updated_at": stamp.isoformat() if stamp is not None else None,
+        "last_run": _last_runs(db, record.tenant_id, [row.id]).get(row.id),
+    }

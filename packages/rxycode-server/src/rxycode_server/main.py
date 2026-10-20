@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.approvals import router as approvals_router
 from rxycode_server.api.artifacts import router as artifacts_router
-from rxycode_server.api.auth import router as auth_router
+from rxycode_server.api.auth import AuthRateLimit, router as auth_router
 from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.runs import router as runs_router
 from rxycode_server.api.sse import router as sse_router
@@ -103,8 +105,13 @@ def create_app(
     app.state.mode = mode
     app.state.secure = mode == "cloud"
     app.state.allowed_origins = tuple(allowed_origins)
-    app.state.sessions = {}
-    app.state.oauth_states = {}
+    # WEB-W9-B1: browser sessions live in the auth_sessions table — no
+    # per-process dicts, so restarts and replicas keep cookies valid.
+    registration = os.environ.get("RXYCODE_WEB_REGISTRATION", "invite").strip().lower()
+    app.state.registration = (
+        registration if registration in ("invite", "open", "closed") else "invite"
+    )
+    app.state.auth_rate = AuthRateLimit()
     app.state.github_client_id = github_client_id
     app.state.github_client_secret = github_client_secret
     app.state.github_redirect_uri = github_redirect_uri
@@ -132,12 +139,50 @@ def create_app(
 
         app.add_middleware(RateLimitMiddleware, rpm=app.state.rate_limit_rpm)
 
+    # WEB-W9-B4: env-gated admission gate. When none of the knobs is set the
+    # package default (no installed gate, DEFAULT_LIMITS) is untouched.
+    _install_quota_gate_from_env()
+
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
         code = exc.detail if isinstance(exc.detail, str) else "FORBIDDEN"
         return JSONResponse(status_code=exc.status_code, content={"code": code})
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(
+        _request: Request, _exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"code": "INVALID_INPUT"})
+
     return app
+
+
+def _install_quota_gate_from_env() -> None:
+    """WEB-W9-B4: install the admission gate iff any quota env var exists."""
+    concurrency = os.environ.get("RXYCODE_QUOTA_CONCURRENCY", "").strip()
+    tasks = os.environ.get("RXYCODE_QUOTA_TASKS_PER_DAY", "").strip()
+    tokens = os.environ.get("RXYCODE_QUOTA_TOKENS_PER_DAY", "").strip()
+    queue = os.environ.get("RXYCODE_QUEUE_MAX", "").strip()
+    if not (concurrency or tasks or tokens or queue):
+        return
+    from rxycode_server.quotas.service import (
+        DEFAULT_LIMITS,
+        Limits,
+        QuotaGate,
+        RunWorkers,
+        install_gate,
+    )
+
+    limits = Limits(
+        tasks=int(tasks) if tasks else DEFAULT_LIMITS.tasks,
+        tokens=int(tokens) if tokens else DEFAULT_LIMITS.tokens,
+        concurrency=int(concurrency) if concurrency else DEFAULT_LIMITS.concurrency,
+        preview_fee=DEFAULT_LIMITS.preview_fee,
+        sandbox_fee=DEFAULT_LIMITS.sandbox_fee,
+        window_seconds=86400,
+        queue_max=int(queue) if queue else None,
+    )
+    install_gate(QuotaGate(limits=limits, capacity=RunWorkers()))
 
 
 def serve(

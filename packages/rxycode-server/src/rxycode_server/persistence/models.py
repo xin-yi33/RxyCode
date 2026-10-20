@@ -33,6 +33,50 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     github_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     kind: Mapped[str] = mapped_column(String(16), default="local")
+    email: Mapped[str | None] = mapped_column(String(320), unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(200))
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    default_project_id: Mapped[str | None] = mapped_column(String(64))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (Index("ix_auth_sessions_user", "user_id"),)
+
+    token_hash: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship()
+
+
+class OAuthState(Base):
+    __tablename__ = "oauth_states"
+
+    state: Mapped[str] = mapped_column(String(128), primary_key=True)
+    verifier: Mapped[str] = mapped_column(String(128))
+    browser_hash: Mapped[str] = mapped_column(String(128))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    code_hash: Mapped[str] = mapped_column(String(128), primary_key=True)
+    max_uses: Mapped[int] = mapped_column(Integer, default=1)
+    used: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
 
 
 class Organization(Base):
@@ -89,6 +133,9 @@ class SessionRow(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     project_id: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(200), default="")
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
     organization: Mapped[Organization] = relationship(
         primaryjoin="SessionRow.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -119,12 +166,16 @@ class Run(Base):
                 "status IN ('pending', 'running', 'leased', 'cancel_requested', 'waiting_approval')"
             ),
         ),
+        Index("ix_runs_session_created", "session_id", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     session_id: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
     revision: Mapped[int] = mapped_column(Integer, default=0)
     lease_owner: Mapped[str | None] = mapped_column(String(64))
     lease_epoch: Mapped[int] = mapped_column(Integer, default=0)
@@ -132,7 +183,8 @@ class Run(Base):
     request_id: Mapped[str] = mapped_column(String(64))
     input_digest: Mapped[str] = mapped_column(String(128), default="")
     event_seq: Mapped[int] = mapped_column(Integer, default=0)
-    target_id: Mapped[str] = mapped_column(String(64), default="")
+    # cloud:{tenant_id}:{project_id} — 71 chars with hex uuids; needs >64.
+    target_id: Mapped[str] = mapped_column(String(128), default="")
     organization: Mapped[Organization] = relationship(
         primaryjoin="Run.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -314,6 +366,9 @@ WEB_TABLES = (
     "device_grants",
     "artifacts",
     "usage_records",
+    "auth_sessions",
+    "oauth_states",
+    "invites",
 )
 
 

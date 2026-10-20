@@ -70,7 +70,17 @@ class _Stack:
         _reset_db()
         self.proxy_port = _port()
         origin = f"http://127.0.0.1:{self.proxy_port}"
-        app = create_app(URL, mode="local", secret=SECRET, allowed_origins=[origin])
+        # W9: github/start is 503 AUTH_PROVIDER_NOT_CONFIGURED unless all three
+        # values are set — the OAuth-flow assertions below need them present.
+        app = create_app(
+            URL,
+            mode="local",
+            secret=SECRET,
+            allowed_origins=[origin],
+            github_client_id="w3-c02-client",
+            github_client_secret="w3-c02-secret",
+            github_redirect_uri=f"{origin}/oauth/callback",
+        )
         self.api_port = _port()
         config = uvicorn.Config(app, host="127.0.0.1", port=self.api_port, log_level="warning")
         self.api = uvicorn.Server(config)
@@ -186,7 +196,9 @@ def _login(page, origin: str) -> None:
     page.get_by_role("button", name="本地").click()
     page.get_by_label("本机口令").fill(SECRET)
     page.get_by_role("button", name="登录").click()
-    expect(page.get_by_text("还没有项目")).to_be_visible(timeout=10000)
+    # W9 auto-provisions 默认项目 on the first /me, so a fresh login lands on
+    # an onboarding page that already lists one project.
+    expect(page.get_by_role("heading", name="默认项目")).to_be_visible(timeout=10000)
 
 
 def test_w3_c02_contract() -> None:
@@ -225,7 +237,9 @@ def test_w3_c02_negative() -> None:
             page.get_by_label("密钥").fill("not-for-storage")
             page.get_by_role("button", name="导入").click()
             expect(page.get_by_role("alert")).to_contain_text("失败", timeout=10000)
-            expect(page.locator("[data-project-id]")).to_have_count(0)
+            # Only the auto-provisioned 默认项目 exists; the rejected import
+            # must not add a card.
+            expect(page.locator("[data-project-id]")).to_have_count(1)
             page.reload(wait_until="domcontentloaded")
             expect(page.get_by_text("hidden-repo")).to_have_count(0)
             failed = browser.new_page()
