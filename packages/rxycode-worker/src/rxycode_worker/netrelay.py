@@ -22,6 +22,7 @@ import fcntl
 import logging
 import socket
 import struct
+import threading
 from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
@@ -72,15 +73,27 @@ async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         pass
 
 
-async def start_relay(listen_port: int, egress_sock: str | Path) -> asyncio.AbstractServer | None:
-    """Listen on loopback and bridge each connection to the egress socket.
+class EgressRelay:
+    """Loopback->egress-socket relay on a dedicated thread and event loop.
 
-    Returns the running server, or ``None`` when either side is unavailable
-    (the turn then runs fully offline — still confined)."""
+    The relay is the confined turn's only network lifeline, so it must not
+    share fate with the agent's event loop: synchronous blocking calls in
+    agent code (e.g. a tokenizer downloading its vocab through
+    ``HTTPS_PROXY``) would otherwise freeze the loop that is supposed to
+    deliver their responses — a self-deadlock (audit W7 deploy stall)."""
 
-    async def _bridge(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    def __init__(self, listen_port: int, egress_sock: str | Path) -> None:
+        self._port = int(listen_port)
+        self._egress_sock = str(egress_sock)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: asyncio.AbstractServer | None = None
+        self._thread: threading.Thread | None = None
+
+    async def _bridge(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
-            up_r, up_w = await asyncio.open_unix_connection(str(egress_sock))
+            up_r, up_w = await asyncio.open_unix_connection(self._egress_sock)
         except OSError:
             writer.close()
             return
@@ -93,11 +106,73 @@ async def start_relay(listen_port: int, egress_sock: str | Path) -> asyncio.Abst
                 except Exception:
                     pass
 
+    async def _shutdown(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _thread_main(self, ready: threading.Event, failed: list[bool]) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        try:
+            self._server = loop.run_until_complete(
+                asyncio.start_server(self._bridge, "127.0.0.1", self._port)
+            )
+        except OSError:
+            _LOG.warning(
+                "egress relay bind failed on :%s", self._port, exc_info=True
+            )
+            failed.append(True)
+            ready.set()
+            loop.close()
+            return
+        ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                loop.run_until_complete(self._shutdown())
+            except Exception:
+                pass
+            loop.close()
+
+    def start(self) -> bool:
+        ready = threading.Event()
+        failed: list[bool] = []
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            args=(ready, failed),
+            name="egress-relay",
+            daemon=True,
+        )
+        self._thread.start()
+        ready.wait(timeout=10)
+        return not failed and self._server is not None
+
+    def close(self) -> None:
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+
+def start_relay(listen_port: int, egress_sock: str | Path) -> EgressRelay | None:
+    """Start the loopback relay on its own thread.
+
+    Returns the running relay, or ``None`` when either side is unavailable
+    (the turn then runs fully offline — still confined)."""
     if not Path(egress_sock).exists():
         _LOG.warning("egress socket %s missing; turn runs offline", egress_sock)
         return None
-    try:
-        return await asyncio.start_server(_bridge, "127.0.0.1", int(listen_port))
-    except OSError:
-        _LOG.warning("egress relay bind failed on :%s", listen_port, exc_info=True)
-        return None
+    relay = EgressRelay(listen_port, egress_sock)
+    return relay if relay.start() else None

@@ -196,12 +196,17 @@ def _stack_env(pg_port: int, https_port: int, http_port: int) -> dict[str, str]:
             # the shared whole-turn execution budget.
             "RXYCODE_WORKER_POLL_SECONDS": "1",
             "RXYCODE_WORKER_LEASE_TTL": "30",
-            # Give the worker a real configured model pointed at a loopback
-            # dead port: the HTTPS-when-credentialed rule exempts loopback,
-            # the turn genuinely starts (event/agent_started is journaled),
-            # then the provider call fails at the real network boundary —
-            # connection refused. No stub LLM, no fabricated success.
-            "RXYCODE_LLM_BASE_URL": "http://127.0.0.1:9/v1",
+            # A real configured model endpoint that answers HTTP errors
+            # fast: the stack's own api service. The confined turn's model
+            # call crosses the loopback relay + parent ModelGateway + a
+            # REAL upstream connection — then api replies 404, a PERMANENT
+            # error class, so the turn fails at the real HTTP boundary in
+            # seconds. A dead upstream port instead earns gateway 502s,
+            # which the transport layer retries for minutes (bounded by the
+            # shared turn budget, but outside this test's window); and an
+            # unset endpoint fails "No model configured" before the agent
+            # starts. No stub LLM, no fabricated success.
+            "RXYCODE_LLM_BASE_URL": "http://api:8000/v1",
             "RXYCODE_LLM_MODEL": "smoke-none",
             # Non-empty placeholder: the OpenAI client constructs with it and
             # the failure happens at the real HTTP boundary, not at ctor.

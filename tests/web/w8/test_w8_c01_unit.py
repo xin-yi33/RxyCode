@@ -450,11 +450,28 @@ def test_w8_c01_child_config_is_built_from_allowlist(tmp_path: Path) -> None:
             "other": {"base_url": "https://other.example/v1", "api_key": "sk-literal-secret"},
         },
         "rag": {"embedding": {"api_key": "sk-embed-secret", "base_url": "https://api.real.example"}},
-        "mcp": {"servers": {"github": {"command": "mcp-github", "env": {"GITHUB_TOKEN": "ghp_secret"}}}},
+        "mcpServers": {"github": {"command": "mcp-github", "env": {"GITHUB_TOKEN": "ghp_secret"}}},
         "agents": {"budget": {"max_tokens": 4096}},
+        "memory": {"enabled": True},
+        "llm": {
+            "provider": "openai",
+            "api_key": "sk-llm-secret",
+            "temperature": 0.2,
+            # Bare ``token`` IS a credential field even though the substring
+            # ``token`` cannot be a marker (``max_tokens`` must survive) —
+            # the exact/suffix matcher drops it.
+            "token": "tok-secret",
+            # A non-credential-NAMED field whose VALUE carries userinfo is
+            # dropped whole: ``u:p@`` is a live login.
+            "endpoint_url": "https://u:p@proxy.example",
+        },
     }
     data = drain._build_child_config(source, workdir=workdir, egress_port=18881, env_model="deployed")
-    assert "rag" not in data and "mcp" not in data
+    assert "rag" not in data and "mcpServers" not in data
+    # Product sections the turn needs are kept: a host that omits them would
+    # otherwise leave the child on endpoint defaults (no model, no memory).
+    assert data["memory"] == {"enabled": True}
+    assert data["llm"] == {"provider": "openai", "temperature": 0.2}
     assert set(data["models"]) == {"deployed"}
     deployed = data["models"]["deployed"]
     assert deployed["base_url"] == "http://127.0.0.1:18881"
@@ -463,7 +480,15 @@ def test_w8_c01_child_config_is_built_from_allowlist(tmp_path: Path) -> None:
     assert data["agents"]["budget"]["max_tokens"] == 4096
     assert data["safety"]["allowed_write_paths"] == drain._writable_domain(workdir)
     text = yaml.safe_dump(data)
-    for secret in ("sk-literal-secret", "sk-embed-secret", "ghp_secret", "cred:abc"):
+    for secret in (
+        "sk-literal-secret",
+        "sk-embed-secret",
+        "ghp_secret",
+        "cred:abc",
+        "sk-llm-secret",
+        "tok-secret",
+        "u:p@proxy",
+    ):
         assert secret not in text
 
 
@@ -490,12 +515,12 @@ def test_w8_c01_r25_inputs_never_reach_the_confined_config(tmp_path: Path) -> No
             "m": {"base_url": "https://api.real.example/v1", "api_key": "sk-m"},
             "other": {"base_url": "https://u:SECRET@other.example/v1"},
         },
-        "mcp": {"servers": {f"s{i}": {"command": line, "args": [line], "env": {"T": line}, "headers": {"Authorization": line}} for i, line in enumerate(shell_shaped)}},
+        "mcpServers": {f"s{i}": {"command": line, "args": [line], "env": {"T": line}, "headers": {"Authorization": line}} for i, line in enumerate(shell_shaped)},
         "rag": {"embedding": {"base_url": "https://u:SECRET@rag.example"}},
     }
     data = drain._build_child_config(source, workdir=tmp_path / "ws", egress_port=18881, env_model="m")
     text = repr(data)
-    assert "mcp" not in data and "rag" not in data
+    assert "mcpServers" not in data and "rag" not in data
     assert "other" not in data["models"]
     assert "SECRET" not in text
 
@@ -1467,6 +1492,64 @@ def test_w8_c01_egress_connect_tunnels_end_to_end() -> None:
         return b"ok"
 
     assert asyncio.run(drive()) == b"ok"
+
+
+def test_w8_c01_egress_relay_off_agent_loop(tmp_path: Path) -> None:
+    """Regression (deployed W7 stall): the in-sandbox loopback relay must
+    NOT share the agent's event loop. A synchronous blocking network call
+    inside the turn — e.g. ``tiktoken`` lazily downloading its vocab
+    through ``HTTP_PROXY`` — freezes that loop, and the frozen loop is the
+    only thing that could pump the proxy answer: self-deadlock, the run
+    stayed ``leased`` forever. The relay therefore lives on its own
+    thread+loop; this test drives a request while the calling thread
+    itself is blocked in socket IO."""
+    import socket as _socket
+
+    if not hasattr(_socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX unavailable on this host")
+
+    from rxycode_worker.netrelay import start_relay
+
+    sock_path = tmp_path / "net.sock"
+    upstream = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    upstream.bind(str(sock_path))
+    upstream.listen(1)
+
+    echoed: list[bytes] = []
+
+    def _serve() -> None:
+        conn, _ = upstream.accept()
+        try:
+            data = conn.recv(64)
+            echoed.append(data)
+            conn.sendall(b"reply:" + data)
+        finally:
+            conn.close()
+
+    server = threading.Thread(target=_serve, daemon=True)
+    server.start()
+
+    probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    relay = start_relay(port, sock_path)
+    assert relay is not None, "relay failed to start"
+    try:
+        # The calling thread blocks in recv — precisely the state a stalled
+        # agent loop is in. The relay answers anyway.
+        client = _socket.create_connection(("127.0.0.1", port), timeout=10)
+        try:
+            client.sendall(b"ping")
+            assert client.recv(64) == b"reply:ping"
+        finally:
+            client.close()
+        assert echoed == [b"ping"]
+    finally:
+        relay.close()
+        upstream.close()
+        server.join(timeout=5)
 
 
 def test_w8_c01_ctl_journal_ops_roundtrip(

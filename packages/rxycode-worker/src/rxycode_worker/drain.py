@@ -3207,24 +3207,68 @@ def _scrub_model_credentials(
             entry["base_url"] = gateway_url
 
 
-#: Top-level config sections a confined turn is BUILT from. Everything else in
-#: the worker's config.yaml stays on the parent — platform credentials, tenant
-#: routing, egress and control-plane settings are never copied, so there is
-#: nothing to scrub out of the child. Missing sections take the child defaults.
-_CHILD_CONFIG_SECTIONS = (
-    "safety",
-    "execution",
-    "language",
-    "timeouts",
-    "timeout_decision",
-    "tools",
-    "subagents",
-    "agents",
+#: Top-level sections of the product's own config schema that a confined turn
+#: is BUILT from (every key of ``_default_config()`` except the exclusions).
+#: Exclusions are sections that carry platform/host state or free-form command
+#: strings: MCP server commands/env, RAG endpoints, the control-plane app
+#: server, observability/schedule/eval hosts. Those never enter the sandbox.
+_CHILD_CONFIG_EXCLUDED = frozenset(
+    {
+        "appserver",
+        "computer_use",
+        "distillation",
+        "evals",
+        "lsp",
+        "mcpServers",
+        "observability",
+        "rag",
+        "schedule",
+        "scheduler",
+    }
 )
 
-#: Field names that carry credential material wherever they appear in a model
-#: entry (``api_key``, ``api_key_env``, ``api_key_secret``, ``auth_header``...).
-_CREDENTIAL_FIELD_MARKERS = ("key", "secret", "token", "password", "auth", "credential", "header", "cookie")
+def _child_config_sections() -> tuple[str, ...]:
+    from RxyCode.RxyCode1_1_0.config.settings import _default_config
+
+    return tuple(
+        key for key in _default_config() if key not in _CHILD_CONFIG_EXCLUDED and key != "models"
+    )
+
+
+def _is_child_config_key(name: Any) -> bool:
+    """Credential-bearing field names inside a copied config section.
+
+    Reuses the shared matcher (exact keys + ``_token``-style suffixes +
+    word-tail regex), adds the indirection set (``api_key_env`` holds a
+    resolver name the child must not resolve) and ``headers``/``auth_header``
+    which carry ``Authorization: Bearer`` material without being
+    credential-NAMED. ``max_tokens``/``token_budget`` survive."""
+    lowered = str(name).strip().lower()
+    return (
+        _is_credential_key(lowered)
+        or lowered in _CREDENTIAL_INDIRECTION_KEYS
+        or lowered in {"headers", "auth_header", "authorization", "proxy_auth"}
+    )
+
+
+def _strip_credential_fields(node: Any) -> Any:
+    """Copy a config subtree minus credential-bearing fields at any depth.
+
+    A construction rule, not a value scrubber: the removed fields never
+    exist in the copy. A field whose string VALUE embeds a URL userinfo
+    credential is dropped whole — the child cannot use it safely."""
+    if isinstance(node, dict):
+        return {
+            str(key): _strip_credential_fields(value)
+            for key, value in node.items()
+            if not (
+                _is_child_config_key(key)
+                or (isinstance(value, str) and _has_url_secret(value))
+            )
+        }
+    if isinstance(node, list):
+        return [_strip_credential_fields(value) for value in node]
+    return copy.deepcopy(node)
 
 
 def _build_child_config(
@@ -3239,18 +3283,16 @@ def _build_child_config(
     sanitizer runs on the data path (audit W8 r25 scope).
     """
     child: dict[str, Any] = {
-        key: copy.deepcopy(source[key]) for key in _CHILD_CONFIG_SECTIONS if key in source
+        key: _strip_credential_fields(source[key])
+        for key in _child_config_sections()
+        if key in source
     }
     models = source.get("models") if isinstance(source.get("models"), dict) else {}
     wanted = str(env_model or "")
     if wanted not in models:
         wanted = str(source.get("active_model") or "")
     entry = models.get(wanted) if isinstance(models.get(wanted), dict) else {}
-    model = {
-        str(key): copy.deepcopy(value)
-        for key, value in entry.items()
-        if not any(marker in str(key).lower() for marker in _CREDENTIAL_FIELD_MARKERS)
-    }
+    model = _strip_credential_fields(entry)
     # The schema expects an api_key field: a placeholder, never a secret. The
     # real credential is injected by the parent on the loopback gateway hop.
     model["api_key"] = "confined"
@@ -4710,7 +4752,10 @@ async def run_sandboxed_turn() -> int:
             from rxycode_worker.netrelay import bring_up_loopback, start_relay
 
             bring_up_loopback()
-            egress_relay = await start_relay(egress_port, net_sock)
+            # Own thread + loop: agent code may make synchronous blocking
+            # network calls through this relay; it must not share fate with
+            # this event loop.
+            egress_relay = start_relay(egress_port, net_sock)
         except Exception:
             _LOG.warning("run %s: egress relay start failed", run_id, exc_info=True)
 
@@ -5017,7 +5062,6 @@ async def run_sandboxed_turn() -> int:
         try:
             if egress_relay is not None:
                 egress_relay.close()
-                await egress_relay.wait_closed()
         except Exception:
             pass
         try:
