@@ -21,6 +21,7 @@ from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.runs import router as runs_router
 from rxycode_server.api.sse import router as sse_router
 from rxycode_server.api.terminal_ws import router as terminal_router
+from rxycode_server.api.version import router as version_router
 from rxycode_server.api.workspace import router as workspace_router
 from rxycode_server.devices.gateway import Registry, build_router
 from rxycode_server.notifications.service import router as product_router
@@ -104,6 +105,9 @@ def create_app(
     app.state.secret = checked
     app.state.mode = mode
     app.state.secure = mode == "cloud"
+    # W10-D1: /api/v1/version falls back to process start when the image
+    # build did not stamp RXYCODE_BUILD_TIME.
+    app.state.built_at = datetime.now(timezone.utc).isoformat()
     app.state.allowed_origins = tuple(allowed_origins)
     # WEB-W9-B1: browser sessions live in the auth_sessions table — no
     # per-process dicts, so restarts and replicas keep cookies valid.
@@ -128,6 +132,7 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)
+    app.include_router(version_router)
     app.include_router(product_router)
     app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
     app.include_router(build_router())
