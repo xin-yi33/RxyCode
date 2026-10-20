@@ -20,6 +20,8 @@ id_rsa
 id_rsa.pub
 .env
 .env.*
+!.env.prod.example
+!.env.example
 .env.local
 # Live-test / CI secret injection files (never commit real keys)
 **/live_credentials.*

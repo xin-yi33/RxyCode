@@ -302,3 +302,113 @@ npm --prefix apps/web run dev               # UI on http://127.0.0.1:5173
 - `RXYCODE_WEB_REGISTRATION=open`，/register 页面不需要邀请码即可注册。
 - 开发机没有 drain worker：提交的 run 会一直停在 **排队中**，这是预期行为。
 - 不要动 `rxydemo-*` 容器；dev 库与 `rxy-w9-pg`(55439)/W3 库(55432) 端口隔离。
+
+## 生产部署（自托管 + Tailscale Funnel）
+
+对应计划 W10-D2/D3。生产栈 = `compose.yaml` + `compose.prod.yaml` 叠加，
+使用 D1 构建的 `rxycode-{api,worker,web}` 镜像；启动不再联网装依赖，
+也没有 repo-src / marker 文件。对外只经 Tailscale Funnel，公网地址固定为
+`https://<机器名>.<tailnet名>.ts.net`（不支持自定义域名）。
+
+### 前置条件（运营者本人完成，AI 不能代办）
+
+- Windows 主机已安装 Tailscale 客户端并登录；管理后台 DNS 页确认
+  MagicDNS 与 HTTPS 证书已开启、Funnel 已启用；记下
+  `<机器名>.<tailnet名>.ts.net`（可在后台把机器名改成好记的，如 rxycode）。
+- `%USERPROFILE%\.wslconfig` 已创建且 `[wsl2] memory` ≥ 6GB（建议 8GB），
+  已重启 WSL/Docker Desktop——现有 ~2G 虚拟机跑不了真实任务。
+- Docker Desktop 数据盘已迁到 D 盘（Settings → Resources → Disk image
+  location）；C 盘空间不足时镜像构建会失败。
+- 主机关闭自动睡眠；Docker Desktop 设为开机自启（容器均
+  `restart: unless-stopped`）。
+- 模型 API key（`RXYCODE_API_KEY`）与 openai 兼容端点
+  （`RXYCODE_LLM_BASE_URL`）已就绪。
+- 镜像已构建：`pwsh -File infra/scripts/build-images.ps1`
+  （`rxycode-{api,worker,web}:<git-sha>` + `:latest`）。
+
+### 步骤
+
+```powershell
+# 1. 在仓库外创建 .env（参照 infra/compose/.env.prod.example 逐项填写；
+#    必填项缺失时 compose config 直接报错）
+copy infra\compose\.env.prod.example D:\rxycode-prod\.env
+#    编辑 D:\rxycode-prod\.env —— RXYCODE_WEB_ORIGINS 填
+#    https://<机器名>.<tailnet名>.ts.net
+
+# 2. 启动（独立 project 名 rxyprod，与 rxydemo 互不干扰；
+#    migrate 一次性任务先跑 alembic upgrade head，api/worker 等它成功）
+docker compose -p rxyprod --env-file D:\rxycode-prod\.env `
+  -f infra\compose\compose.yaml -f infra\compose\compose.prod.yaml up -d
+
+# 3. 本地自检（gateway 只绑主机回环；本条必须在公网开放之前通过）
+curl http://127.0.0.1:8080/api/v1/auth/csrf        # 期望 200
+docker compose -p rxyprod --env-file D:\rxycode-prod\.env `
+  -f infra\compose\compose.yaml -f infra\compose\compose.prod.yaml ps
+
+# 4. 开放 Funnel（--bg 使配置在重启后保留）
+tailscale funnel --bg --https=443 http://127.0.0.1:8080
+tailscale funnel status                            # 确认已公开
+
+# 5. 沙箱自检：worker 日志中确认 userns/bwrap 可用；不可用则 worker 必须
+#    拒绝执行（IsolationUnavailable），不允许退回宿主执行
+docker compose -p rxyprod --env-file D:\rxycode-prod\.env `
+  -f infra\compose\compose.yaml -f infra\compose\compose.prod.yaml logs worker
+
+# 6. 创建邀请码（明文只打印一次，请记录）
+docker compose -p rxyprod --env-file D:\rxycode-prod\.env `
+  -f infra\compose\compose.yaml -f infra\compose\compose.prod.yaml `
+  run --rm api python -m rxycode_server.admin invite create --uses 5 --days 14
+
+# 7. 每日备份（Windows 任务计划程序，示例命令见下节）
+```
+
+### 验收（E-1 / E-2 / E-3，生产栈上执行）
+
+用**手机流量**（不要连家里 Wi-Fi、不要在手机上登录 Tailscale）打开
+`https://<机器名>.<tailnet名>.ts.net`：
+
+- **E-1 身份**：邀请码注册 → 跳 `/app` → 刷新仍登录 → `docker restart` api
+  容器后刷新仍登录 → 退出 → 后退键看不到数据。
+- **E-2 主任务**：首页提交一个真实任务（如"创建 hello.py 并运行"）→
+  时间线顺序正常、Markdown Final 渲染、状态到"已完成"且 SSE 关闭；
+  **运行超过 5 分钟时 SSE 不断流**（验证 Funnel 长连接链路）。
+- **E-3 审批**：同一会话用"每步确认"再提交一个改动任务 → 审批卡出现 →
+  批准 → 续接 → 能看到上一次 run 的文件。
+- **待验证（D2 卡片）**：在 api 日志确认记录的客户端 IP 是手机公网 IP
+  而非 Docker 网关地址。拿不到真实 IP 时所有用户共用一个限流桶，须调大
+  `RXYCODE_WEB_RATE_LIMIT_RPM` 并依赖按邮箱/账户的限流与额度兜底。
+
+### 备份与恢复
+
+- 备份（在线执行，pg_dump 是一致性快照；建议每日，经任务计划程序）：
+
+  ```
+  schtasks /create /tn "RxyCode-Backup" /sc daily /st 03:00 /tr ^
+    "\"C:\Program Files\Git\bin\bash.exe\" D:\agent-demo\RxyCode\RxyCode1_1_0\infra\scripts\backup.sh -p rxyprod --env-file D:\rxycode-prod\.env"
+  ```
+
+  产物在 `RXYCODE_BACKUP_DIR`（默认 `D:\rxycode-backups`）下
+  `<project>\<时间戳>\`：`postgres.pgdump`（-Fc 格式）+ `volumes\*.tar.gz`
+  （worker-data 工作区、minio-data、redis-data、caddy-*；pg-data 由 dump
+  覆盖不再裸打包；repo-src/boot-state/web-dist 等 dev 卷跳过），只保留
+  最近 7 份。
+
+- 恢复（栈必须先停：`**down** 不带 -v`，脚本在栈运行时拒绝执行）：
+
+  ```bash
+  docker compose -p rxyprod --env-file 'D:\rxycode-prod\.env' \
+    -f infra/compose/compose.yaml -f infra/compose/compose.prod.yaml down
+  infra/scripts/restore.sh -p rxyprod --env-file 'D:\rxycode-prod\.env' \
+    'D:\rxycode-backups\rxyprod\<时间戳>'
+  # 脚本恢复卷 → 单独拉起 postgres 做 pg_restore --clean → 停掉 → 手动 up -d
+  ```
+
+### 暂停新任务 / 回滚 / 重启恢复
+
+- **暂停新任务（kill switch）**：`.env` 中设 `RXYCODE_QUEUE_MAX=0` 后
+  `up -d` —— 新提交一律 429 QUOTA_EXCEEDED，运行中任务不受影响。
+- **回滚**：镜像按 git sha 打标签，回滚 = 改 `.env` 的
+  `RXYCODE_IMAGE_TAG=<上一个 sha>` → `up -d`（必要时先
+  `run --rm migrate` 处理 schema 方向）。
+- **重启恢复**：容器 `restart: unless-stopped` + Docker Desktop 自启 +
+  `funnel --bg` 持久化——主机重启后整个栈和 Funnel 自动恢复。

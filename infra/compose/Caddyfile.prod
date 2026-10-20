@@ -1,0 +1,64 @@
+# RxyCode web gateway — PRODUCTION (W10-D2). Plain HTTP on :80 only.
+#
+# TLS terminates at tailscaled, NOT here: the host runs
+# `tailscale funnel --bg --https=443 http://127.0.0.1:8080`, so browsers see
+# https://<machine>.<tailnet>.ts.net while Caddy serves :80 on the host
+# loopback. Do not add a `tls` directive or an https:// site — Funnel only
+# forwards to plain http://127.0.0.1:<port>.
+#
+# Proxy semantics are identical to the dev Caddyfile: /api/* -> api:8000
+# (SSE unbuffered), everything else -> the SPA baked at /srv/www.
+#
+# Client IPs: tailscaled injects X-Forwarded-For with the real client IP and
+# connects from the Docker gateway (a private range). `trusted_proxies
+# static private_ranges` makes Caddy trust that header, so the app-layer rate
+# limiter and logs see the real client IP instead of the Docker gateway.
+# Private-range peers only: a public caller can never reach this listener —
+# the host port is bound to 127.0.0.1 and only tailscaled dials it.
+{
+	# Keep the admin API loopback-only inside the container (healthcheck probe).
+	admin 127.0.0.1:2019
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:80 {
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Preview-auth seam: sandbox preview pages ride on the app's own
+	# owner-authenticated route (/api/v1/previews/*, rxycode_server
+	# previews.proxy). When RXYCODE_PREVIEW_TOKEN is set in the gateway
+	# environment the gateway additionally requires the caller to send
+	# X-Preview-Token: <token>; when the env is empty the {$VAR} expansion
+	# below collapses to `"" != ""`, i.e. pass-through to app auth.
+	@preview_denied expression `path("/api/v1/previews/*") && "{$RXYCODE_PREVIEW_TOKEN}" != "" && {http.request.header.X-Preview-Token} != "{$RXYCODE_PREVIEW_TOKEN}"`
+	respond @preview_denied 403
+
+	# API, SSE (runs/{id}/events) and WS (terminals/{id}/ws, devices/socket)
+	# all live under /api — one upstream, streaming preserved end to end.
+	# X-Forwarded-Proto is pinned to https because the public side of Funnel
+	# is always https — the API must see proto=https for Secure cookies and
+	# Origin checks to behave.
+	@api path /api/*
+	handle @api {
+		reverse_proxy api:8000 {
+			flush_interval -1
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Baked SPA (web.Dockerfile copies the vite dist into /srv/www). No
+	# compression on the API handle above so SSE flushes are never buffered.
+	handle {
+		encode zstd gzip
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+}
