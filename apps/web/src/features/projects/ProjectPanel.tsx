@@ -1,3 +1,4 @@
+// 废弃（2026-10-20）：由 /app 控制台替代，保留到 W10 后删除
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { useMemo, useState } from "react"
 

@@ -145,6 +145,7 @@ Transport
 6. **Save location**: Files save to ~/.rxycode/output/ (configurable via RXYCODE_OUTPUT_DIR)
 7. **Changelog**: every change and addition must be recorded in the current
    version file under `docs/release-notes/CHANGELOG_vX.Y.Z.md` (write during
-   development, in detail). Once the previous version's changelog is committed,
-   continue directly in the next version's file — after v1.4.4 is committed,
-   new entries go into `CHANGELOG_v1.4.5.md`.
+   development, in detail). Once the previous version's changelog is **pushed**,
+   continue directly in the next version's file — after v1.4.4 is pushed,
+   new entries go into `CHANGELOG_v1.4.5.md`. Local commits do not roll the
+   version file.

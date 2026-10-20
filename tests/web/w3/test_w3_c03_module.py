@@ -31,10 +31,8 @@ assert _spec is not None and _spec.loader is not None
 _c02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_c02)
 
-CHAT = REPO / "apps" / "web" / "src" / "features" / "chat" / "ChatPage.tsx"
 
-
-def _seed() -> tuple[str, str]:
+def _seed() -> tuple[str, str, str]:
     engine = create_engine(_c02.URL)
     with Session(engine) as db:
         user = db.scalars(select(User).where(User.kind == "local")).one()
@@ -92,7 +90,7 @@ def _seed() -> tuple[str, str]:
         event_type="approval.requested",
         payload={"approval_id": "appr-1", "tool": "shell.exec"},
     )
-    return tenant_id, run_id
+    return tenant_id, run_id, session_id
 
 
 def _expect_run(page) -> None:
@@ -104,25 +102,30 @@ def _expect_run(page) -> None:
     answer = page.locator("[data-answer]")
     expect(answer).to_have_text("final user answer")
     expect(answer).not_to_contain_text("hidden reasoning")
-    expect(page.locator("[data-run-status='pending']")).to_be_visible()
+    expect(page.locator("[data-run-status='pending']").first).to_be_visible()
 
 
 def test_w3_c03_integration() -> None:
     """Reload shows the same server tool failure, approval, and final answer."""
-    assert CHAT.is_file(), "ChatPage.tsx is missing"
+    # The run history surface moved from /runs/{id} (ChatPage) to
+    # /app/s/{session} (RunTimeline placeholder; F4 owns the full timeline).
     stack = _c02._Stack()
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             page = browser.new_page()
             _c02._login(page, stack.origin)
-            _tenant, run_id = _seed()
-            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
+            _tenant, run_id, session_id = _seed()
+            page.goto(
+                f"{stack.origin}/app/s/{session_id}", wait_until="domcontentloaded"
+            )
             _expect_run(page)
             page.reload(wait_until="domcontentloaded")
             _expect_run(page)
             prune_through(_c02.URL, tenant_id=_tenant, run_id=run_id, through_seq=1)
-            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
+            page.goto(
+                f"{stack.origin}/app/s/{session_id}", wait_until="domcontentloaded"
+            )
             expect(page.get_by_role("alert")).to_contain_text("重新同步", timeout=10000)
             expect(page.locator("[data-answer]")).to_have_count(0)
             browser.close()

@@ -53,12 +53,14 @@ export type SessionListItem = {
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
+  readonly detail: string
 
-  constructor(status: number, code: string) {
+  constructor(status: number, code: string, detail = "") {
     super(code)
     this.name = "ApiError"
     this.status = status
     this.code = code
+    this.detail = detail
   }
 }
 
@@ -70,15 +72,33 @@ async function readJson(path: string, signal?: AbortSignal): Promise<unknown> {
   })
   if (!response.ok) {
     let code = "UNAVAILABLE"
+    let detail = ""
     try {
-      const body = (await response.json()) as { code?: string }
+      const body = (await response.json()) as { code?: string; reason?: string }
       if (body.code) code = body.code
+      if (body.reason) detail = body.reason
     } catch {
       code = "UNAVAILABLE"
     }
-    throw new ApiError(response.status, code)
+    throw new ApiError(response.status, code, detail)
   }
   return response.json()
+}
+
+// W9-F1: CSRF token is cached in memory (it is also set as the rxy_csrf
+// cookie by GET /auth/csrf). A 403 FORBIDDEN clears the cache and retries
+// the write once, which covers cookie rotation mid-session.
+let csrfToken: string | null = null
+
+export function resetCsrfCache(): void {
+  csrfToken = null
+}
+
+async function fetchCsrfToken(force = false): Promise<string> {
+  if (csrfToken && !force) return csrfToken
+  const body = (await readJson("/api/v1/auth/csrf")) as { csrf_token?: string }
+  csrfToken = String(body.csrf_token ?? "")
+  return csrfToken
 }
 
 async function writeJson(
@@ -86,29 +106,49 @@ async function writeJson(
   body: unknown,
   extra: Record<string, string> = {},
 ): Promise<unknown> {
-  const csrf = (await readJson("/api/v1/auth/csrf")) as { csrf_token: string }
-  const response = await fetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "x-csrf-token": csrf.csrf_token,
-      ...extra,
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    let code = "UNAVAILABLE"
-    try {
-      const payload = (await response.json()) as { code?: string }
-      if (payload.code) code = payload.code
-    } catch {
-      code = "UNAVAILABLE"
+  let token = await fetchCsrfToken()
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-csrf-token": token,
+        ...extra,
+      },
+      body: JSON.stringify(body),
+    })
+    if (response.status === 403 && attempt === 0) {
+      let code = ""
+      try {
+        const payload = (await response.json()) as { code?: string }
+        code = String(payload.code ?? "")
+      } catch {
+        code = ""
+      }
+      if (code === "FORBIDDEN") {
+        token = await fetchCsrfToken(true)
+        continue
+      }
+      throw new ApiError(403, code || "FORBIDDEN")
     }
-    throw new ApiError(response.status, code)
+    if (!response.ok) {
+      let code = "UNAVAILABLE"
+      let detail = ""
+      try {
+        const payload = (await response.json()) as { code?: string; reason?: string }
+        if (payload.code) code = payload.code
+        if (payload.reason) detail = payload.reason
+      } catch {
+        code = "UNAVAILABLE"
+      }
+      throw new ApiError(response.status, code, detail)
+    }
+    if (response.status === 204) return undefined
+    return response.json()
   }
-  return response.json()
+  throw new ApiError(403, "FORBIDDEN")
 }
 
 export type SessionInfo = {
@@ -183,6 +223,10 @@ export function createClient() {
         const record = body as { sessions?: SessionListItem[] }
         return record.sessions ?? []
       })
+    },
+    getSession(sessionId: string, signal?: AbortSignal): Promise<SessionListItem> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}`
+      return readJson(path, signal) as Promise<SessionListItem>
     },
     listSessionRuns(
       sessionId: string,
@@ -303,6 +347,16 @@ export function createClient() {
     },
     cancelRun(runId: string): Promise<{ status: string }> {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/cancel`
+      return writeJson(path, {}) as Promise<{ status: string }>
+    },
+    steerRun(runId: string, text: string): Promise<{ status: string }> {
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/steer`
+      return writeJson(path, { text }) as Promise<{ status: string }>
+    },
+    cancelRunChild(runId: string, sessionId: string): Promise<{ status: string }> {
+      const path =
+        `/api/v1/runs/${encodeURIComponent(runId)}` +
+        `/children/${encodeURIComponent(sessionId)}/cancel`
       return writeJson(path, {}) as Promise<{ status: string }>
     },
     openRunEvents(runId: string): EventSource {

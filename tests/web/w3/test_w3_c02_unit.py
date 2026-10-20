@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import socket
 import sys
 import threading
@@ -192,74 +193,72 @@ class _Stack:
 
 
 def _login(page, origin: str) -> None:
-    page.goto(f"{origin}/onboarding", wait_until="domcontentloaded")
-    page.get_by_role("button", name="本地").click()
+    """Local-secret login via the W9 /login page's 本机口令 section."""
+    page.goto(f"{origin}/login", wait_until="domcontentloaded")
+    page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
-    page.get_by_role("button", name="登录").click()
-    # W9 auto-provisions 默认项目 on the first /me, so a fresh login lands on
-    # an onboarding page that already lists one project.
-    expect(page.get_by_role("heading", name="默认项目")).to_be_visible(timeout=10000)
+    page.get_by_role("button", name="使用本机口令登录").click()
+    # The console composer proves the session reached /app.
+    expect(page.get_by_label("消息")).to_be_visible(timeout=10000)
 
 
 def test_w3_c02_contract() -> None:
-    """Importing a repo shows the server project id, including after reload."""
+    """A submitted task lands on the session page and survives a reload."""
     stack = _Stack()
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             page = browser.new_page(viewport={"width": 390, "height": 844})
             _login(page, stack.origin)
-            page.get_by_label("仓库名称").fill("repo-c02")
-            with page.expect_response(
-                lambda item: item.url.endswith("/api/v1/projects") and item.request.method == "POST"
-            ) as created:
-                page.get_by_role("button", name="导入").click()
-            project_id = created.value.json()["id"]
-            card = page.locator(f"[data-project-id='{project_id}']")
-            expect(card).to_contain_text("repo-c02")
+            # W9-F3: project 导入 UI was removed — POST /tasks provisions the
+            # server session + run and the session list is the persistence
+            # surface this test now asserts.
+            page.get_by_label("消息").fill("c02 持久化任务")
+            page.get_by_role("button", name="发送").click()
+            page.wait_for_url(re.compile(r"/app/s/[0-9a-f]+$"), timeout=10000)
+            session_url = page.url
+            expect(page.get_by_text("排队中").first).to_be_visible(timeout=10000)
+            sidebar_item = page.locator("aside").get_by_text("c02 持久化任务")
+            expect(sidebar_item).to_be_visible(timeout=10000)
             page.reload(wait_until="domcontentloaded")
-            expect(card).to_be_visible(timeout=10000)
-            expect(card).to_contain_text("repo-c02")
+            expect(page).to_have_url(session_url)
+            expect(page.locator("aside").get_by_text("c02 持久化任务")).to_be_visible(
+                timeout=10000
+            )
             browser.close()
     finally:
         stack.close()
 
 
 def test_w3_c02_negative() -> None:
-    """A rejected key and a bad OAuth callback do not invent a project."""
+    """A bad OAuth callback and the GitHub start button behave honestly."""
     stack = _Stack()
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
+            # The 密钥/导入 fields and the rejected-import alert assertions were
+            # removed — the project-import UI is gone in W9-F1 (POST /projects
+            # is API-only now). Nothing in the console may mint a project card.
             page = browser.new_page()
             _login(page, stack.origin)
-            page.get_by_label("仓库名称").fill("hidden-repo")
-            page.get_by_label("密钥").fill("not-for-storage")
-            page.get_by_role("button", name="导入").click()
-            expect(page.get_by_role("alert")).to_contain_text("失败", timeout=10000)
-            # Only the auto-provisioned 默认项目 exists; the rejected import
-            # must not add a card.
-            expect(page.locator("[data-project-id]")).to_have_count(1)
-            page.reload(wait_until="domcontentloaded")
-            expect(page.get_by_text("hidden-repo")).to_have_count(0)
+            expect(page.locator("[data-project-id]")).to_have_count(0)
             failed = browser.new_page()
             failed.goto(
                 f"{stack.origin}/oauth/callback?state=bad&code=bad",
                 wait_until="domcontentloaded",
             )
-            expect(failed.get_by_role("alert")).to_contain_text("授权失败", timeout=10000)
+            expect(failed.get_by_role("alert")).to_be_visible(timeout=10000)
             expect(failed.locator("[data-project-id]")).to_have_count(0)
             cloud = browser.new_page()
             cloud.route("https://github.com/**", lambda route: route.abort())
-            cloud.goto(f"{stack.origin}/onboarding", wait_until="domcontentloaded")
-            cloud.get_by_role("button", name="云端").click()
+            cloud.goto(f"{stack.origin}/login", wait_until="domcontentloaded")
             with cloud.expect_response(
                 lambda item: item.url.endswith("/api/v1/auth/github/start")
             ) as started:
                 with cloud.expect_request(
                     lambda item: "github.com/login/oauth/authorize" in item.url
                 ) as oauth:
-                    cloud.get_by_role("button", name="使用 GitHub").click()
+                    cloud.get_by_role("button", name="使用 GitHub 继续").click()
             assert started.value.status == 200
             assert "client_id=" in oauth.value.url
             browser.close()

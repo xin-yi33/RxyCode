@@ -7,21 +7,9 @@ import { ArtifactPanel } from "../artifacts/ArtifactPanel"
 import { RunStatusBanner } from "../notifications/RunStatusBanner"
 import { PlanDock } from "../plan/PlanDock"
 import { useRunEvents } from "../runs/useRunEvents"
+import { createClient } from "../../sdk/client"
 
-async function postCommand(path: string, body: unknown) {
-  const csrfResponse = await fetch("/api/v1/auth/csrf", { credentials: "same-origin" })
-  const csrf = (await csrfResponse.json()) as { csrf_token?: string }
-  await fetch(path, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "x-csrf-token": csrf.csrf_token ?? "",
-    },
-    body: JSON.stringify(body),
-  })
-}
+const api = createClient()
 
 export function ChatPage() {
   const { runId = "" } = useParams()
@@ -87,13 +75,10 @@ export function ChatPage() {
         onSteer={(text) => {
           const command = text.trim()
           if (!command) return
-          void postCommand(`/api/v1/runs/${encodeURIComponent(runId)}/steer`, { text: command })
+          void api.steerRun(runId, command)
         }}
         onCancel={(id) => {
-          void postCommand(
-            `/api/v1/runs/${encodeURIComponent(runId)}/children/${encodeURIComponent(id)}/cancel`,
-            {},
-          )
+          void api.cancelRunChild(runId, id)
         }}
       />
       <ArtifactPanel runId={runId} />

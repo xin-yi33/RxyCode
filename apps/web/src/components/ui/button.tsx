@@ -12,13 +12,23 @@ const buttonVariants = cva(
         default: "bg-foreground text-background",
         outline: "border border-border bg-card text-foreground",
       },
+      size: {
+        default: "",
+        sm: "px-2 py-1 text-xs",
+      },
     },
-    defaultVariants: { variant: "default" },
+    defaultVariants: { variant: "default", size: "default" },
   },
 )
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & VariantProps<typeof buttonVariants>
 
-export function Button({ className, variant, type = "button", ...props }: ButtonProps) {
-  return <button type={type} className={cn(buttonVariants({ variant }), className)} {...props} />
+export function Button({ className, variant, size, type = "button", ...props }: ButtonProps) {
+  return (
+    <button
+      type={type}
+      className={cn(buttonVariants({ variant, size }), className)}
+      {...props}
+    />
+  )
 }

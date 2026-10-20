@@ -156,7 +156,7 @@ def get_session(
     session_id: str,
     request: Request,
     db: Session = Depends(db_session),
-) -> dict[str, str]:
+) -> dict[str, object]:
     record = current_record(request)
     row = db.scalars(
         select(SessionRow).where(SessionRow.id == session_id, SessionRow.tenant_id == record.tenant_id)

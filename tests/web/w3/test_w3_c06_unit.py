@@ -13,7 +13,6 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 REPO = Path(__file__).resolve().parents[3]
-CARD = REPO / "apps" / "web" / "src" / "features" / "approvals" / "ApprovalCard.tsx"
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
 for _path in (_SERVER, _WORKER):
@@ -98,8 +97,7 @@ def _expire(approval_id: str) -> None:
 
 
 def test_w3_c06_contract() -> None:
-    """A waiting approval shows the tool, path, and deadline from the server."""
-    assert CARD.is_file(), "ApprovalCard.tsx is missing"
+    """A waiting approval shows the real ask and parks the run as 等待你的操作."""
     stack = _c02._Stack()
     try:
         with sync_playwright() as playwright:
@@ -107,20 +105,35 @@ def test_w3_c06_contract() -> None:
             page = browser.new_page()
             _c02._login(page, stack.origin)
             deadline = datetime(2099, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-            run_id, _approval_id = _seed(deadline)
-            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
-            card = page.locator("[data-approval-card]")
-            expect(card).to_contain_text("shell.exec", timeout=10000)
-            expect(card).to_contain_text("src/app.py")
-            expect(card).to_contain_text("2099-01-02")
+            run_id, approval_id = _seed(deadline)
+            # W9-F3: the decision card moves to the F4 RunTimeline. The session
+            # page still shows the parked status + pending approval row, and
+            # the API still serves the real ask fields this test asserted.
+            session = page.request.get(f"{stack.origin}/api/v1/runs/{run_id}")
+            session_id = session.json()["session_id"]
+            page.goto(
+                f"{stack.origin}/app/s/{session_id}", wait_until="domcontentloaded"
+            )
+            expect(
+                page.locator("[data-run-status='waiting_approval']").first
+            ).to_be_visible(timeout=10000)
+            expect(
+                page.locator(f"[data-approval-id='{approval_id}']")
+            ).to_contain_text("等待审批", timeout=10000)
+            asks = page.request.get(f"{stack.origin}/api/v1/runs/{run_id}/approvals")
+            assert asks.ok
+            rows = asks.json()["approvals"]
+            ask = next(item for item in rows if item["approval_id"] == approval_id)
+            assert ask["tool"] == "shell.exec"
+            assert ask["arguments"]["path"] == "src/app.py"
+            assert "2099-01-02" in str(ask["deadline"])
             browser.close()
     finally:
         stack.close()
 
 
 def test_w3_c06_negative() -> None:
-    """Approving an expired ask shows a conflict and does not continue the run."""
-    assert CARD.is_file(), "ApprovalCard.tsx is missing"
+    """Approving an expired ask conflicts and does not continue the run."""
     stack = _c02._Stack()
     try:
         with sync_playwright() as playwright:
@@ -128,13 +141,27 @@ def test_w3_c06_negative() -> None:
             page = browser.new_page()
             _c02._login(page, stack.origin)
             run_id, approval_id = _seed(datetime.now(timezone.utc) + timedelta(minutes=10))
-            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
-            expect(page.get_by_role("button", name="批准")).to_be_visible(timeout=10000)
+            asks = page.request.get(f"{stack.origin}/api/v1/runs/{run_id}/approvals")
+            revision = asks.json()["approvals"][0]["revision"]
+            # The approve button lives on the F4 card; the stale-revision
+            # conflict it exercised is asserted at the API layer here.
             _expire(approval_id)
-            page.get_by_role("button", name="批准").click()
-            expect(page.get_by_role("alert")).to_contain_text("冲突", timeout=10000)
-            expect(page.locator("body")).not_to_contain_text("succeeded")
-            expect(page.locator("body")).not_to_contain_text("继续")
+            csrf = page.request.get(f"{stack.origin}/api/v1/auth/csrf")
+            denied = page.request.post(
+                f"{stack.origin}/api/v1/runs/{run_id}/approvals",
+                data={
+                    "approval_id": approval_id,
+                    "decision": "approve",
+                    "revision": revision,
+                },
+                headers={
+                    "origin": stack.origin,
+                    "x-csrf-token": csrf.json()["csrf_token"],
+                },
+            )
+            assert denied.status in (400, 409), denied.status
+            run = page.request.get(f"{stack.origin}/api/v1/runs/{run_id}")
+            assert run.json()["status"] != "succeeded"
             browser.close()
     finally:
         stack.close()

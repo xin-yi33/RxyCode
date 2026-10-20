@@ -34,7 +34,10 @@ def test_w3_c05_integration() -> None:
             uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/ws"
             with connect(
                 uri,
-                additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},
+                additional_headers={
+                    "Cookie": f"rxy_session={cookies['rxy_session']}",
+                    "Origin": stack.origin,
+                },
                 open_timeout=10,
             ) as socket:
                 seen = ""

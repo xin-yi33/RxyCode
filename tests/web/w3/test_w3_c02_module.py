@@ -15,7 +15,7 @@ _spec.loader.exec_module(_mod)
 
 
 def test_w3_c02_integration() -> None:
-    """Choosing Local on 127.0.0.1 creates a server session without GitHub."""
+    """Local-secret login reaches /app and submits a task without GitHub."""
     stack = _mod._Stack()
     try:
         with sync_playwright() as playwright:
@@ -24,16 +24,21 @@ def test_w3_c02_integration() -> None:
             seen: list[str] = []
             page.on("request", lambda item: seen.append(item.url))
             _mod._login(page, stack.origin)
-            expect(page.get_by_text("不需要 GitHub")).to_be_visible()
-            page.get_by_label("仓库名称").fill("local-repo")
-            page.get_by_role("button", name="导入").click()
+            # W9-F3: the import/创建会话 widgets are gone — POST /tasks is the
+            # entrypoint. Dev has no worker so the run stays 排队中.
             with page.expect_response(
-                lambda item: "/sessions" in item.url and item.request.method == "POST"
+                lambda item: item.url.endswith("/api/v1/tasks")
+                and item.request.method == "POST"
             ) as created:
-                page.get_by_role("button", name="创建会话").click()
-            session_id = created.value.json()["id"]
-            expect(page.locator(f"[data-session-id='{session_id}']")).to_be_visible()
-            expect(page.get_by_text("等待运行")).to_be_visible()
+                page.get_by_label("消息").fill("c02 module 任务")
+                page.get_by_role("button", name="发送").click()
+            session_id = created.value.json()["session_id"]
+            assert created.value.status == 202
+            page.wait_for_url(f"**/app/s/{session_id}", timeout=10000)
+            expect(page.get_by_text("排队中").first).to_be_visible(timeout=10000)
+            expect(page.locator("aside").get_by_text("c02 module 任务")).to_be_visible(
+                timeout=10000
+            )
             assert page.url.startswith("http://127.0.0.1")
             assert all("github.com" not in url for url in seen)
             browser.close()

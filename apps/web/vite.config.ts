@@ -23,6 +23,10 @@ function stripXtermElectronProbe() {
   }
 }
 
+// W9-F1: /api is proxied to the local API in dev so cookies + CSRF stay
+// same-origin. Override with VITE_API_TARGET when the API runs elsewhere.
+const apiTarget = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8000"
+
 export default defineConfig({
   plugins: [react(), tailwindcss(), stripXtermElectronProbe()],
   resolve: { alias: { "@desktop/sessionVisualState": sessionVisualState } },
@@ -30,5 +34,11 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     fs: { allow: [repoRoot] },
+    proxy: {
+      "/api": {
+        target: apiTarget,
+        changeOrigin: true,
+      },
+    },
   },
 })

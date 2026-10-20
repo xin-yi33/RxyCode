@@ -1,25 +1,86 @@
 @import "tailwindcss";
 
+/* W9-F3: neutral console palette (replaces the warm beige theme). */
 :root {
-  --rxy-bg: #f6f3ee;
-  --rxy-fg: #1d1a16;
-  --rxy-card: #fffdf8;
-  --rxy-muted: #6e675f;
-  --rxy-border: #e4ddd2;
+  --rxy-bg: #ffffff;
+  --rxy-sidebar: #f9f9f9;
+  --rxy-fg: #0d0d0d;
+  --rxy-muted: #6b6b6b;
+  --rxy-border: #e5e5e5;
+  --rxy-card: #ffffff;
+  --rxy-bubble: #f3f3f3;
+  --rxy-running: #2563eb;
+  --rxy-waiting: #d97706;
+  --rxy-success: #16a34a;
+  --rxy-failure: #dc2626;
+  /* Chip/status text on tinted backgrounds must stay AA — darker ink shades. */
+  --rxy-running-ink: #1d4ed8;
+  --rxy-waiting-ink: #92400e;
+  --rxy-success-ink: #166534;
+  --rxy-failure-ink: #b91c1c;
+  --rxy-muted-ink: #525252;
 }
 
 .dark {
-  --rxy-bg: #161513;
-  --rxy-fg: #f4efe6;
-  --rxy-card: #221f1b;
-  --rxy-muted: #b7aea3;
-  --rxy-border: #3a342c;
+  --rxy-bg: #212121;
+  --rxy-sidebar: #171717;
+  --rxy-fg: #ececec;
+  --rxy-muted: #a3a3a3;
+  --rxy-border: #333333;
+  --rxy-card: #212121;
+  --rxy-bubble: #2f2f2f;
+  --rxy-running: #60a5fa;
+  --rxy-waiting: #fbbf24;
+  --rxy-success: #4ade80;
+  --rxy-failure: #f87171;
+  --rxy-running-ink: #60a5fa;
+  --rxy-waiting-ink: #fbbf24;
+  --rxy-success-ink: #4ade80;
+  --rxy-failure-ink: #f87171;
+  --rxy-muted-ink: #a3a3a3;
 }
 
 @theme inline {
   --color-background: var(--rxy-bg);
+  --color-sidebar: var(--rxy-sidebar);
   --color-foreground: var(--rxy-fg);
-  --color-card: var(--rxy-card);
   --color-muted: var(--rxy-muted);
   --color-border: var(--rxy-border);
+  --color-card: var(--rxy-card);
+  --color-bubble: var(--rxy-bubble);
+  --color-running: var(--rxy-running);
+  --color-waiting: var(--rxy-waiting);
+  --color-success: var(--rxy-success);
+  --color-failure: var(--rxy-failure);
+  --color-running-ink: var(--rxy-running-ink);
+  --color-waiting-ink: var(--rxy-waiting-ink);
+  --color-success-ink: var(--rxy-success-ink);
+  --color-failure-ink: var(--rxy-failure-ink);
+  --color-muted-ink: var(--rxy-muted-ink);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--rxy-bg);
+  color: var(--rxy-fg);
+}
+
+@keyframes rxy-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.rxy-pulse {
+  animation: rxy-pulse 1.2s ease-in-out infinite;
 }

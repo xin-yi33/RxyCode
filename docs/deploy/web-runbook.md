@@ -284,3 +284,21 @@ named revision via the same module when you only need one step back.)
 - The compose Postgres is for the web stack — the dev containers
   (`rxy-w2c01-pg` etc.) are untouched; use a distinct `-p` project name and
   the shipped loopback ports so nothing collides.
+
+## 本地开发（W9-F3）
+
+Windows 本机开发不用起整套 compose：
+
+```powershell
+# 终端 1：dev Postgres (rxy-web-dev-pg @ 127.0.0.1:55440) + alembic head + API
+pwsh -File infra/scripts/web-dev.ps1        # API on http://127.0.0.1:8000
+# 终端 2：Vite dev server（/api 代理到 8000，见 vite.config.ts 的
+# VITE_API_TARGET，默认 http://127.0.0.1:8000）
+npm --prefix apps/web run dev               # UI on http://127.0.0.1:5173
+```
+
+- 脚本幂等：`rxy-web-dev-pg` 存在就复用；密钥第一次生成后存
+  `%USERPROFILE%\.rxycode\web-dev.secret`，重开终端不变。
+- `RXYCODE_WEB_REGISTRATION=open`，/register 页面不需要邀请码即可注册。
+- 开发机没有 drain worker：提交的 run 会一直停在 **排队中**，这是预期行为。
+- 不要动 `rxydemo-*` 容器；dev 库与 `rxy-w9-pg`(55439)/W3 库(55432) 端口隔离。

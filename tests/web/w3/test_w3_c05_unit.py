@@ -66,9 +66,14 @@ def test_w3_c05_contract() -> None:
             opened = _open(page, stack.origin)
             cookies = {item["name"]: item["value"] for item in page.context.cookies()}
             uri = f"ws://127.0.0.1:{stack.api_port}/api/v1/terminals/{opened['id']}/ws"
+            # A real browser always sends Origin on the WS handshake; the
+            # server rejects headerless clients fail-closed (W7-C01).
             with connect(
                 uri,
-                additional_headers={"Cookie": f"rxy_session={cookies['rxy_session']}"},
+                additional_headers={
+                    "Cookie": f"rxy_session={cookies['rxy_session']}",
+                    "Origin": stack.origin,
+                },
                 open_timeout=10,
             ) as socket:
                 seen = ""
@@ -128,7 +133,10 @@ def test_w3_c05_negative() -> None:
             try:
                 with connect(
                     uri,
-                    additional_headers={"Cookie": "rxy_session=not-the-owner"},
+                    additional_headers={
+                        "Cookie": "rxy_session=not-the-owner",
+                        "Origin": stack.origin,
+                    },
                     open_timeout=10,
                 ) as socket:
                     socket.recv(timeout=3)
