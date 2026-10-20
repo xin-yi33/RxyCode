@@ -190,6 +190,11 @@
 - **验证（离线）**：`docker compose -f compose.yaml -f compose.prod.yaml config` 渲染干净（仅 gateway 8080 发布、无 repo-src/marker/443）；`bash -n` 两脚本通过；`caddy validate`（caddy:2.11）`Valid configuration`，`fmt` 无差异。整栈 `up` 演练留待运营者按 D3 执行（本机 Docker VM ~1.9G，且需先调 `.wslconfig`）。
 - **偏离/发现**：base `compose.yaml` 注释中的 `${VAR}` 字面量使 `compose config` 打一条既有 warning（未改 base 文件）；实测本机 Windows 路径 bind mount 可用（D1 镜像时代），故按卡片采用 `./Caddyfile.prod` bind 挂载覆盖镜像内 `/etc/caddy/Caddyfile`，web.Dockerfile 未改——若 D3 发现 bind 挂载回归，备选是把 Caddyfile.prod COPY 进镜像再以 `--config` 指向。
 
+### W9 egress：TLS 隧道半关闭崩溃
+
+- `rxyw9e2e` 验收栈实测发现：`egress.py::_pipe` 在管道结束时调用 `writer.write_eof()`，TLS transport（连模型上游的 HTTPS）抛 `NotImplementedError`——未捕获，经 `_tunnel` 的 `gather` 传播成 `egress request failed`，隧道在响应收尾时被拆除；同一 run 出现 92/167 次 tool 失败并最终 `recovery_required`。修复为 `can_write_eof()` 守卫 + 补捕 `NotImplementedError`（TLS 不支持半关闭时直接跳过）。
+- 回归测试 `tests/web/w9/test_egress_eof.py`（2 条：TLS writer 不调用 write_eof 且不崩、普通 writer 正常半关闭）。
+
 ### 已知限制（明示，非遗漏）
 
 - 每个挂起调用仅支持一个持久化提问。

@@ -229,8 +229,11 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
     except (ConnectionError, OSError, asyncio.TimeoutError):
         pass
     try:
-        writer.write_eof()
-    except (OSError, AttributeError):
+        # TLS transports cannot half-close: write_eof() raises
+        # NotImplementedError there, which used to tear the tunnel down.
+        if writer.can_write_eof():
+            writer.write_eof()
+    except (OSError, AttributeError, NotImplementedError):
         pass
 
 
