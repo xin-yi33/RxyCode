@@ -113,3 +113,9 @@
 - 无 `call_id` 的外部工具结果仍走文本前缀回退。
 - `tests/web/w2`–`w6` 全量失败此前定性为本机环境/HEAD 既有问题，未逐条复验。
 - 产品版本仍为 1.4.3，JSON-RPC 未改，未自动 commit 或 push。
+
+### 后续规划（W9–W11，2026-10-20）
+
+- 重写 W8 之后的施工文档 `docs/plans/opus5-plan/rxycode -web/phases/PHASE-W9-PRODUCT-CLOSURE-AND-DEPLOYMENT.md`（`docs/plans/` 被 gitignore，仅本地；GPT 草稿归档为 `research/W9-gpt-draft-2026-10-20-superseded.md`）。
+- 文档中登记的已核实缺口（尚未修复）：网页没有创建 Run 的 HTTP 路由，也没有输入框；worker 不往事件日志写 `run.status`，前端在终态后会无限重连；登录会话存在进程内存，API 重启即失效；没有注册；`notify.*` 审计行存的是 Python repr 字符串，每个流式 token 写两行；`tool_begin` 未投影；`_JOURNAL_CAP` 会丢弃长任务的工具行和审批行；队列按随机 id 排序；准入默认值等于不限；演示任务因完成门禁反复判 stale 用掉 773,379 token。
+- 已定：邮箱 + 密码 + 邀请码注册（GitHub 可选）、控制台面板、首台服务器选境外区域、镜像预构建、W9/W10/W11 分期与日期。
