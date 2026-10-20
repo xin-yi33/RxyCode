@@ -373,7 +373,7 @@ async def test_malformed_native_tool_call_is_not_executed_and_gets_repair_turn(m
 
     executions = []
 
-    async def fake_execute(tool_calls, *, mode=None):
+    async def fake_execute(tool_calls, *, mode=None, partial_results=None):
         executions.append(tool_calls)
         return []
 

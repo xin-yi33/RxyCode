@@ -18,6 +18,27 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 
+class HarnessPaused(BaseException):
+    """A tool call needs a human decision and the turn parks here.
+
+    BaseException, so the loop's generic handlers cannot swallow it.
+    ``call_id`` is the model's tool-call id and ``request`` the approval
+    details; the Harness loop attaches ``checkpoint`` before it propagates.
+    """
+
+    def __init__(self, call_id: str = "", request: dict | None = None) -> None:
+        super().__init__(call_id)
+        self.call_id = call_id
+        self.request = dict(request or {})
+        self.checkpoint: dict | None = None
+
+
+NOT_EXECUTED_NOTE = (
+    "[error: not executed; the turn paused for a human decision before this call ran. "
+    "Re-issue it if it is still needed.]"
+)
+
+
 def _kind_of(message: BaseMessage) -> str:
     if isinstance(message, SystemMessage):
         return "system"
@@ -41,6 +62,8 @@ def encode_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
             row["tool_call_id"] = message.tool_call_id
             if message.name:
                 row["name"] = message.name
+        if message.additional_kwargs:
+            row["additional_kwargs"] = dict(message.additional_kwargs)
         json.dumps(row, ensure_ascii=False)  # fail closed on non-JSON content
         rows.append(row)
     return rows
@@ -52,19 +75,24 @@ def decode_messages(rows: list[dict[str, Any]]) -> list[BaseMessage]:
         kind = str(row.get("kind") or "")
         content = row.get("content", "")
         if kind == "ai":
-            out.append(AIMessage(content=content, tool_calls=list(row.get("tool_calls") or [])))
+            out.append(AIMessage(
+                content=content,
+                tool_calls=list(row.get("tool_calls") or []),
+                additional_kwargs=dict(row.get("additional_kwargs") or {}),
+            ))
         elif kind == "tool":
             out.append(
                 ToolMessage(
                     content=content,
                     tool_call_id=str(row.get("tool_call_id") or ""),
                     name=row.get("name"),
+                    additional_kwargs=dict(row.get("additional_kwargs") or {}),
                 )
             )
         elif kind == "system":
-            out.append(SystemMessage(content=content))
+            out.append(SystemMessage(content=content, additional_kwargs=dict(row.get("additional_kwargs") or {})))
         elif kind == "human":
-            out.append(HumanMessage(content=content))
+            out.append(HumanMessage(content=content, additional_kwargs=dict(row.get("additional_kwargs") or {})))
         else:
             raise ValueError(f"unknown checkpoint message kind: {kind!r}")
     return out

@@ -153,6 +153,12 @@ from RxyCode.RxyCode1_1_0.log.logger import (
 )
 from RxyCode.RxyCode1_1_0.log.monitor import run_monitor
 from RxyCode.RxyCode1_1_0.mcp import tool_manifest as _tool_manifest
+from RxyCode.RxyCode1_1_0.core.harness_checkpoint import (
+    NOT_EXECUTED_NOTE,
+    HarnessPaused,
+    decode_messages,
+    encode_messages,
+)
 from RxyCode.RxyCode1_1_0.core.build_workflow import (
     CheckReceipt,
     WorkflowContractError,
@@ -7112,6 +7118,7 @@ class AgentV2:
         allowed_tool_names: frozenset[str] | None = None,
         role_instruction: str = "",
         mode: str | None = None,
+        resume: dict | None = None,
     ) -> str:
         """Tool-aware fast path: bind tools to LLM, handle tool calls, then stream answer.
 
@@ -7280,8 +7287,11 @@ class AgentV2:
         ):
             tui.write_progress("Analyzing your request...")
 
-        messages = self._continue_agent_prefix(system, user_msg)
-        self._inject_subagent_inbox(messages)
+        if resume is None:
+            messages = self._continue_agent_prefix(system, user_msg)
+            self._inject_subagent_inbox(messages)
+        else:
+            messages = decode_messages(list(resume["checkpoint"]["messages"]))
         research_sources: list[str] = []
 
         def _prefetch_failure(detail: str) -> str | None:
@@ -7495,6 +7505,40 @@ class AgentV2:
             # 触顶后走 for-else synthesis 并停止。单次 user turn 的
             # max_tool_rounds 现在只把空转降级为 [error] 回喂 LLM。
             round_num = -1
+            if resume is not None:
+                cp = resume["checkpoint"]
+                state = cp["state"]
+                round_num = int(state["round_num"])
+                tools_invoked = bool(state["tools_invoked"])
+                empty_response_retried = bool(state["empty_response_retried"])
+                malformed_dsml_retried = int(state["malformed_dsml_retried"])
+                write_nudge_count = int(state["write_nudge_count"])
+                file_write_succeeded = bool(state["file_write_succeeded"])
+                consecutive_error_count = int(state["consecutive_error_count"])
+                last_round_had_success = bool(state["last_round_had_success"])
+                research_prefetch_done = True
+                research_sources[:] = [str(url) for url in state["research_sources"]]
+                paused = cp["paused"]
+                result_text = str(resume["result"])
+                is_error = _tool_output_is_error(result_text)
+                if not is_error and str(paused["tool"]).lower() in {"write", "edit"}:
+                    file_write_succeeded = True
+                if is_error:
+                    self._tool_error_occurred = True
+                else:
+                    last_round_had_success = True
+                consecutive_error_count = bump_consecutive_errors(
+                    consecutive_error_count, failed=is_error
+                )
+                messages.append(ToolMessage(
+                    content=self._tool_result_message_content(str(paused["tool"]), result_text),
+                    tool_call_id=str(paused["call_id"]),
+                ))
+                for remaining_id in cp["remaining"]:
+                    messages.append(ToolMessage(
+                        content=NOT_EXECUTED_NOTE,
+                        tool_call_id=str(remaining_id),
+                    ))
             while True:
                 round_num += 1
                 round_received_real_usage = False
@@ -8057,10 +8101,24 @@ class AgentV2:
                 valid_tool_calls = [
                     tc for tc in tool_calls if tc["id"] not in malformed_tool_calls
                 ]
+                completed_results: list[str | None] = [None] * len(valid_tool_calls)
+                round_pause: HarnessPaused | None = None
+                pending_ids: set[str] = set()
                 try:
                     executed = await self._execute_tools_parallel(
-                        valid_tool_calls, mode=mode
+                        valid_tool_calls, mode=mode, partial_results=completed_results
                     )
+                except HarnessPaused as pause:
+                    round_pause = pause
+                    executed = [
+                        {"name": tc["name"], "args": tc["args"], "id": tc["id"], "result": completed_results[i]}
+                        for i, tc in enumerate(valid_tool_calls)
+                        if completed_results[i] is not None
+                    ]
+                    pending_ids = {
+                        tc["id"] for i, tc in enumerate(valid_tool_calls)
+                        if completed_results[i] is None
+                    }
                 except Exception as exc:  # pragma: no cover - 并行兜底
                     _logger.warning("B8 parallel tool execution failed: %s", exc)
                     executed = []
@@ -8099,6 +8157,8 @@ class AgentV2:
                         continue
 
                     item = executed_by_id.get(tool_id)
+                    if item is None and tool_id in pending_ids:
+                        continue
                     if item is None:
                         # A duplicate/missing provider call id must remain an
                         # explicit error, never an invisible success.
@@ -8190,6 +8250,29 @@ class AgentV2:
                             ERROR_LIMIT,
                             self._stuck_detector.stuck_reason,
                         )
+                if round_pause is not None:
+                    round_pause.checkpoint = self._harness_pause_checkpoint(
+                        messages,
+                        paused_call_id=round_pause.call_id,
+                        valid_tool_calls=valid_tool_calls,
+                        pending_ids=pending_ids,
+                        user_input=user_input,
+                        mode=mode,
+                        allowed_tool_names=allowed_tool_names,
+                        role_instruction=role_instruction,
+                        state={
+                            "round_num": round_num,
+                            "tools_invoked": tools_invoked,
+                            "empty_response_retried": empty_response_retried,
+                            "malformed_dsml_retried": malformed_dsml_retried,
+                            "write_nudge_count": write_nudge_count,
+                            "file_write_succeeded": file_write_succeeded,
+                            "consecutive_error_count": consecutive_error_count,
+                            "last_round_had_success": last_round_had_success,
+                            "research_sources": list(research_sources),
+                        },
+                    )
+                    raise round_pause
                 if final_answer_called:
                     held = self._workflow_design_hold(answer)
                     if held is not None:
@@ -8924,7 +9007,48 @@ class AgentV2:
             max_parallel = 3
         return enabled, max_parallel
 
-    async def _execute_tools_parallel(self, tool_calls, *, mode: str | None = None) -> list[dict]:
+    def _harness_pause_checkpoint(
+        self,
+        messages: list,
+        *,
+        paused_call_id: str,
+        valid_tool_calls: list[dict],
+        pending_ids: set[str],
+        user_input: str,
+        mode: str | None,
+        allowed_tool_names: frozenset[str] | None,
+        role_instruction: str,
+        state: dict,
+    ) -> dict:
+        paused_tool = next(
+            (str(tc["name"]) for tc in valid_tool_calls if tc["id"] == paused_call_id),
+            "",
+        )
+        remaining = [
+            str(tc["id"]) for tc in valid_tool_calls
+            if tc["id"] in pending_ids and tc["id"] != paused_call_id
+        ]
+        return {
+            "version": 1,
+            "user_input": user_input,
+            "mode": mode,
+            "allowed_tool_names": (
+                sorted(allowed_tool_names) if allowed_tool_names is not None else None
+            ),
+            "role_instruction": role_instruction,
+            "messages": encode_messages(messages),
+            "paused": {"call_id": paused_call_id, "tool": paused_tool},
+            "remaining": remaining,
+            "state": state,
+        }
+
+    async def _execute_tools_parallel(
+        self,
+        tool_calls,
+        *,
+        mode: str | None = None,
+        partial_results: list[str | None] | None = None,
+    ) -> list[dict]:
         """B8: 只读工具并发执行（写工具串行），结果按原序返回。
 
         - 连续只读段用 asyncio.gather + Semaphore 并发（luna R1-3：
@@ -8937,7 +9061,7 @@ class AgentV2:
         """
         enabled, max_parallel = self._parallel_tool_config(mode=mode)
         n = len(tool_calls)
-        results: list[str | None] = [None] * n
+        results: list[str | None] = partial_results if partial_results is not None else [None] * n
         semaphore = asyncio.Semaphore(max_parallel)
         write_snapshot_taken = False
 
@@ -8960,6 +9084,9 @@ class AgentV2:
                     )
             except asyncio.CancelledError:
                 # luna R2-2: 取消必须放行，不能被吞成工具错误。
+                raise
+            except HarnessPaused as pause:
+                pause.call_id = str(call_id or pause.call_id)
                 raise
             except Exception as exc:
                 results[index] = f"[error: {exc}]"
