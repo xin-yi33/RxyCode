@@ -1780,3 +1780,153 @@ def test_anthropic_text_block_is_the_contract_json():
     assert host._build_workflow is not None
     assert host._build_workflow.workflow_id == "wf-anth"
     assert "hidden" not in host._build_workflow.reason
+
+
+def test_h1_readonly_compounds_do_not_invalidate():
+    """W9-H1: pure reader pipelines must keep earned check receipts."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    host = _host()
+    for command in (
+        "pwd && ls -1",
+        "ls -1 && echo '---' && cat a.txt",
+        "cat a; od -c a | tail -2",
+        "md5sum a; ls -1 | grep -c a",
+        "ls -1 2>/dev/null",
+        "date +%H:%M:%S && cat a.txt",
+        "find . -name '*.py'",
+        'echo "a;b" && cat c',
+        "test -f a.txt && wc -l a.txt",
+        "[ -f a.txt ] && echo ok",
+    ):
+        assert AgentV2._shell_invalidates_subject(host, command) is False, command
+
+
+def test_h1_writes_substitutions_and_mutating_flags_still_invalidate():
+    """W9-H1: every non-reader shape keeps the conservative verdict."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        AgentV2,
+        _gate_command_is_readonly,
+    )
+
+    host = _host()
+    for command in (
+        "echo x > a.py",
+        "ls | tee out.txt",
+        "cat $(ls)",
+        "touch a && cat a",
+        "rm -f a; ls",
+        'python3 -c "print(1)"',
+        'ls -1 && python3 -c "print(1)"',
+        "find . -delete",
+        "find . -exec rm {} ;",
+        "sort -o out.txt a.txt",
+        "date -s 2026-01-01",
+        'find . "-delete"',
+    ):
+        assert AgentV2._shell_invalidates_subject(host, command) is True, command
+        assert _gate_command_is_readonly(command) is False, command
+    # 单文件文档写入例外是 8988c308 起就存在的既有契约，不在本卡范围；
+    # 但新的只读判定层必须仍把它当作“可能写”（由旧逻辑放行）。
+    assert _gate_command_is_readonly("echo x > a.txt") is False
+    assert _gate_command_is_readonly("cat x |") is False
+    assert _gate_command_is_readonly("ls 'unterminated") is False
+
+
+def test_h1_completion_feedback_lists_invalidating_reasons():
+    """W9-H1: stale feedback tells the model WHICH call voided the checks."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    def ask(_prompt: str) -> str:
+        return _json_decision()
+
+    host = _host()
+    host._build_workflow_ask = ask
+
+    import asyncio
+
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    command = "python -m pytest tests/test_parser.py -q"
+    AgentV2._record_workflow_receipt(
+        host, "bash", {"command": command, "cwd": "."}, "1 passed", False, call_id="b1"
+    )
+    assert AgentV2._workflow_completion_feedback(host) is None
+    AgentV2._note_workflow_write(host, "bash", False, {"command": "cat app.py; ls -1"})
+    assert AgentV2._workflow_completion_feedback(host) is None
+    AgentV2._note_workflow_write(host, "bash", False, {"command": "touch marker.txt"})
+    feedback = AgentV2._workflow_completion_feedback(host)
+    assert feedback is not None
+    assert "stale=parser" in feedback
+    assert "bash: touch marker.txt" in feedback
+    assert "作废" in feedback and "逐字" in feedback
+
+
+def test_h1_bump_reasons_keep_only_the_last_three():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    def ask(_prompt: str) -> str:
+        return _json_decision()
+
+    host = _host()
+    host._build_workflow_ask = ask
+
+    import asyncio
+
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    for index in range(5):
+        AgentV2._note_workflow_write(
+            host, "bash", False, {"command": f"touch marker-{index}.txt"}
+        )
+    reasons = getattr(host, "_workflow_bump_reasons", [])
+    assert reasons == [f"bash: touch marker-{index}.txt" for index in (2, 3, 4)]
+
+
+def test_h1_full_turn_readonly_verify_between_checks_passes_once():
+    """W9-H1 剧本：写文件 → 两条检查 → 只读复合验证 → final_answer 一次通过。"""
+
+    def ask(_prompt: str) -> str:
+        return _json_decision(
+            required_checks=[
+                {
+                    "check_id": "content",
+                    "command": "cat app.py",
+                    "cwd": ".",
+                    "success_predicate": "exit_zero",
+                },
+                {
+                    "check_id": "listed",
+                    "command": "ls -1",
+                    "cwd": ".",
+                    "success_predicate": "exit_zero",
+                },
+            ]
+        )
+
+    host = _loop_host(ask)
+    rounds = [
+        {
+            "tool": "write",
+            "id": "w1",
+            "args": {"filePath": "app.py", "content": "print('hi')\n"},
+        },
+        {"tool": "bash", "id": "b1", "args": {"command": "cat app.py", "cwd": "."}},
+        {"tool": "bash", "id": "b2", "args": {"command": "ls -1", "cwd": "."}},
+        # 回执作废前的只读验证命令——H1 之前它会把写入代数推高使回执 stale。
+        {"tool": "bash", "id": "b3", "args": {"command": "cat app.py; ls -1", "cwd": "."}},
+        {"tool": "final_answer", "id": "fa1", "args": {"answer": "done-once"}},
+    ]
+    results = [
+        "wrote app.py",
+        "print('hi')",
+        "app.py",
+        "print('hi')\napp.py",
+        "done-once",
+    ]
+    result, snapshots, _seen = _run_scripted_loop(host, rounds, results)
+    assert "done-once" in result
+    assert not rounds
+    assert not any(
+        "完成门未通过" in str(getattr(message, "content", ""))
+        for messages in snapshots
+        for message in messages
+    )

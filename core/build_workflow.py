@@ -312,6 +312,60 @@ _DOC_SUFFIXES = {".md", ".rst", ".txt"}
 _ORDINARY_SUFFIXES = {".txt", ".md", ".rst", ".log", ""}
 _CODE_TOKENS = ("def ", "class ", "function ", "import ", "#include", "package ")
 
+#: W9-H1: completion-gate read-only shell allowlist. ``classify_tool_risk``
+#: deliberately keeps ``cat``/``grep``/``date``/… at WRITE because it drives
+#: approvals; this list only decides whether a bash invocation invalidates
+#: already-earned check receipts. Basenames after stripping the directory
+#: and a trailing ``.exe``.
+GATE_READONLY_COMMANDS = frozenset(
+    {
+        "pwd",
+        "ls",
+        "echo",
+        "printf",
+        "cat",
+        "head",
+        "tail",
+        "od",
+        "wc",
+        "grep",
+        "egrep",
+        "fgrep",
+        "stat",
+        "md5sum",
+        "sha1sum",
+        "sha256sum",
+        "file",
+        "date",
+        "which",
+        "test",
+        "[",
+        "true",
+        "diff",
+        "cmp",
+        "find",
+        "du",
+        "df",
+        "basename",
+        "dirname",
+        "realpath",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+    }
+)
+
+#: Arguments that turn an allow-listed reader into a writer. The pattern is
+#: matched against the segment AND the raw command text so a quoted flag
+#: (``find . "-delete"``) cannot hide from the gate. Over-matching fails safe:
+#: the command keeps the old conservative verdict and bumps the generation.
+GATE_MUTATING_ARGS = {
+    "find": re.compile(r"-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b", re.IGNORECASE),
+    "sort": re.compile(r"(?:-o|--output)\b", re.IGNORECASE),
+    "date": re.compile(r"(?:-s|--set)\b", re.IGNORECASE),
+}
+
 
 def is_documentation_path(path: str) -> bool:
     candidate = Path(str(path or ""))

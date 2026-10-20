@@ -121,14 +121,21 @@
 - **delta 合并**：`_RunEmit` 内缓冲连续同 `intermediate` 标志的 `assistant.delta` 文本——缓冲年龄 ≥300ms（新 delta 到达时判定）、≥2KB、非 delta 投影前、标志翻转、显式 `flush()` 任一触发出行；进程内与受限子进程（`TurnChannel.emit`）两条执行路径的成功/失败/取消/park 出口都在外层 `finally` 调 `emit.flush()`，保证残缓冲落库。
 - **notify.* 审计**：`event/message_delta|progress|reasoning_snapshot|token_usage` 不再写审计行；其余方法 payload 为 `{"params": model_dump(mode="json")}`、字符串值递归截 2000 字符，不再是 Python repr（不含 `method='...'`）。
 - **journal 上限分流**：原 500 行共享计数改为 `assistant.delta` 与 `notify.*` 各自 2000 行上限；`tool.*`/`approval.*`/`question.*`/`run.status`/`assistant.final`/`usage.*` 永不被丢弃。
-- **`event/agent_needs_input`（P9）**：经实证 appserver `NeedsInputClassifier` 对 `approval/request`/`question/request` 仍会发该通知（与 W8 Harness park 直接落 `approval.requested`/`question.requested` 的路径并存），分支保留但按 payload 的 kind 只投影**一条**对应行——不再同时产出 approval+question 两行。
+- **`event/agent_needs_input`（P9）**：W8 的 park/续接路径已由 drain 直接落 `approval.requested`/`question.requested`，drain 中对该通知的投影分支删除——不再重复产出 approval+question 行。
 - **SSE 心跳**：follow 模式 15 秒无新事件发 `: ping\n\n`（模块常量 `SSE_HEARTBEAT_SECONDS`，测试可 monkeypatch），防止代理在长 thinking/审批等待期断连；replay 与终态即停语义不变。
 - **验证**：新增 `tests/web/w9/test_event_projection.py`（15 条：tool 投影、100 delta 合并 ≤5 行且文本完整、delta/tool 交错保序、>500 delta 不丢 tool/final、notify JSON 可解析、claim/终态/取消/park/resume 的 DB 状态行、flag 翻转与显式 flush、SSE 心跳）；`tests/web/w9` 38 passed；旧契约断言同步修正——`w7_c05`（alembic head `006_auth_and_runs`）、`w2_c03`（create span 的 `telemetry.span` 行计入事件总数）、`w2_c04`（worker 可导入时 seq +1，改为确定性断言）、`w3_c02`（默认项目自动补建后登录态非空 + github/start 需配置凭据）。
 
-- `tests/web/w8` 全套件：168 passed, 4 skipped（AF_UNIX/bwrap 在 Windows 预期跳过）。
+- `tests/web/w8` 全套件：160 passed, 4 skipped（AF_UNIX/bwrap 在 Windows 预期跳过）。
 - 三条复合验收链（真实 Postgres+Harness+journal：审批挂起→新实例续接→Final Answer；journal unknown→recovery_required；重复续接复用 journal 不重放副作用）：19 passed。
 - `test_w7_c05_integration` 真实 compose 栈重启/重认领：PASSED 584 s。
 - ruff/AST：触及模块清洁。
+
+### W9 Harness：完成门回执误作废与 full 模式 bash 输出
+
+- **只读复合命令不再误作废检查回执（H1-1）**：`_shell_invalidates_subject` 新增 `_gate_command_is_readonly` 判定层——按 `_shell_text_outside_quotes` 在引号外切分 `&&`/`||`/`;`/`|`/换行（空段、悬垂 `|`、`shlex` 解析失败一律保守作废）；拒绝命令替换（`$(`/反引号）与任何写重定向（`>`/`>>`/`&>`），仅放行 `2>/dev/null`、`>/dev/null`、`<` 输入重定向及 `2>&1`；逐段取 basename 命中 `core/build_workflow.py::GATE_READONLY_COMMANDS`（pwd/ls/cat/grep/find/sort/date/diff 等 36 个只读命令）或 `classify_tool_risk < WRITE` 才算只读。`find -delete/-exec/-execdir/-ok/-fprint*`、`sort -o/--output`、`date -s/--set` 参数例外（同时对原文匹配，引号藏不住）。精确等于必需检查命令的既有豁免不变；`classify_tool_risk` 未动（门禁语义不影响审批）。
+- **作废原因进入完成门反馈（H1-2）**：`_bump_workflow_generation` 记录 `工具名: 命令/路径`（截 120 字符），内存只留最近 3 条（不进 `workflow_checkpoint_document`，不落库）。存在 stale 检查时 `_workflow_completion_feedback` 追加中文句：「这些检查在执行之后又被以下操作作废：<原因列表>。请在不再修改工作区之后，把必需检查的命令**逐字**作为最后的工具调用重新执行，中间不要插入其他命令。」
+- **full 模式本地 bash 走 `_format_result`（H1-3）**：`tool_orchestrator.py::native_runner`（`full`/`full_auto` + local + production bash）构造 `{"stdout","stderr","exit_code","success"}` 交给 `tools/bash.py::_format_result`——成功无输出得 `[no output]`（旧行为返回空串），非零退出保留 `[error executing bash: …]` + `[exit code: N]`，超长输出走同一截断/spill/脱敏逻辑，超时并入 stderr 提示；`started=False` 直接返回字面量 `[error executing bash: command did not start]`（旧行为也是空串），`build_tool_evidence` 正确判 failed。capture/artifact 等未提供字段取 `_format_result` 自身的 falsy 默认，与正常路径缺省一致。
+- **验证**：新增 `tests/test_core/test_full_auto_bash_format.py`（5 条：`true`→`[no output]`、exit 3 错误前缀+退出码、超 MAX_OUTPUT_CHARS 截断、`started=False` 字面量 + `build_tool_evidence` failed、超时提示）；`test_build_workflow.py` 新增 5 条（只读/作废命令表、反馈原因句、原因上限 3、fake-LLM 全回合"写文件→两条检查→只读复合验证→final_answer 一次通过"）。`test_shell_output_capture.py` 4 条失败在干净 `04a330bb` worktree 上同样复现（Anaconda launcher stderr 噪声/真实子进程时序），判定为本机环境既有问题，非本次回归。
 
 ### 已知限制（明示，非遗漏）
 
@@ -140,5 +147,5 @@
 ### 后续规划（W9–W11，2026-10-20）
 
 - 重写 W8 之后的施工文档 `docs/plans/opus5-plan/rxycode -web/phases/PHASE-W9-PRODUCT-CLOSURE-AND-DEPLOYMENT.md`（`docs/plans/` 被 gitignore，仅本地；GPT 草稿归档为 `research/W9-gpt-draft-2026-10-20-superseded.md`）。
-- 文档中登记的已核实缺口——其中以下已被上述 W9 后端批次修复：`run.status` 事件缺失、notify.* repr 审计行、流式 token 逐条写（已合并）、`tool_begin` 未投影、`_JOURNAL_CAP` 误丢 tool/approval 行、队列随机序、准入无默认、无注册/无持久会话/无建 Run 路由。尚未修复：网页端创建 Run 的输入框（B2 只到 API 层）、前端在终态后停止 follow 的产品化收尾、`stale` 误判导致的 token 浪费。
+- 文档中登记的已核实缺口——其中以下已被上述 W9 后端批次修复：`run.status` 事件缺失、notify.* repr 审计行、流式 token 逐条写（已合并）、`tool_begin` 未投影、`_JOURNAL_CAP` 误丢 tool/approval 行、队列随机序、准入无默认、无注册/无持久会话/无建 Run 路由。尚未修复：网页端创建 Run 的输入框（B2 只到 API 层）、前端在终态后停止 follow 的产品化收尾。`stale` 误判导致的 token 浪费已由 W9-H1 修复（见上节）。
 - 已定：邮箱 + 密码 + 邀请码注册（GitHub 可选）、控制台面板、首台服务器选境外区域、镜像预构建、W9/W10/W11 分期与日期。

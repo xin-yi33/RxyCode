@@ -1936,18 +1936,47 @@ class ToolOrchestrator:
                         cwd = shell_executor.resolved_workdir(workdir)
                     except ValueError as exc:
                         return f"[error executing bash: {exc}]"
+                    try:
+                        from tools.bash import _format_result
+                    except ImportError:
+                        _format_result = None
                     # WEB-W7-C02：与常规执行面同一 argv 构造——full_auto
                     # 在 Windows 也走 PowerShell，不再退化 create_subprocess_shell。
                     result = await backend.run_command(
                         shell_executor.build_argv(command), cwd, timeout=timeout
                     )
                     if not result.started:
-                        return ""
+                        return "[error executing bash: command did not start]"
+                    stderr = result.stderr or ""
+                    if result.timed_out:
+                        stderr = (
+                            f"{stderr}\n" if stderr else ""
+                        ) + f"[timeout after {timeout}s]"
+                    # W9-H1：与正常 bash 路径同一个 _format_result——成功无输出
+                    # 得 [no output]，失败带 [error executing bash: …]+退出码，
+                    # 大输出走同样的截断/脱敏。unknown capture 字段缺失即取
+                    # _format_result 自己的 falsy 默认，与正常路径一致。
+                    if _format_result is not None:
+                        exit_code = result.exit_code
+                        if not isinstance(exit_code, int):
+                            exit_code = -1
+                        return _format_result(
+                            {
+                                "stdout": result.stdout or "",
+                                "stderr": stderr,
+                                "exit_code": exit_code,
+                                "success": bool(
+                                    not result.timed_out
+                                    and result.exit_code == 0
+                                ),
+                            },
+                            command,
+                        )
                     if result.timed_out:
                         return f"[error executing bash: timeout after {timeout}s]"
-                    text = result.stdout
-                    if result.stderr:
-                        text += ("\n" if text else "") + result.stderr
+                    text = result.stdout or ""
+                    if stderr:
+                        text += ("\n" if text else "") + stderr
                     if result.exit_code not in (0, None):
                         body = text or "command failed"
                         return f"[error executing bash: {body}\n[exit code: {result.exit_code}]]"

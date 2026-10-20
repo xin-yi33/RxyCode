@@ -18,6 +18,7 @@ import inspect
 import json
 import logging
 import os
+import shlex
 import sys
 import re
 import tempfile
@@ -166,6 +167,8 @@ from RxyCode.RxyCode1_1_0.core.harness_checkpoint import (
 )
 from RxyCode.RxyCode1_1_0.core.build_workflow import (
     CheckReceipt,
+    GATE_MUTATING_ARGS,
+    GATE_READONLY_COMMANDS,
     WorkflowContractError,
     check_completion,
     checkpoint_payload,
@@ -1035,6 +1038,72 @@ def _shell_shape_is_unproven(command: str) -> bool:
     if re.search(r"[\n\r|;{}&]", visible):
         return True
     return "$(" in visible or "`" in visible
+
+
+# W9-H1: the completion gate splits a command on OUTSIDE-quote separators and
+# accepts it as read-only when every segment is a known reader (or classifies
+# below WRITE). Anything unproven returns False and the caller keeps the old
+# conservative verdict — the gate only ever widens "definitely read-only".
+# ``&&``/``||`` are single separators; a bare ``&`` or ``|`` is one too. The
+# alternation (no ``+``) keeps adjacent separators from merging silently, so a
+# dangling pipe (``cat x |``) leaves an empty segment and fails conservative.
+_GATE_SEPARATOR_RE = re.compile(r"&&|\|\||[&;|\r\n]")
+# ``>/dev/null`` (and the ``nul``/``$null`` spellings _STDERR_REDIRECT_RE
+# already trusts for stderr) discard output — not workspace writes.
+_GATE_NULL_REDIRECT_RE = re.compile(r"(?i)\d?>\s*(?:/dev/null|nul|\$null)")
+
+
+def _gate_command_is_readonly(command: str) -> bool:
+    """True only when every segment of the command is provably read-only.
+
+    The split view is ``_shell_text_outside_quotes``: separators inside quotes
+    cannot split, and quoted arguments never reach the per-segment checks.
+    Command substitution and any file-writing redirection disqualify the whole
+    command. A guarded allow-listed command (``find``/``sort``/``date``) is
+    scanned for mutating flags against the RAW command text too, so a quoted
+    flag cannot slip through the quote-masked segment.
+    """
+    text = str(command or "").strip()
+    if not text:
+        return False
+    try:
+        # Quote-masked segments hide quoting errors; validate the raw text too.
+        shlex.split(text)
+    except ValueError:
+        return False
+    visible = _STDERR_REDIRECT_RE.sub(" ", _shell_text_outside_quotes(text))
+    if "$(" in visible or "`" in visible:
+        return False
+    visible = _GATE_NULL_REDIRECT_RE.sub(" ", visible)
+    if ">" in visible:
+        return False
+    raw_segments = _GATE_SEPARATOR_RE.split(visible)
+    if any(not part.strip() for part in raw_segments):
+        return False
+    segments = [part.strip() for part in raw_segments]
+    if not segments:
+        return False
+    for segment in segments:
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return False
+        if not words:
+            continue
+        base = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base.endswith(".exe"):
+            base = base[:-4]
+        if base in GATE_READONLY_COMMANDS:
+            guarded = GATE_MUTATING_ARGS.get(base)
+            if guarded is not None and (
+                guarded.search(segment) or guarded.search(text)
+            ):
+                return False
+            continue
+        if classify_tool_risk("bash", {"command": segment}) < RiskLevel.WRITE:
+            continue
+        return False
+    return True
 
 
 def _confirmed_single_doc_operation(command: str) -> bool:
@@ -5790,6 +5859,7 @@ class AgentV2:
         self._workflow_subject = goal
         self._workflow_generation = _WorkflowGeneration(0)
         self._workflow_write_generation = 0
+        self._workflow_bump_reasons = []
         self._workflow_clarify_answered = False
         self._workflow_plan_status = "pending"
         self._workflow_plan_revision = 1
@@ -5840,6 +5910,7 @@ class AgentV2:
                 parsed = retarget_contract(previous, parsed)
             self._build_workflow = parsed
             self._build_workflow_block = ""
+            self._workflow_bump_reasons = []
             self._workflow_plan_revision = int(
                 getattr(self, "_workflow_plan_revision", 1) or 1
             )
@@ -5866,6 +5937,7 @@ class AgentV2:
             except WorkflowContractError as exc:
                 self._build_workflow = None
                 self._build_workflow_block = str(exc)
+                self._workflow_bump_reasons = []
 
     def _workflow_stage_note(self) -> str:
         decision = getattr(self, "_build_workflow", None)
@@ -5957,12 +6029,26 @@ class AgentV2:
         )
         if verdict.accepted and not unmet:
             return None
-        return (
+        feedback = (
             "[build-workflow] 完成门未通过。"
             f" missing={','.join([*unmet, *verdict.missing]) or '-'} "
             f"stale={','.join(verdict.stale) or '-'}. "
             "继续补齐验收，不要宣称已经完成。"
         )
+        if verdict.stale:
+            reasons = [
+                str(item)
+                for item in (getattr(self, "_workflow_bump_reasons", None) or [])
+                if item
+            ]
+            if reasons:
+                feedback += (
+                    "这些检查在执行之后又被以下操作作废："
+                    + "；".join(reasons)
+                    + "。请在不再修改工作区之后，把必需检查的命令**逐字**作为最后的工具调用"
+                    "重新执行，中间不要插入其他命令。"
+                )
+        return feedback
 
     def _workflow_tool_path(self, args: dict | None) -> str:
         if not isinstance(args, dict):
@@ -6106,6 +6192,7 @@ class AgentV2:
             if decision is not None:
                 self._build_workflow = promote_to_development(decision)
                 self._build_workflow_receipts = {}
+                self._workflow_bump_reasons = []
                 self._persist_build_workflow()
                 self._activate_upgraded_workflow()
             return
@@ -6133,6 +6220,7 @@ class AgentV2:
             parsed = promote_to_development(decision)
         self._build_workflow = parsed
         self._build_workflow_receipts = {}
+        self._workflow_bump_reasons = []
         self._persist_build_workflow()
         self._activate_upgraded_workflow()
 
@@ -6354,10 +6442,18 @@ class AgentV2:
             return False
         return os.path.normcase(str(executed)) == os.path.normcase(str(contract))
 
-    def _bump_workflow_generation(self) -> None:
+    def _bump_workflow_generation(self, reason: str = "") -> None:
         box = self._workflow_generation_box()
         box.value += 1
         self._workflow_write_generation = int(box.value)
+        if reason:
+            # W9-H1: 只留在内存里的最近 3 条作废原因，反馈给模型；不进检查点。
+            reasons = getattr(self, "_workflow_bump_reasons", None)
+            if not isinstance(reasons, list):
+                reasons = []
+                self._workflow_bump_reasons = reasons
+            reasons.append(str(reason))
+            del reasons[:-3]
         decision = getattr(self, "_build_workflow", None)
         if decision is not None and decision.stage_actions.get("doc_sync") == "run":
             progress = getattr(self, "_workflow_stage_progress", None)
@@ -6370,6 +6466,8 @@ class AgentV2:
             return False
         decision = getattr(self, "_build_workflow", None)
         if decision is not None and any(check.command == text for check in decision.required_checks):
+            return False
+        if _gate_command_is_readonly(text):
             return False
         if _shell_shape_is_unproven(text):
             return True
@@ -6389,7 +6487,8 @@ class AgentV2:
             return
         name = canonical_tool_name(name)
         if name == "bash" and self._shell_invalidates_subject(str((args or {}).get("command") or "")):
-            self._bump_workflow_generation()
+            command = str((args or {}).get("command") or "")
+            self._bump_workflow_generation(f"bash: {command[:120]}")
             self._persist_build_workflow()
             return
         if is_error:
@@ -6411,11 +6510,13 @@ class AgentV2:
                 progress["doc_sync"] = "done"
                 self._persist_build_workflow()
                 return
-            self._bump_workflow_generation()
+            self._bump_workflow_generation(f"{name}: {path[:120]}")
             self._persist_build_workflow()
             return
         if name == "git" and self._git_tool_invalidates(args):
-            self._bump_workflow_generation()
+            payload = args or {}
+            detail = f"{payload.get('operation') or ''} {payload.get('args') or ''}".strip()
+            self._bump_workflow_generation(f"git: {detail[:120]}")
             self._persist_build_workflow()
 
     def _load_workflow_instruction_text(self) -> None:
@@ -6557,6 +6658,7 @@ class AgentV2:
             return
         self._build_workflow = decision
         self._build_workflow_receipts = {}
+        self._workflow_bump_reasons = []
         self._build_workflow_block = ""
         shared = _PARENT_WORKFLOW_GENERATION.get()
         if isinstance(shared, _WorkflowGeneration):
