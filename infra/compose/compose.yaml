@@ -98,6 +98,9 @@ services:
     environment:
       PYTHONPATH: /repo/packages/rxycode-server/src:/repo/packages/rxycode-runner/src
       RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
+      # Bootstrap pip index: override at `up` time for networks that cannot
+      # reach pypi.org directly; defaults to the public index unchanged.
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     command:
       - sh
       - -c
@@ -154,6 +157,7 @@ services:
       # Public-demo request throttle: per-client-IP fixed window enforced by
       # the app's RateLimitMiddleware (stock Caddy ships no limiter plugin).
       RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-240}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_api.py"]
       interval: 10s
@@ -285,6 +289,7 @@ services:
       RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
       RXYCODE_DATA_DIR: /work/data
       RXYCODE_UVLOOP: "0"
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_worker.py"]
       interval: 10s
