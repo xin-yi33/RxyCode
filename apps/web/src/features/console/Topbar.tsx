@@ -1,24 +1,21 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { useLocation, useNavigate, useParams } from "react-router"
+import { useQuery } from "@tanstack/react-query"
+import { useLocation, useParams } from "react-router"
 
-import { IconConsole, IconLogout, IconMenu, IconMoon, IconSun } from "../../components/icons"
-import { createClient, type Me } from "../../sdk/client"
+import { IconConsole, IconMenu, IconMoon, IconSun } from "../../components/icons"
+import { createClient } from "../../sdk/client"
 import { useUi } from "../../state/ui"
 
 const api = createClient()
 
 export function Topbar() {
-  const navigate = useNavigate()
   const location = useLocation()
   const params = useParams()
-  const queryClient = useQueryClient()
   const theme = useUi((state) => state.theme)
   const toggleTheme = useUi((state) => state.toggleTheme)
   const toggleSidebar = useUi((state) => state.toggleSidebar)
   const consoleOpen = useUi((state) => state.consoleOpen)
   const toggleConsole = useUi((state) => state.toggleConsole)
 
-  const me = useQuery<Me>({ queryKey: ["me"], enabled: false })
   const sessionId = params.sessionId ?? ""
   const session = useQuery({
     queryKey: ["session", sessionId],
@@ -29,16 +26,6 @@ export function Topbar() {
   let title = "新任务"
   if (location.pathname === "/app/settings") title = "设置"
   else if (sessionId) title = session.data?.title ?? "会话"
-
-  const logout = () => {
-    void api
-      .logout()
-      .catch(() => undefined)
-      .then(() => {
-        queryClient.clear()
-        navigate("/login", { replace: true })
-      })
-  }
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background px-3">
@@ -69,18 +56,6 @@ export function Topbar() {
         onClick={toggleTheme}
       >
         {theme === "dark" ? <IconSun size={18} /> : <IconMoon size={18} />}
-      </button>
-      <span className="hidden max-w-40 truncate text-xs text-muted sm:block">
-        {me.data?.user?.email ?? me.data?.user?.display_name ?? ""}
-      </span>
-      <button
-        type="button"
-        aria-label="登出"
-        title="登出"
-        className="rounded-md p-1.5 text-muted hover:bg-sidebar"
-        onClick={logout}
-      >
-        <IconLogout size={18} />
       </button>
     </header>
   )

@@ -84,3 +84,11 @@ body {
 .rxy-pulse {
   animation: rxy-pulse 1.2s ease-in-out infinite;
 }
+
+/* Markdown：代码块 <pre> 内的 <code> 不再带行内 code 的底色/内边距。 */
+.rxy-md pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}

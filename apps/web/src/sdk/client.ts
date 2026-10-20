@@ -37,9 +37,15 @@ export type RunSummary = {
   final_preview: string
 }
 
-export type RunDetail = RunSummary & {
+// GET /runs/{id} 的实际字段（api/runs.py::get_run）——没有 final_preview。
+export type RunDetail = {
+  run_id: string
+  status: string
   session_id: string
   event_seq: number
+  created_at: string | null
+  message: string
+  permission_profile: string
 }
 
 export type SessionListItem = {
@@ -74,8 +80,14 @@ async function readJson(path: string, signal?: AbortSignal): Promise<unknown> {
     let code = "UNAVAILABLE"
     let detail = ""
     try {
-      const body = (await response.json()) as { code?: string; reason?: string }
+      // FastAPI HTTPException 的 detail 也是错误码（如 APPROVAL_STALE）。
+      const body = (await response.json()) as {
+        code?: string
+        reason?: string
+        detail?: string
+      }
       if (body.code) code = body.code
+      else if (typeof body.detail === "string" && body.detail) code = body.detail
       if (body.reason) detail = body.reason
     } catch {
       code = "UNAVAILABLE"
@@ -137,8 +149,15 @@ async function writeJson(
       let code = "UNAVAILABLE"
       let detail = ""
       try {
-        const payload = (await response.json()) as { code?: string; reason?: string }
+        const payload = (await response.json()) as {
+          code?: string
+          reason?: string
+          detail?: string
+        }
         if (payload.code) code = payload.code
+        else if (typeof payload.detail === "string" && payload.detail) {
+          code = payload.detail
+        }
         if (payload.reason) detail = payload.reason
       } catch {
         code = "UNAVAILABLE"
@@ -298,8 +317,11 @@ export function createClient() {
     listApprovals(runId: string, signal?: AbortSignal): Promise<{
       approvals: {
         approval_id: string
+        call_id?: string
         tool: string
-        arguments?: { path?: string; file?: string }
+        permission_scope?: string
+        arguments?: Record<string, unknown>
+        status?: string
         deadline?: string | null
         revision: number
       }[]
@@ -308,8 +330,11 @@ export function createClient() {
       return readJson(path, signal) as Promise<{
         approvals: {
           approval_id: string
+          call_id?: string
           tool: string
-          arguments?: { path?: string; file?: string }
+          permission_scope?: string
+          arguments?: Record<string, unknown>
+          status?: string
           deadline?: string | null
           revision: number
         }[]
@@ -323,11 +348,21 @@ export function createClient() {
       return writeJson(path, body) as Promise<{ status: string; revision: number }>
     },
     listQuestions(runId: string, signal?: AbortSignal): Promise<{
-      questions: { question_id: string; prompt: string }[]
+      questions: {
+        question_id: string
+        prompt: string
+        header?: string
+        options?: { label: string; value: string }[]
+      }[]
     }> {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/questions`
       return readJson(path, signal) as Promise<{
-        questions: { question_id: string; prompt: string }[]
+        questions: {
+          question_id: string
+          prompt: string
+          header?: string
+          options?: { label: string; value: string }[]
+        }[]
       }>
     },
     answerQuestion(

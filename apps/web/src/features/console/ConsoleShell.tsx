@@ -39,10 +39,13 @@ export function ConsoleShell() {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
-        <main id="main" className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          <Outlet />
-        </main>
-        {consoleOpen ? <ConsolePanel /> : null}
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <main id="main" className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+            <Outlet />
+          </main>
+          {/* ≥1280px：400px 右侧栏；以下由面板自身 fixed inset-0 全屏覆盖。 */}
+          {consoleOpen ? <ConsolePanel /> : null}
+        </div>
       </div>
     </div>
   )

@@ -1,8 +1,15 @@
-import { useQuery } from "@tanstack/react-query"
-import { Link, NavLink, useLocation } from "react-router"
+import { useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { Link, NavLink, useLocation, useNavigate } from "react-router"
 
-import { IconClose, IconPlus } from "../../components/icons"
-import { createClient } from "../../sdk/client"
+import {
+  IconClose,
+  IconLogout,
+  IconPlus,
+  IconSettings,
+  IconUser,
+} from "../../components/icons"
+import { createClient, type Me } from "../../sdk/client"
 import { useUi } from "../../state/ui"
 import { runStatusKind, runStatusText } from "../runs/status"
 
@@ -79,6 +86,97 @@ function SessionList() {
   )
 }
 
+// 侧栏底部账户条：头像 + 邮箱/昵称，点开弹出“设置 / 登出”。
+function AccountMenu() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const setSidebarOpen = useUi((state) => state.setSidebarOpen)
+  const [open, setOpen] = useState(false)
+  // 只读 AuthGate 已填充的 ["me"] 缓存；enabled:false + 真 queryFn 避免
+  // “No queryFn” 噪音，也保证缓存过期后能补拉。
+  const me = useQuery<Me>({
+    queryKey: ["me"],
+    queryFn: ({ signal }) => api.getMe(signal),
+    enabled: false,
+    staleTime: 30_000,
+  })
+  const name =
+    me.data?.user?.display_name || me.data?.user?.email || "账户"
+
+  const logout = () => {
+    setOpen(false)
+    void api
+      .logout()
+      .catch(() => undefined)
+      .then(() => {
+        queryClient.clear()
+        navigate("/login", { replace: true })
+      })
+  }
+
+  return (
+    <div className="relative border-t border-border p-2">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`账户：${name}`}
+        className={
+          "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left " +
+          "text-sm hover:bg-card"
+        }
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-border text-muted-ink">
+          <IconUser size={15} />
+        </span>
+        <span className="min-w-0 flex-1 truncate">{name}</span>
+      </button>
+      {open ? (
+        <>
+          <button
+            type="button"
+            aria-label="关闭账户菜单"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="menu"
+            className={
+              "absolute bottom-full left-2 right-2 z-50 mb-1 overflow-hidden " +
+              "rounded-lg border border-border bg-card shadow-md"
+            }
+          >
+            <NavLink
+              to="/app/settings"
+              role="menuitem"
+              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar"
+              onClick={() => {
+                setOpen(false)
+                if (window.matchMedia("(max-width: 767px)").matches) {
+                  setSidebarOpen(false)
+                }
+              }}
+            >
+              <IconSettings size={15} />
+              设置
+            </NavLink>
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-sidebar"
+              onClick={logout}
+            >
+              <IconLogout size={15} />
+              登出
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+}
+
 export function Sidebar() {
   const open = useUi((state) => state.sidebarOpen)
   const setSidebarOpen = useUi((state) => state.setSidebarOpen)
@@ -128,6 +226,7 @@ export function Sidebar() {
         <nav className="min-h-0 flex-1 overflow-y-auto">
           <SessionList />
         </nav>
+        <AccountMenu />
       </aside>
     </>
   )

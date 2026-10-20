@@ -12,12 +12,21 @@ export const RUN_STATUS_TEXT: Record<string, string> = {
   recovery_required: "需要恢复",
 }
 
+// 占用会话唯一活跃位的状态（与 uq_runs_one_active_per_session 的谓词一致）：
+// 有 run 处于这些状态时，输入框变为停止态。
 export const ACTIVE_RUN_STATUSES = new Set([
   "pending",
   "leased",
   "running",
   "waiting_approval",
   "cancel_requested",
+])
+
+// 终态 —— 与 api/sse.py 的 _TERMINAL 一致：收到后补拉一次并关闭 SSE。
+export const TERMINAL_RUN_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
   "recovery_required",
 ])
 
@@ -27,6 +36,10 @@ export function runStatusText(status: string): string {
 
 export function isActiveRunStatus(status: string): boolean {
   return ACTIVE_RUN_STATUSES.has(status)
+}
+
+export function isTerminalRunStatus(status: string): boolean {
+  return TERMINAL_RUN_STATUSES.has(status)
 }
 
 export type StatusKind = "running" | "waiting" | "success" | "failure" | "idle"

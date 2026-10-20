@@ -1,12 +1,19 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 
-import { reduceEvents, type Projection, type RunEvent } from "./eventReducer"
+import { loginPathFor } from "../../app/AuthGate"
+import { ApiError, createClient } from "../../sdk/client"
+import { reduceEvents, type RunEvent, type RunView } from "./eventReducer"
+import { isTerminalRunStatus } from "./status"
+
+const api = createClient()
 
 export type LiveRun = {
-  projection: Projection
+  view: RunView
+  connected: boolean
+  notFound: boolean
   cursorExpired: boolean
   snapshotSeq: number | null
-  connected: boolean
 }
 
 type ParsedStream = {
@@ -52,12 +59,13 @@ export function parseEventStream(text: string): ParsedStream {
 async function readEvents(
   runId: string,
   cursor: number,
+  signal?: AbortSignal,
 ): Promise<{ status: number; parsed: ParsedStream | null; snapshotSeq: number | null }> {
   const headers: Record<string, string> = { accept: "text/event-stream" }
   const query = cursor > 0 ? "follow=0" : "after_seq=0&follow=0"
   if (cursor > 0) headers["last-event-id"] = String(cursor)
   const path = `/api/v1/runs/${encodeURIComponent(runId)}/events?${query}`
-  const response = await fetch(path, { credentials: "same-origin", headers })
+  const response = await fetch(path, { credentials: "same-origin", headers, signal })
   if (response.status === 409) {
     const body = (await response.json()) as { snapshot_seq?: number }
     const snapshot = body.snapshot_seq
@@ -71,25 +79,58 @@ async function readEvents(
   return { status: 200, parsed: parseEventStream(await response.text()), snapshotSeq: null }
 }
 
-export function useRunEvents(runId: string): LiveRun {
+// 控制台用的一次性视图：GET run + follow=0 全量回放，不走 SSE。
+export async function fetchRunView(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<RunView> {
+  const detail = await api.getRun(runId, signal)
+  const result = await readEvents(runId, 0, signal)
+  const events = result.parsed?.events ?? []
+  return reduceEvents(events, String(detail.status ?? ""), 0, runId).view
+}
+
+type ProbeState = "ok" | "terminal" | "missing" | "auth" | "fail"
+
+export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
+  const queryClient = useQueryClient()
   const [events, setEvents] = useState<RunEvent[]>([])
-  const [runStatus, setRunStatus] = useState("")
-  const [watermark, setWatermark] = useState(0)
+  const [baseStatus, setBaseStatus] = useState(seedStatus)
+  const [connected, setConnected] = useState(false)
+  const [notFound, setNotFound] = useState(false)
   const [cursorExpired, setCursorExpired] = useState(false)
   const [snapshotSeq, setSnapshotSeq] = useState<number | null>(null)
-  const [connected, setConnected] = useState(false)
 
   useEffect(() => {
     let source: EventSource | null = null
-    let stopped = false
-    let dead = false
+    let timer = 0
+    let stopped = false // 组件卸载
+    let dead = false // 终态/404/游标过期 —— 不再重连
     let cursor = 0
+    let attempt = 0
+    const seenSeq = new Set<number>()
+
     setEvents([])
-    setRunStatus("")
-    setWatermark(0)
+    setBaseStatus(seedStatus)
+    setConnected(false)
+    setNotFound(false)
     setCursorExpired(false)
     setSnapshotSeq(null)
-    setConnected(false)
+
+    const redirectLogin = () => {
+      dead = true
+      source?.close()
+      window.location.assign(
+        loginPathFor(window.location.pathname, window.location.search),
+      )
+    }
+
+    const markNotFound = () => {
+      dead = true
+      setNotFound(true)
+      setConnected(false)
+      source?.close()
+    }
 
     const expire = (snapshot: number | null) => {
       if (dead) return
@@ -101,18 +142,111 @@ export function useRunEvents(runId: string): LiveRun {
       source?.close()
     }
 
+    // 终态：补拉一次 follow=0 全量回放，然后彻底关闭。
+    const finish = async () => {
+      if (dead || stopped) return
+      dead = true
+      source?.close()
+      setConnected(false)
+      try {
+        const result = await readEvents(runId, 0)
+        if (stopped) return
+        if (result.status === 409 || result.parsed?.expired) {
+          expire(result.snapshotSeq ?? result.parsed?.snapshotSeq ?? null)
+          return
+        }
+        if (result.parsed) remember(result.parsed.events)
+      } catch {
+        // 网络抖动 —— 保留已收到的事件，不再重连。
+      }
+      void queryClient.invalidateQueries({ queryKey: ["sessionRuns"] })
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    }
+
     const remember = (batch: RunEvent[]) => {
-      if (batch.length === 0) return
-      cursor = batch[batch.length - 1].seq
-      setEvents((current) => [...current, ...batch])
+      const fresh = batch.filter(
+        (event) =>
+          Number.isInteger(event.seq) && event.seq >= 1 && !seenSeq.has(event.seq),
+      )
+      if (fresh.length === 0) return
+      let hitTerminal = false
+      for (const event of fresh) {
+        seenSeq.add(event.seq)
+        if (
+          event.type === "run.status" &&
+          isTerminalRunStatus(String(event.payload?.status ?? ""))
+        ) {
+          hitTerminal = true
+        }
+      }
+      // 游标是连续水位，不是最大值 —— 中间漏掉的 seq 靠重连回放补上。
+      while (seenSeq.has(cursor + 1)) cursor += 1
+      setEvents((current) => [...current, ...fresh])
+      if (hitTerminal) void finish()
+    }
+
+    // 每次重连前先 GET /runs/{id}：401 跳登录、404 任务不存在、终态收尾。
+    const probe = async (): Promise<ProbeState> => {
+      try {
+        const detail = await api.getRun(runId)
+        if (stopped || dead) return "fail"
+        setBaseStatus(String(detail.status ?? ""))
+        return isTerminalRunStatus(String(detail.status ?? "")) ? "terminal" : "ok"
+      } catch (error) {
+        if (error instanceof ApiError) {
+          if (error.status === 401) return "auth"
+          if (error.status === 404) return "missing"
+        }
+        return "fail"
+      }
+    }
+
+    const scheduleRecover = () => {
+      if (dead || stopped || timer) return
+      // 退避 1s、2s、4s…最长 30s
+      const delay = Math.min(30_000, 1_000 * 2 ** attempt)
+      attempt += 1
+      timer = window.setTimeout(() => {
+        timer = 0
+        void recover()
+      }, delay)
+    }
+
+    const recover = async () => {
+      if (dead || stopped) return
+      const state = await probe()
+      if (dead || stopped) return
+      if (state === "auth") return redirectLogin()
+      if (state === "missing") return markNotFound()
+      if (state === "terminal") return void finish()
+      if (state === "fail") return scheduleRecover()
+      try {
+        const result = await readEvents(runId, cursor)
+        if (dead || stopped) return
+        if (result.status === 409 || result.parsed?.expired) {
+          return expire(result.snapshotSeq ?? result.parsed?.snapshotSeq ?? null)
+        }
+        if (result.status === 401) return redirectLogin()
+        if (result.status === 404) return markNotFound()
+        if (!result.parsed) return scheduleRecover()
+        remember(result.parsed.events)
+        openFollow()
+      } catch {
+        scheduleRecover()
+      }
     }
 
     const openFollow = () => {
+      if (dead || stopped) return
       source?.close()
       const query = cursor > 0 ? `after_seq=${cursor}&follow=1` : "follow=1"
-      const follow = `/api/v1/runs/${encodeURIComponent(runId)}/events?${query}`
-      source = new EventSource(follow)
-      source.onopen = () => setConnected(true)
+      source = new EventSource(
+        `/api/v1/runs/${encodeURIComponent(runId)}/events?${query}`,
+      )
+      source.onopen = () => {
+        attempt = 0
+        setConnected(true)
+      }
       source.onmessage = (message) => {
         try {
           const body = JSON.parse(message.data) as RunEvent
@@ -127,67 +261,52 @@ export function useRunEvents(runId: string): LiveRun {
         if (dead || stopped) return
         const data = (event as MessageEvent).data
         if (typeof data === "string") {
+          // CURSOR_EXPIRED 等结构化错误帧走 event: error。
           const parsed = parseEventStream(`data: ${data}\n\n`)
-          if (parsed.expired) expire(parsed.snapshotSeq)
+          if (parsed.expired) return expire(parsed.snapshotSeq)
           return
         }
+        // 连接断开（含服务端在终态后主动结束 follow 流）：关死自带重连，走退避。
         setConnected(false)
         source?.close()
-        const recover = () => {
-          if (stopped || dead) return
-          void readEvents(runId, cursor)
-            .then((result) => {
-              if (stopped || dead) return
-              if (result.status === 409 || result.parsed?.expired) {
-                expire(result.snapshotSeq ?? result.parsed?.snapshotSeq ?? null)
-                return
-              }
-              if (result.parsed) remember(result.parsed.events)
-              setConnected(true)
-              openFollow()
-            })
-            .catch(() => {
-              if (stopped || dead) return
-              window.setTimeout(recover, 400)
-            })
-        }
-        recover()
+        scheduleRecover()
       })
     }
 
     const load = async () => {
-      const state = await fetch(`/api/v1/runs/${encodeURIComponent(runId)}`, {
-        credentials: "same-origin",
-        headers: { accept: "application/json" },
-      })
-      if (stopped) return
-      if (state.ok) {
-        const body = (await state.json()) as { status?: string; event_seq?: number }
-        if (stopped) return
-        setRunStatus(String(body.status ?? ""))
-        setWatermark(Number(body.event_seq ?? 0))
+      const state = await probe()
+      if (stopped || dead) return
+      if (state === "auth") return redirectLogin()
+      if (state === "missing") return markNotFound()
+      if (state === "fail") return scheduleRecover()
+      try {
+        const snapshot = await readEvents(runId, 0)
+        if (stopped || dead) return
+        if (snapshot.status === 409 || snapshot.parsed?.expired) {
+          return expire(snapshot.snapshotSeq ?? snapshot.parsed?.snapshotSeq ?? null)
+        }
+        if (snapshot.status === 401) return redirectLogin()
+        if (snapshot.status === 404) return markNotFound()
+        if (snapshot.parsed) remember(snapshot.parsed.events)
+        if (state === "terminal") return // 已结束的 run 只拉一次，不订阅
+        openFollow()
+      } catch {
+        scheduleRecover()
       }
-      const snapshot = await readEvents(runId, 0)
-      if (stopped) return
-      if (snapshot.status === 409 || snapshot.parsed?.expired) {
-        expire(snapshot.snapshotSeq ?? snapshot.parsed?.snapshotSeq ?? null)
-        return
-      }
-      if (snapshot.parsed) remember(snapshot.parsed.events)
-      setConnected(true)
-      openFollow()
     }
     void load()
     return () => {
       stopped = true
       source?.close()
+      if (timer) window.clearTimeout(timer)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId])
 
-  return {
-    projection: reduceEvents(events, runStatus, watermark),
-    cursorExpired,
-    snapshotSeq,
-    connected,
-  }
+  const view = useMemo(
+    () => reduceEvents(events, baseStatus, 0, runId).view,
+    [events, runId, baseStatus],
+  )
+
+  return { view, connected, notFound, cursorExpired, snapshotSeq }
 }

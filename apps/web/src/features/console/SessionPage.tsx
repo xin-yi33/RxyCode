@@ -6,56 +6,17 @@ import { Button } from "../../components/ui/button"
 import { createClient, type RunSummary } from "../../sdk/client"
 import { isUnauthorized } from "../../sdk/errors"
 import { RunTimeline } from "../runs/RunTimeline"
-import { isActiveRunStatus, runStatusKind, runStatusText } from "../runs/status"
+import { isActiveRunStatus } from "../runs/status"
 import { Composer } from "./Composer"
 
 const api = createClient()
 
-const chipClass: Record<string, string> = {
-  running: "bg-running/15 text-running-ink",
-  waiting: "bg-waiting/15 text-waiting-ink",
-  success: "bg-success/15 text-success-ink",
-  failure: "bg-failure/15 text-failure-ink",
-  idle: "bg-border text-muted-ink",
-}
-
-function StatusChip({ status }: { status: string }) {
-  return (
-    <span
-      data-run-status={status}
-      className={
-        "rounded-full px-2 py-0.5 text-xs " + chipClass[runStatusKind(status)]
-      }
-    >
-      {runStatusText(status)}
-    </span>
-  )
-}
-
 function RunCard({ run }: { run: RunSummary }) {
-  const live = isActiveRunStatus(run.status)
+  // W9-F4: 用户消息气泡、状态行、工具/审批/问题/Final 全部由 RunTimeline
+  // 渲染 —— 这里不再画重复的状态行。
   return (
     <article className="space-y-3">
-      <div className="flex justify-end">
-        <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-bubble px-4 py-2 text-sm leading-relaxed">
-          {run.message}
-        </p>
-      </div>
-      <div className="flex items-center gap-2 text-xs text-muted">
-        <StatusChip status={run.status} />
-        {run.created_at ? (
-          <time dateTime={run.created_at}>
-            {new Date(run.created_at).toLocaleString()}
-          </time>
-        ) : null}
-      </div>
-      {live ? (
-        <RunTimeline runId={run.run_id} live />
-      ) : run.final_preview ? (
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-          {run.final_preview}
-        </p>
-      ) : null}
+      <RunTimeline run={run} />
     </article>
   )
 }
@@ -101,6 +62,7 @@ export function SessionPage() {
 
   // Backend returns newest-first; render oldest-first like a chat log.
   const ordered = [...older, ...(runs.data?.runs ?? [])].reverse()
+  const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
   return (
     <div className="mx-auto flex min-h-full max-w-3xl flex-col px-4 py-4">
@@ -121,13 +83,13 @@ export function SessionPage() {
       ) : null}
       <ol className="flex-1 space-y-8 pb-6">
         {ordered.map((run) => (
-          <li key={run.run_id}>
+          <li key={run.run_id} id={`run-${run.run_id}`}>
             <RunCard run={run} />
           </li>
         ))}
       </ol>
       <div className="sticky bottom-0 -mx-4 bg-background">
-        <Composer sessionId={sessionId} />
+        <Composer sessionId={sessionId} activeRun={active} />
       </div>
     </div>
   )

@@ -150,6 +150,24 @@ export function IconSpinner(props: IconProps) {
   )
 }
 
+export function IconCopy(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </IconBase>
+  )
+}
+
+export function IconUser(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </IconBase>
+  )
+}
+
 export function IconArrowDown(props: IconProps) {
   return (
     <IconBase {...props}>
