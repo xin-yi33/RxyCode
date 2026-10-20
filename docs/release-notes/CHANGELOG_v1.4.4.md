@@ -195,6 +195,28 @@
 - `rxyw9e2e` 验收栈实测发现：`egress.py::_pipe` 在管道结束时调用 `writer.write_eof()`，TLS transport（连模型上游的 HTTPS）抛 `NotImplementedError`——未捕获，经 `_tunnel` 的 `gather` 传播成 `egress request failed`，隧道在响应收尾时被拆除；同一 run 出现 92/167 次 tool 失败并最终 `recovery_required`。修复为 `can_write_eof()` 守卫 + 补捕 `NotImplementedError`（TLS 不支持半关闭时直接跳过）。
 - 回归测试 `tests/web/w9/test_egress_eof.py`（2 条：TLS writer 不调用 write_eof 且不崩、普通 writer 正常半关闭）。
 
+### W9-A1 忘记密码流程
+
+- **后端**（`api/auth.py` + 新模型 + 迁移 `007_password_resets`）：`POST /api/v1/auth/forgot` 恒返回 `{"ok": true}`（形状不泄露邮箱是否存在，无枚举面）；命中已注册邮箱时签发 `secrets.token_urlsafe(32)`，库中只存 HMAC 摘要（`password_resets` 表：token_hash 主键 + user_id + created/expires/used_at），30 分钟有效、一次性，且签发新 token 会立刻作废该用户所有未用旧 token（只有最新邮件链接可用）。`POST /api/v1/auth/reset` 校验 token 未用未过期 → 重写 `password_hash`（scrypt）→ 标记 used_at → **撤销该用户全部 `auth_sessions`**；失败统一 `RESET_INVALID`（未知/已用/过期同码，无 oracle），密码长度不合归 `INVALID_INPUT`（校验在消费 token 之前，token 仍可再用）。限流复用 `AuthRateLimit`：forgot 走 IP 10/min + 邮箱 5/min，reset 走 IP 10/min + token 前缀 5/min。
+- **投递**：`RXYCODE_SMTP_URL`（`smtps://` 隐式 TLS / `smtp://` + STARTTLS，新模块 `mailer.py` 仅 stdlib `smtplib`+`EmailMessage`，`RXYCODE_SMTP_FROM` 可指定发件人）配置时走真实邮件；**未配置且 `mode="local"`** 时响应内联返回 `reset_url`（开发兜底，loopback-only 网关）；**cloud 无 SMTP** 时 `capabilities.password_reset=false`，登录页"忘记密码？"链接不渲染——不承诺交付不了的链接。重置链接基址取请求 `Origin`（已被 `require_write` 白名单校验），Vite 开发/Caddy 生产均正确。
+- **前端**：新页 `ForgotPasswordPage`（`/forgot`：邮箱 → "如果该邮箱已注册…"统一文案；开发模式显示内联重置链接）、`ResetPasswordPage`（`/reset?token=…`：新密码+确认 → 成功提示"所有会话已退出"→ 去登录；`RESET_INVALID`→"重置链接无效或已过期"）；`LoginPage` 密码标签右侧加"忘记密码？"（仅 `password_reset===true` 时）；路由 `/forgot`、`/reset` 公开挂在 `AuthGate` 外；`sdk/client.ts` 增 `forgotPassword`/`resetPassword`/`Capabilities.password_reset`，`errors.ts` 补 `RESET_INVALID` 中文。
+- **生产接入**：`compose.prod.yaml` 透传 `RXYCODE_SMTP_URL`/`RXYCODE_SMTP_FROM`（`${VAR:-}` 可选）；`.env.prod.example` 补注释样例；runbook 环境表 + 段落说明（投递语义、30min/一次性/全会话撤销、local 兜底边界）。
+- **测试** `tests/web/w9/test_password_reset.py`（7 条）：完整链路（forgot→local 内联链接→reset→旧密码 401/新密码 200/旧会话 cookie 401）、token 一次性、仅最新链接有效、未知邮箱同形状不落库、过期 token 拒绝且密码不变、capabilities（local=true / cloud 无 SMTP=false）+ cloud 形状一致、非法 token/短密码边界（短密码不消费 token）。
+
+### W9-Q1 端到端验收修复（测试侧）
+
+- `test_e2e.py` 首轮实跑：E-1 身份、E-2 主任务、E-3 审批、E-6 跨租户隔离、证据索引 **通过**；E-4/E-5/E-7/E-8/E-9 失败，逐条定位均为测试设计缺陷而非产品 bug——
+  - **E-4**：confirm 档的 run 会停在审批卡上，但测试循环只处理问题卡 → run 永远 `waiting_approval` 超时。修复：循环内复用 E-3 的"批准 pending 审批卡"逻辑。
+  - **E-5/E-7/E-8**：E-4 残留的活跃 run 撞 `QUOTA concurrency=1` 准入（产品正确行为），后续 `POST /tasks` 返回"你已有任务在运行"而不跳转。修复：新 `ensure_idle()` 助手——提交类场景前先取消用户全部非终态 run 并等其到达终态（`cancel_requested` 也占并发位，等 worker ack）。
+  - **E-9**：`aside[aria-label="控制台"] button:has-text("运行"/"用量")` 子串匹配命中 39 个含同字样的工具行按钮（strict mode violation）。修复：改 `get_by_role(button, name=…, exact=True)`。
+
+### W9-Q1 端到端验收修复（产品侧：bash 写路径分析器后缀误报）
+
+- E-2 复跑暴露真实 bug：完成门禁执行 `test -f hello.py && test "$(python hello.py)" = "hello" && echo A > .p3` 被拦 `[blocked: bash write path not allowed: py]`，run 挂 `waiting_approval`、agent 烧 ~86 万 token / 60+ 轮反复探测后向用户提问（H1 成本问题的又一入口）。
+- **根因**（`core/safety/policy.py`）：`_BASH_MUTATING_OPENER_RE` 的 `(?<![$:])\b` 把 `hello.py` 中 `.` 之后的 `py` 当成解释器动词（`.` 是非单词字符，`\b` 成立）；`test`/`cat`/`ls`/`grep`/`echo` 均非 MUT 动词、无人消费尾部参数，于是该 `py` 开出一个"无参解释器调用"事件 → fail-closed。`.php` 同理；`rm -f hello.py` 恰好不炸（`rm` 的 verbseg 吞掉整个尾部）。
+- **修复**：opener 与 `_MUT_VERB_WORDS_RE` 统一加 `(?<![^\s/\\]\.)` lookbehind——`.` 前为任意非空白非斜杠字符（`a.py`/`*.py`/`?.php`/`x.{py}` 等所有文件名后缀与 glob）不再开事件；`./rm` 等路径执行体不受影响（`.` 前是 `/`）。
+- **回归**：`tests/test_safety_policy.py::test_bash_filename_extension_is_not_an_interp_verb`——良性面（`test -f`/`cat`/`grep`/`echo *.py`/原门禁命令全文/`python hello.py`/`py hello.py`）全放行，恶意面（`rm -rf /`、逃逸重定向、`sed -i` 越界、`xargs rm` 载具）仍拦截；分析器套件 139+1 全绿。
+
 ### 已知限制（明示，非遗漏）
 
 - 每个挂起调用仅支持一个持久化提问。

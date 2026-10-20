@@ -236,6 +236,46 @@ class TestClassifyBashCommand:
         )
         assert find_bash_disallowed_write_paths(report_cmd, cfg) == []
 
+    def test_bash_filename_extension_is_not_an_interp_verb(self, tmp_path, monkeypatch):
+        """``hello.py``/``*.py``/``foo.php`` suffixes must not open a bare
+        interpreter event — ``test -f hello.py`` was false-blocked as
+        ``[blocked: bash write path not allowed: py]`` (W9 e2e, ~860k tokens
+        wasted probing it). Command-position interpreter args and real
+        escapes keep working."""
+        from RxyCode.RxyCode1_1_0.core.safety.policy import (
+            find_bash_disallowed_write_paths,
+        )
+        from RxyCode.RxyCode1_1_0.core import session_runtime
+
+        monkeypatch.setattr(
+            session_runtime, "current_working_directory", lambda: tmp_path
+        )
+        cfg = {
+            "execution": {"sandbox_mode": "workspace", "workspace_root": str(tmp_path)},
+            "safety": {"allowed_write_paths": []},
+        }
+        wd = str(tmp_path)
+        benign = [
+            "test -f hello.py",
+            "cat hello.py",
+            "grep foo app.py",
+            "echo *.py",
+            "ls *.py ?.php",
+            'test -f hello.py && test "$(python hello.py)" = "hello" && echo A > .p3',
+            "python hello.py",
+            "py hello.py",
+        ]
+        for cmd in benign:
+            assert find_bash_disallowed_write_paths(cmd, cfg, workdir=wd) == [], cmd
+        hostile = [
+            "rm -rf /",
+            "cat /etc/passwd > /tmp/escape.txt",
+            "sed -i s/a/b/ /outside/f.py",
+            "xargs rm",
+        ]
+        for cmd in hostile:
+            assert find_bash_disallowed_write_paths(cmd, cfg, workdir=wd), cmd
+
 
 class TestArgumentAwareToolRisk:
     @pytest.mark.parametrize(

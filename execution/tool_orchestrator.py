@@ -45,6 +45,7 @@ from RxyCode.RxyCode1_1_0.core.safety.audit import get_audit_logger
 from RxyCode.RxyCode1_1_0.core.safety.policy import (
     RiskLevel,
     TOOL_NAME_ALIASES,
+    BASH_WRITE_BLOCKED_HINT,
     WRITE_PATH_BLOCKED_HINT,
     apply_mcp_hint,
     canonical_tool_name,
@@ -1724,7 +1725,7 @@ class ToolOrchestrator:
                         preview = ", ".join(blocked_paths[:3])
                         msg = (
                             "[blocked: bash write path not allowed: "
-                            f"{preview}]"
+                            f"{preview}] " + BASH_WRITE_BLOCKED_HINT
                         )
                         return self._finish(
                             name, args, msg, executed=False, approval="rejected",

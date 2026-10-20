@@ -556,6 +556,18 @@ WRITE_PATH_BLOCKED_HINT = (
 )
 
 
+#: bash 写路径闸拒绝文案的可操作指引：判定针对的是命令形状而非运气 —
+#: 换载具/加引号/套 env/cd 都不会改变结论（实测一个 run 探测 60+ 轮、
+#: 烧 ~86 万 token）。告诉 agent 正确的自救路径。
+BASH_WRITE_BLOCKED_HINT = (
+    "hint: this verdict is deterministic for the command shape — "
+    "re-quoting, env/sh/bash carriers, or path variants will not change "
+    "it. If a check needs inline interpreter code (python -c, node -e, "
+    "bash -c …), write a small script file into the workspace and run it "
+    "by path instead; otherwise choose a different command or ask the user."
+)
+
+
 # Absolute path literals that often appear in shell write/delete probes.
 _ABS_PATH_RE = re.compile(
     r"(?P<path>"
@@ -619,7 +631,12 @@ _MUT_VERB_ALT = (
 _BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    rf"(?<![$:])\b(?P<verb>(?:{_MUT_VERB_ALT})(?:\.(?:exe|com|bat|cmd|ps1))?)\b"
+    # ``(?<![^\s/\\]\.)``: a filename's extension is not a verb —
+    # ``hello.py``/``*.py``/``foo.php`` must not open a bare ``py``/``php``
+    # interpreter event (which fails closed with no args). ``./rm`` still
+    # matches: the char before ``.`` there is ``/`` — a path prefix,
+    # not a suffix.
+    rf"(?<![$:])(?<![^\s/\\]\.)\b(?P<verb>(?:{_MUT_VERB_ALT})(?:\.(?:exe|com|bat|cmd|ps1))?)\b"
     r"(?P<verbseg>[^\n;|&]*)"
     r"|(?:^|[^>])>{1,2}\|?(?P<redirseg>[^\n;|&]*)"
     r"|(?P<dotnetcall>\[[\w.]+\]\s*::\s*\w+\s*\(|New-Object\b|"
@@ -642,7 +659,7 @@ _DOTNET_READER_TYPE_RE = re.compile(
 )
 # Word-level verb matcher for carrier commands (``xargs``/``find -exec``)
 # whose own segment swallows the nested verb before it can open a segment.
-_MUT_VERB_WORDS_RE = re.compile(rf"(?i)\b(?:{_MUT_VERB_ALT})\b")
+_MUT_VERB_WORDS_RE = re.compile(rf"(?i)(?<![^\s/\\]\.)\b(?:{_MUT_VERB_ALT})\b")
 _PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
 _DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
 _ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%!])")
@@ -2595,6 +2612,24 @@ def find_bash_disallowed_write_paths(
                         or re.search(r"[>|;&`$]", inner)
                     ):
                         continue
+                    # A literal that is wholly a ``$(…)``/`` `…` `` substitution
+                    # sat in *argument* position inside the payload — its body
+                    # is what executes (``sh -c 'test "$(cat f)" = ok'`` runs
+                    # ``cat``, the substitution itself is not a command slot).
+                    # Rescanning the bare wrapper puts ``$(`` at command
+                    # position and fails closed on read-only checks. Rescan the
+                    # body instead: writes inside (``$(rm /x)``) still block —
+                    # reported as the real path, not the opaque ``$(``.
+                    whole_sub = re.fullmatch(
+                        r"\$\((?P<dollar>[\s\S]+)\)|`(?P<tick>[\s\S]+)`",
+                        inner,
+                    )
+                    if whole_sub:
+                        inner = (
+                            whole_sub.group("dollar") or whole_sub.group("tick") or ""
+                        ).strip()
+                        if not inner:
+                            continue
                     lmut: list[bool] = []
                     lsub = find_bash_disallowed_write_paths(
                         inner,
