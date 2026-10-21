@@ -209,6 +209,9 @@
   - **E-4**：confirm 档的 run 会停在审批卡上，但测试循环只处理问题卡 → run 永远 `waiting_approval` 超时。修复：循环内复用 E-3 的"批准 pending 审批卡"逻辑。
   - **E-5/E-7/E-8**：E-4 残留的活跃 run 撞 `QUOTA concurrency=1` 准入（产品正确行为），后续 `POST /tasks` 返回"你已有任务在运行"而不跳转。修复：新 `ensure_idle()` 助手——提交类场景前先取消用户全部非终态 run 并等其到达终态（`cancel_requested` 也占并发位，等 worker ack）。
   - **E-9**：`aside[aria-label="控制台"] button:has-text("运行"/"用量")` 子串匹配命中 39 个含同字样的工具行按钮（strict mode violation）。修复：改 `get_by_role(button, name=…, exact=True)`。
+  - **E-9（二轮）**：16 个 viewport×theme 浏览器上下文在数秒内并发起建，`/me`/`/sessions` 撞 api 每 IP 240rpm 默认限流 → AuthGate 落"无法连接服务器"卡、`textarea[aria-label="消息"]` 30s 不出。属测试突发非产品信号（限流器本体由模块测试覆盖）；e2e 栈以 `RXYCODE_WEB_RATE_LIMIT_RPM=2000` 拉起，docstring 已注明。
+  - **E-2（二轮）**：`kinds` 顺序断言 `i_text < i_tool` 假设"先 narration 后工具"，实测模型首轮直接 tool-call（`['user','tool','text','tool',…]`）——合法行为。断言收窄为真实不变量：user+final+tool 在场、final 最后、tool 先于 final。
+- **最终结果（2026-10-21，deepseek-flash 实模型）**：**E-1..E-9 全绿，10 passed / 256s**。E-1 注册/刷新/API 重启保持登录/登出；E-2 主任务带工具行与表格 Final（`succeeded`）；E-3 审批卡批准×2 后取消落 `cancelled`；E-4 N/A（agent 未提问）；E-5 停止→`cancelled`（watchdog ~3s 检出）；E-6 跨租户隔离；E-7 `succeeded`；E-8 并发占用 429"你已有任务在运行"；E-9 40 张 4 视口×双主题截图（控制台/用量/run 视图/审批卡）无横向滚动无白屏。证据落 `~/.rxycode/output/w9-e2e/index.json` + 逐场景 `.events.json` 回放缓存。
 
 ### W9-Q1 端到端验收修复（产品侧：bash 写路径分析器后缀误报）
 

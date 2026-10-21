@@ -20,6 +20,12 @@ Environment knobs (defaults match the rxyw9e2e bring-up):
 The suite deliberately shares state between tests (E-3 reuses E-2's session,
 E-6 needs A's ids) — run the file as a whole; ``-x`` stops at the first real
 failure. Real-model runs take minutes; per-test timeouts are generous.
+
+Bring-up note: raise the stack's per-IP limiter for the suite —
+``RXYCODE_WEB_RATE_LIMIT_RPM=2000`` at ``up -d`` time. E-9 spins up sixteen
+authed browser contexts in seconds; at the 240 default the shared gateway IP
+trips the limiter and ``/me`` returns 429, which is a harness-side flake,
+not a product signal (the limiter itself is covered by module tests).
 """
 
 from __future__ import annotations
@@ -463,14 +469,14 @@ def test_e2_main_task(ctx_a: BrowserContext, page_a: Page):
     assert "user" in kinds and "final" in kinds, kinds
     assert "tool" in kinds, f"no tool row rendered: {kinds}"
 
-    # order: first text (assistant.delta block) -> first tool -> final last
-    i_text = kinds.index("text") if "text" in kinds else None
+    # order: final last; tools before it. A text delta may legitimately come
+    # AFTER the first tool row — the model can act before narrating (observed
+    # on the 2026-10-21 rerun: ['user','tool','text','tool',...]), so text
+    # ordering is not asserted.
     i_tool = kinds.index("tool")
     i_final = kinds.index("final")
     assert i_final == len(kinds) - 1, f"final not last: {kinds}"
     assert i_tool < i_final
-    if i_text is not None:
-        assert i_text < i_tool, kinds
 
     # tool rows reached completed (running may be too fast to catch visually;
     # the event log is the ground truth for started->completed)
