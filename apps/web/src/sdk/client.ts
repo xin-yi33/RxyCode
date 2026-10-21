@@ -285,8 +285,17 @@ export type SessionInfo = {
   last_run?: { run_id: string; status: string } | null
 }
 
+// GET /api/v1/version 的构建戳（免登录）。
+export type BuildStamp = {
+  commit: string
+  built_at: string
+}
+
 export function createClient() {
   return {
+    getVersion(signal?: AbortSignal): Promise<BuildStamp> {
+      return readJson("/api/v1/version", signal) as Promise<BuildStamp>
+    },
     getMe(signal?: AbortSignal): Promise<Me> {
       return readJson("/api/v1/me", signal) as Promise<Me>
     },

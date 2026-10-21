@@ -7,6 +7,7 @@ import { createClient, type DeviceStatus, type Me } from "../../sdk/client"
 import { apiErrorText } from "../../sdk/errors"
 import { useUi } from "../../state/ui"
 import { useAuth, useLogout } from "../auth/useAuth"
+import { AboutDialog } from "./AboutDialog"
 import { ModelsSection } from "./ModelsSection"
 
 const api = createClient()
@@ -37,6 +38,7 @@ export function SettingsPage() {
   })
   const [claimBusy, setClaimBusy] = useState(false)
   const [claimError, setClaimError] = useState("")
+  const [aboutOpen, setAboutOpen] = useState(false)
 
   const claimDevice = () => {
     if (claimBusy) return
@@ -130,22 +132,27 @@ export function SettingsPage() {
             </div>
           ) : null}
         </dl>
-        <Button
-          variant="outline"
-          size="sm"
-          className="mt-4"
-          disabled={logoutBusy}
-          // 共享 useLogout：调 API → 清查询缓存 → SPA 回 /app；失败就地提示。
-          onClick={() => void logout()}
-        >
-          {logoutBusy ? "退出中…" : "登出"}
-        </Button>
+        <div className="mt-4 flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={logoutBusy}
+            // 共享 useLogout：调 API → 清查询缓存 → SPA 回 /app；失败就地提示。
+            onClick={() => void logout()}
+          >
+            {logoutBusy ? "退出中…" : "登出"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setAboutOpen(true)}>
+            关于
+          </Button>
+        </div>
         {logoutError ? (
           <p role="alert" className="mt-2 text-xs text-failure">
             {logoutError}
           </p>
         ) : null}
       </section>
+      {aboutOpen ? <AboutDialog onClose={() => setAboutOpen(false)} /> : null}
     </div>
   )
 }
