@@ -214,8 +214,13 @@ export function createClient() {
         delivery?: string
       }>
     },
-    resetPassword(token: string, password: string): Promise<{ ok: boolean }> {
-      return writeJson("/api/v1/auth/reset", { token, password }) as Promise<{
+    resetPassword(input: {
+      token?: string
+      email?: string
+      code?: string
+      password: string
+    }): Promise<{ ok: boolean }> {
+      return writeJson("/api/v1/auth/reset", input) as Promise<{
         ok: boolean
       }>
     },

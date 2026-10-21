@@ -31,7 +31,7 @@ export function ResetPasswordPage() {
     setBusy(true)
     setError("")
     api
-      .resetPassword(token, password)
+      .resetPassword({ token, password })
       .then(() => setDone(true))
       .catch((err: unknown) => setError(apiErrorText(err)))
       .finally(() => setBusy(false))

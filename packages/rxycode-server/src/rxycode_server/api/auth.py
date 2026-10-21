@@ -16,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -47,6 +48,8 @@ _SESSION_TTL = timedelta(days=7)
 _SESSION_RENEW_AFTER = timedelta(days=1)
 _STATE_TTL = timedelta(minutes=10)
 _RESET_TTL = timedelta(minutes=30)
+_CODE_TTL = timedelta(minutes=15)
+_CODE_MAX_ATTEMPTS = 5
 _REGISTRATION_MODES = ("invite", "open", "closed")
 _DEFAULT_PROJECT_NAME = "默认项目"
 _DUMMY_HASH = (
@@ -555,8 +558,6 @@ def forgot_password(
     user = db.scalars(
         select(User).where(User.email == email).limit(1)
     ).first()
-    token = secrets.token_urlsafe(32)
-    reset_url = f"{request.headers.get('origin', '')}/reset?token={token}"
     body: dict[str, object] = {"ok": True}
     if (
         user is None
@@ -566,12 +567,54 @@ def forgot_password(
     ):
         return body
     now = datetime.now(timezone.utc)
-    # Only the newest link works: outstanding tokens for this user are spent.
+    # Only the newest link/code works: outstanding tokens for this user are
+    # spent.
     db.execute(
         update(PasswordReset)
         .where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None))
         .values(used_at=now)
     )
+    smtp_url = str(getattr(request.app.state, "smtp_url", "") or "")
+    if smtp_url:
+        # SMTP deployments get a 6-digit code (typed on the forgot page);
+        # the digest is user-scoped so a guessed code only fits one account.
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        db.add(
+            PasswordReset(
+                token_hash=_hash_token(
+                    request.app.state.secret, f"code:{user.id}:{code}"
+                ),
+                user_id=user.id,
+                created_at=now,
+                expires_at=now + _CODE_TTL,
+            )
+        )
+        db.flush()
+        from rxycode_server.mailer import send_mail
+
+        if send_mail(
+            smtp_url,
+            to=email,
+            subject="RxyCode 密码重置验证码",
+            sender=str(getattr(request.app.state, "smtp_from", "") or ""),
+            body=(
+                f"你的密码重置验证码：{code}\n\n"
+                "15 分钟内有效，输错 5 次失效。如果不是你本人操作，忽略本邮件即可。"
+            ),
+        ):
+            body["delivery"] = "smtp"
+        elif getattr(request.app.state, "reset_operator_log", False):
+            # SMTP path down — the code degrades to the operator outbox.
+            log.warning(
+                "password reset code for %s (SMTP failed, operator outbox): %s",
+                email,
+                code,
+            )
+            body["delivery"] = "operator-log"
+        return body
+
+    token = secrets.token_urlsafe(32)
+    reset_url = f"{request.headers.get('origin', '')}/reset?token={token}"
     db.add(
         PasswordReset(
             token_hash=_hash_token(request.app.state.secret, token),
@@ -581,21 +624,7 @@ def forgot_password(
         )
     )
     db.flush()
-    smtp_url = str(getattr(request.app.state, "smtp_url", "") or "")
-    if smtp_url:
-        from rxycode_server.mailer import send_mail
-
-        send_mail(
-            smtp_url,
-            to=email,
-            subject="RxyCode 密码重置",
-            sender=str(getattr(request.app.state, "smtp_from", "") or ""),
-            body=(
-                "30 分钟内打开此链接重置密码（一次性，过期失效）：\n\n"
-                f"{reset_url}\n\n如果不是你本人操作，忽略本邮件即可。"
-            ),
-        )
-    elif request.app.state.mode == "local":
+    if request.app.state.mode == "local":
         body["reset_url"] = reset_url
         body["delivery"] = "inline"
     elif getattr(request.app.state, "reset_operator_log", False):
@@ -611,6 +640,72 @@ def forgot_password(
     return body
 
 
+def _reset_with_code(
+    request: Request, payload: dict, db: Session
+) -> dict[str, object]:
+    """Redeem an emailed 6-digit code. The stored digest is scoped to the
+    user (``code:{user_id}:{code}``) and repeated wrong codes burn the
+    outstanding code — a 10^6 space stays safe at this ceiling."""
+    email = _normalize_email(str(payload.get("email") or ""))
+    code = str(payload.get("code") or "").strip()
+    password = str(payload.get("password") or "")
+    if not email or not re.fullmatch(r"[0-9]{6}", code):
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    if not 8 <= len(password) <= 128:
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check(
+            "reset-code", request.client.host if request.client else "-", email
+        )
+    attempts = getattr(request.app.state, "reset_code_attempts", None)
+    if attempts is None:
+        attempts = {}
+        request.app.state.reset_code_attempts = attempts
+    now = datetime.now(timezone.utc)
+    user = db.scalars(
+        select(User).where(User.email == email).limit(1)
+    ).first()
+    key = user.id if user is not None else f"mail:{email}"
+    if attempts.get(key, 0) >= _CODE_MAX_ATTEMPTS:
+        raise HTTPException(status_code=400, detail="RESET_INVALID")
+    row = (
+        db.get(
+            PasswordReset,
+            _hash_token(request.app.state.secret, f"code:{user.id}:{code}"),
+        )
+        if user is not None
+        else None
+    )
+    if (
+        user is None
+        or user.disabled_at is not None
+        or row is None
+        or row.used_at is not None
+        or _aware(row.expires_at) <= now
+    ):
+        attempts[key] = attempts.get(key, 0) + 1
+        if attempts[key] >= _CODE_MAX_ATTEMPTS and user is not None:
+            db.execute(
+                update(PasswordReset)
+                .where(
+                    PasswordReset.user_id == user.id,
+                    PasswordReset.used_at.is_(None),
+                )
+                .values(used_at=now)
+            )
+        raise HTTPException(status_code=400, detail="RESET_INVALID")
+    attempts.pop(key, None)
+    user.password_hash = hash_password(password)
+    row.used_at = now
+    db.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    return {"ok": True}
+
+
 @router.post("/api/v1/auth/reset")
 def reset_password(
     request: Request,
@@ -619,6 +714,8 @@ def reset_password(
 ) -> dict[str, object]:
     """Redeem a reset token: sets the password and revokes every session."""
     require_write(request)
+    if str(payload.get("code") or "").strip():
+        return _reset_with_code(request, payload, db)
     token = str(payload.get("token") or "")
     password = str(payload.get("password") or "")
     limiter = getattr(request.app.state, "auth_rate", None)
