@@ -162,3 +162,10 @@
 - **E2E 实测（生产，agent-browser）**：访客壳 ✅、发送→登录模态→`?next=/app` ✅、BYOK 连接 CRUD+发现/测试失败路径（401→`认证失败（auth）`）✅、模型快照回显 ✅、运行中模型锁 ✅、停止"取消中…"→cancelled ✅、`run.phase` 全链 ✅（warm 4.0s 组装、final 6.4s）。
 - **加固**：`/opt/rxycode/.env` 664→600 root:root；gateway 仅绑 127.0.0.1:8080；响应头 nosniff+frame-DENY+no-referrer 实测在。
 - **遗留**：warm lease→agent_assembled 4.0s vs 目标 3s（残差=子进程 spawn/import/assemble，需 warm 池）；final_answer 证据门误报（agent-runtime 后续）；version endpoint commit=unknown（镜像未注入构建标签，cosmetic）。
+
+## 2026-10-23 W11 收尾部署（49ca62dc）
+
+- About 对话框上设置页；api.Dockerfile 补传 `RXYCODE_BUILD_COMMIT/TIME` build ARG，`/api/v1/version` 现在回真实 commit（此前 `unknown`）。
+- **事故**：`compose -f prod.yaml -f base.yaml` 顺序写反让 dev 配置赢（migrate 变 dev-seed 等待 sync 哨兵卡死）；正确顺序 = base 在前 overlay 在后。顺手起了 `rxycode-*` 游离栈抢 54433，已清。rxyprod-postgres 重建但同卷，数据无损（12 sessions / 6 users / 1 device_lock / 1 conn 复核）。
+- 生产终态：web/api `49ca62d`，worker `5499470`（代码等价已打双 tag），version 端点回 `49ca62dc`。浏览器实测：设备冲突模态+抢占、markdown 加粗、思考链×2、bash 工具卡、BYOK `deepseek-flash` 徽标、模型切换提示、390px 移动视口、About 对话框全部通过。
+- VM 源码 checkout `5e81f215`（含 changelog 补记）。未做整机重启——容器重启已满足"域名最新内容"，SSH 断连风险不值。
