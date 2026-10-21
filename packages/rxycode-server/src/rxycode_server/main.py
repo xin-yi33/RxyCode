@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.approvals import router as approvals_router
 from rxycode_server.api.artifacts import router as artifacts_router
+from rxycode_server.api.files import router as files_router
 from rxycode_server.api.auth import AuthRateLimit, router as auth_router
 from rxycode_server.api.models import router as models_router
 from rxycode_server.api.projects import router as projects_router
@@ -143,6 +144,7 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)
+    app.include_router(files_router)
     app.include_router(version_router)
     app.include_router(product_router)
     app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)

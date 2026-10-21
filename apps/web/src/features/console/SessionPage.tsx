@@ -8,6 +8,7 @@ import { isUnauthorized } from "../../sdk/errors"
 import { RunTimeline } from "../runs/RunTimeline"
 import { isActiveRunStatus } from "../runs/status"
 import { Composer } from "./Composer"
+import { SessionFiles } from "./SessionFiles"
 
 const api = createClient()
 
@@ -102,7 +103,8 @@ export function SessionPage() {
           </li>
         ))}
       </ol>
-      <div className="sticky bottom-0 -mx-4 bg-background">
+      <div className="sticky bottom-0 -mx-4 space-y-2 bg-background">
+        <SessionFiles sessionId={sessionId} hasActive={active !== null} />
         <Composer sessionId={sessionId} activeRun={active} />
       </div>
     </div>

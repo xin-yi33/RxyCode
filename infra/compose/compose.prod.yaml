@@ -118,6 +118,9 @@ services:
       RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
       # Dev/test only: permits http:// + private BYOK base URLs. Leave unset.
       RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      # Session-workspace files API (W12): worker-data is mounted at
+      # /workspaces-ro read-only via the base compose volumes merge.
+      RXYCODE_WORKSPACES_ROOT: /workspaces-ro/runs
     volumes:
       - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
     depends_on:

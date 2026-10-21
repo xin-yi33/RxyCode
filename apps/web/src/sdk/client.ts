@@ -291,6 +291,12 @@ export type BuildStamp = {
   built_at: string
 }
 
+export type SessionFile = {
+  path: string
+  size: number
+  mtime: number
+}
+
 export function createClient() {
   return {
     getVersion(signal?: AbortSignal): Promise<BuildStamp> {
@@ -414,6 +420,18 @@ export function createClient() {
         const record = body as { sessions?: SessionListItem[] }
         return record.sessions ?? []
       })
+    },
+    // W12: session-workspace files (agent-created artifacts on the shared volume).
+    listSessionFiles(sessionId: string, signal?: AbortSignal): Promise<SessionFile[]> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/files`
+      return readJson(path, signal).then((body) => {
+        const record = body as { files?: SessionFile[] }
+        return record.files ?? []
+      })
+    },
+    sessionFileUrl(sessionId: string, path: string): string {
+      const q = new URLSearchParams({ path })
+      return `/api/v1/sessions/${encodeURIComponent(sessionId)}/files/download?${q}`
     },
     getSession(sessionId: string, signal?: AbortSignal): Promise<SessionListItem> {
       const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}`

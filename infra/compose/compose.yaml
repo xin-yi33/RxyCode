@@ -141,8 +141,11 @@ services:
     volumes:
       - repo-src:/repo:ro
       - boot-state:/boot:ro
+      # Session-workspace files API (W12): read-only view of the runs dir.
+      - worker-data:/workspaces-ro:ro
     environment:
       PYTHONPATH: /opt/pkg:/repo:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-protocol/src
+      RXYCODE_WORKSPACES_ROOT: /workspaces-ro/runs
       RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
       RXYCODE_WEB_MODE: ${RXYCODE_WEB_MODE:-cloud}
       RXYCODE_WEB_SECRET: ${RXYCODE_WEB_SECRET:?set RXYCODE_WEB_SECRET}
