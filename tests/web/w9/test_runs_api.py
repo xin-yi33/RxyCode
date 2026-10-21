@@ -368,3 +368,31 @@ def test_w9_b4_defaults_without_env(postgres_url: str):
     assert active_gate()._limits == DEFAULT_LIMITS
     client, _me = _client(postgres_url, "free@example.com", app=app)
     assert _post_task(client, "one").status_code == 202
+
+
+def test_w9_cancel_pending_goes_terminal(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
+    """One click cancels a queued run — no worker slot wait (W11)."""
+    monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
+    client, _me = _client(postgres_url, "cancelq@example.com")
+    run = _post_task(client, "queued task")
+    assert run.status_code == 202, run.text
+    run_id = run.json()["run_id"]
+    resp = client.post(
+        f"/api/v1/runs/{run_id}/cancel", headers=_headers(_csrf(client))
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "cancelled"
+    with Session(create_engine(postgres_url)) as db:
+        row = db.get(Run, run_id)
+        assert row.status == "cancelled"
+        last = db.scalars(
+            select(RunEvent)
+            .where(RunEvent.run_id == run_id, RunEvent.type == "run.status")
+            .order_by(RunEvent.seq.desc())
+        ).first()
+        assert last.payload["status"] == "cancelled"
+    # second click on a terminal run is a clean 409, not a silent no-op
+    again = client.post(
+        f"/api/v1/runs/{run_id}/cancel", headers=_headers(_csrf(client))
+    )
+    assert again.status_code == 409

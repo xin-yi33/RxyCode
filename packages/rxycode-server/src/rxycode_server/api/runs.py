@@ -476,8 +476,15 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
             if row.status in _DONE:
                 raise HTTPException(status_code=409, detail="RUN_TERMINAL")
-            if row.status != "cancel_requested":
-                row.status = "cancel_requested"
+            # A queued run executes nothing — cancel it terminally right here
+            # instead of waiting for a worker slot (one-click stop). The same
+            # shortcut heals a queued cancel_requested that never got leased.
+            direct_terminal = row.status == "pending" or (
+                row.status == "cancel_requested" and not row.lease_owner
+            )
+            next_status = "cancelled" if direct_terminal else "cancel_requested"
+            if row.status != next_status:
+                row.status = next_status
                 row.revision = int(row.revision or 0) + 1
                 retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
                 seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
@@ -490,7 +497,7 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
                         tenant_id=record.tenant_id,
                         seq=seq,
                         type="run.status",
-                        payload={"status": "cancel_requested"},
+                        payload={"status": next_status},
                         at=datetime.now(timezone.utc),
                     )
                 )
@@ -504,9 +511,15 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
                     )
                 )
             db.commit()
+            if direct_terminal:
+                from rxycode_server.notifications.service import notify_run_terminal
+                from rxycode_server.runs.service import release_worker_for_run
+
+                release_worker_for_run(database_url, run_id)
+                notify_run_terminal(database_url, run_id, "cancelled")
     finally:
         engine.dispose()
-    return {"status": "cancel_requested"}
+    return {"status": next_status}
 
 
 @router.post("/api/v1/runs/{run_id}/steer")
