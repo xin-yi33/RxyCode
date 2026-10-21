@@ -14,7 +14,13 @@
 #
 # Alembic ordering is the prod overlay's job (W10-D2), same as the api image.
 
-FROM python:3.12-slim
+# Base pinned to Debian 12 (bookworm): it ships bubblewrap 0.8, which uses the
+# classic mount() API — the only flavour that runs on el7-class kernels
+# (3.10.0-957). Debian 13's bwrap 0.12 calls the new mount API
+# (open_tree/move_mount), absent before kernel 5.2 — its probe dies ENOSYS and
+# the drain would refuse every run. bwrap 0.8 lacks --overlay (0.10+); the
+# userns overlay probe degrades those mounts honestly, as designed.
+FROM python:3.12-slim-bookworm
 
 ARG RXYCODE_BUILD_COMMIT=unknown
 ARG RXYCODE_BUILD_TIME=""

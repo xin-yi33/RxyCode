@@ -230,6 +230,16 @@
 - **完成门回执子句级匹配**（`agent_v2::_command_ran_check` + `_command_effective_workdir`）：`required_checks` 回执此前逐字比对命令文本（`check.command != command`），模型合法的等价修饰全部落空——实测一轮 E-2 里 `test -f hello.py; echo "...exit=$?"`、`cd <run-dir> && test -f hello.py`、脚本内 `python3 hello.py | grep -qx hello` 均 exit 0 但三门全判 missing，agent 烧 ~100 万 token 后向用户提问"门禁判定方式"。现按 `_shell_text_outside_quotes` 掩码定位、**原文**子句比对（`&&`/`||`/`;` 切分、空白归一、管道 `|` 留在子句内、引号内字面量仍区分——`test -f "a"` ≠ `test -f "b"`）：check 的全部子句 ⊆ 已执行命令的子句即记回执；命令内 `cd <dir>` 子句作为无显式 workdir 参数时的等效 cwd（仍走 `_shell_cwd_matches_check` 路径归一化比较，逃逸目录仍不收）。测试 `test_decorated_check_commands_still_record_receipts` 覆盖 echo 后缀 / cd 前缀匹配 / cd 错目录拒绝 / 单元面矩阵；`test_build_workflow.py` 46 条全绿无回归。
 - **测试侧有界化**：E-3 批准 ≥2 次（审批+续接双次验证）后主动取消再等终态——confirm 档下啰嗦模型可把"批准→恢复→新审批"循环拖过 600s 死线，场景意图（审批卡出现+恢复可用+取消结案）不变；E-4 开头补 `ensure_idle`（E-3 残留停泊 run 占并发位导致 429）+ 审批上限 8 次后取消归 N/A。
 
+### W10-D3/D4 生产部署实测（CentOS 7.6 VM，2026-10-21）
+
+- **首个真实生产栈已上线**：VMware VM（CentOS 7.6 / kernel 3.10.0-957 / 4C8G）上 `rxyprod` 项目完整跑通——postgres/redis/minio/migrate(007 head)/api/worker/gateway 全 healthy，迁移先于 api/worker 完成（`service_completed_successfully`），网关仅绑 `127.0.0.1:8080`。
+- **el7 内核兼容性修复（worker.Dockerfile 换基座）**：生产 worker 镜像基座从 `python:3.12-slim`（Debian 13/trixie, bwrap 0.12）改为 `python:3.12-slim-bookworm`（bwrap 0.8）。bwrap 0.10+ 的 bind 挂载走新 mount API（`open_tree`/`move_mount`，kernel ≥5.2 才有）——在 el7 上 `Can't open source /usr: Function not implemented`（ENOSYS），`userns_available()` 探测失败 → 每条 run 诚实拒绝 `_UnsupportedTarget: userns/bwrap isolation is unavailable`（fail-closed 设计正确触发，没有回落裸跑）。bwrap 0.8 的经典 `mount()` 路径在 3.10 + `seccomp=unconfined` + `user.max_user_namespaces>0` 下完整生产 argv 实测通过（含 `--unshare-net`/`--clearenv`/全 ro-bind 集）。代价：`--overlay`/`--overlay-src`（0.10+）不存在 → 任务私有 apt/pip 覆盖层探测诚实降级，路径保持只读，符合既有设计。
+- **VM 基线配置**：`user.max_user_namespaces=15000`（CentOS 7 默认为 0，el7 userns 总开关）已写入 `/etc/sysctl.d/99-rxycode.conf` 持久化；dockerd 代理 drop-in `/etc/systemd/system/docker.service.d/proxy.conf` 指向 Windows 侧 FlClash `http://192.168.88.1:10808`（拉镜像走代理；容器内出站直连可用，`api.deepseek.com` 裸连 401 正常）。
+- **API 冒烟实测**（容器内走 `http://gateway` 全 Caddy 链路）：注册 201 / `/me` 200 / 登录 200 / forgot 200 / `POST /api/v1/tasks` 202 → run `7347a13d…` 终态 **`succeeded`**（~160s，442 事件：32 次工具调用、4 轮 recovery、`hello.txt` 落沙箱工作区、门禁回执 `test -f hello.txt && [ "$(cat hello.txt)" = "hello-prod" ]` exit 0、67.3 万 token）。CSRF/Origin/secure-cookie 链工作正常（cloud 模式 secure cookie 要求 https——容器内 http 冒烟需手工携带 cookie，浏览器走 Funnel https 无此问题）。
+- **Tailscale Funnel 待授权**：tailscaled 1.104.2 已装好，节点 `rxycode` 待运营者点开登录链接加入 tailnet 后 `tailscale funnel --bg --https=443 http://127.0.0.1:8080` 对外。
+- **忘记密码在云模式的投递缺口**（确认代码行为）：`POST /auth/forgot` 在 cloud 模式且未配 `RXYCODE_SMTP_URL` 时，重置 token 照常签发但链接被吞（只有 local 模式回 inline `reset_url`）——前端按 capabilities 隐藏入口属正确降级，但要让"忘记密码可用"必须配一个真实 SMTP（`smtps://user:pass@host:465` 或 `smtp://user:pass@host:587` STARTTLS）。
+- 部署目录 `/opt/rxycode/`：`compose.yaml + compose.prod.yaml + Caddyfile.prod + .env`（600，含生成的 pg/minio/web secret 与 deepseek key，`RXYCODE_IMAGE_TAG=3bdaa734`，`RXYCODE_WEB_REGISTRATION=open`）。
+
 ### 已知限制（明示，非遗漏）
 
 - **Provider 错误被记为 `succeeded`**（W9 验收发现，未修）：模型上游 402/5xx 时 agent 把 `to_user_facing_error` 的错误文案当正常 final answer 走完回合，run 终态 `succeeded`——E-2/E-3 在欠费期间的表现（零工具行、零审批、"succeeded"）。正确语义应为 `failed`（可重试）或至少带错误标记，涉及 Harness 终态映射，留待额度恢复后一并处理。
