@@ -64,9 +64,16 @@ def _client(postgres_url: str, email: str, *, app=None) -> tuple[TestClient, dic
     if app is None:
         app = _app(postgres_url)
     client = TestClient(app)
+    from tests.web.w9.test_auth import _solve_captcha
+
     response = client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": "password-123", "invite_code": code},
+        json={
+            "email": email,
+            "password": "password-123",
+            "invite_code": code,
+            "captcha": _solve_captcha(client),
+        },
         headers=_headers(_csrf(client)),
     )
     assert response.status_code == 201, response.text

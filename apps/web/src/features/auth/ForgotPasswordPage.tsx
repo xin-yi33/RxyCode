@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router"
 
 import { Button } from "../../components/ui/button"
 import { createClient } from "../../sdk/client"
 import { apiErrorText } from "../../sdk/errors"
+import { AltchaWidget } from "./AltchaWidget"
 import { AuthLayout } from "./AuthLayout"
 
 const api = createClient()
@@ -13,10 +15,17 @@ const inputClass =
   "text-foreground outline-none focus:border-muted"
 
 export function ForgotPasswordPage() {
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: ({ signal }) => api.getCapabilities(signal),
+    staleTime: 60_000,
+  })
   const [email, setEmail] = useState("")
   const [code, setCode] = useState("")
   const [password, setPassword] = useState("")
   const [confirm, setConfirm] = useState("")
+  const [captcha, setCaptcha] = useState("")
+  const [captchaKey, setCaptchaKey] = useState(0)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
@@ -24,19 +33,25 @@ export function ForgotPasswordPage() {
   const [devLink, setDevLink] = useState("")
   const [delivery, setDelivery] = useState("")
 
+  const wantsCaptcha = capabilities.data?.captcha === "altcha"
+
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (busy) return
     setBusy(true)
     setError("")
     api
-      .forgotPassword(email.trim().toLowerCase())
+      .forgotPassword({ email: email.trim().toLowerCase(), captcha })
       .then((body) => {
         setSent(true)
         setDevLink(body.reset_url ?? "")
         setDelivery(body.delivery ?? "")
       })
-      .catch((err: unknown) => setError(apiErrorText(err)))
+      .catch((err: unknown) => {
+        setError(apiErrorText(err))
+        setCaptcha("")
+        setCaptchaKey((k) => k + 1)
+      })
       .finally(() => setBusy(false))
   }
 
@@ -176,12 +191,17 @@ export function ForgotPasswordPage() {
               onChange={(event) => setEmail(event.target.value)}
             />
           </label>
+          {wantsCaptcha ? (
+            <div className="pt-1">
+              <AltchaWidget key={captchaKey} onVerify={setCaptcha} />
+            </div>
+          ) : null}
           {error ? (
             <p role="alert" className="text-sm text-failure">
               {error}
             </p>
           ) : null}
-          <Button type="submit" className="w-full" disabled={busy}>
+          <Button type="submit" className="w-full" disabled={busy || (wantsCaptcha && !captcha)}>
             {busy ? "正在发送…" : "发送重置验证信息"}
           </Button>
           <p className="text-center text-sm text-muted">

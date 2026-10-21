@@ -80,6 +80,27 @@ class PasswordReset(Base):
     user: Mapped[User] = relationship()
 
 
+class EmailCode(Base):
+    """One-time 6-digit email code — register / login / password-reset.
+
+    Only the HMAC digest of ``{purpose}:{email}:{code}`` is stored, so a
+    database read never yields a usable code. ``user_id`` is nullable:
+    register codes are issued before the account exists.
+    """
+
+    __tablename__ = "email_codes"
+    __table_args__ = (Index("ix_email_codes_purpose_email", "purpose", "email"),)
+
+    code_hash: Mapped[str] = mapped_column(String(128), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(16))
+    email: Mapped[str] = mapped_column(String(320))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User | None] = relationship()
+
+
 class Invite(Base):
     __tablename__ = "invites"
 

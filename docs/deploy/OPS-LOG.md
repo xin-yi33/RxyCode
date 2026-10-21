@@ -121,3 +121,9 @@
 - **可达的对照**：同链路下 `smtp.qq.com:465`、`smtp.163.com:465`、`smtp.exmail.qq.com:465` 全部 TLS+banner 通过（GEOIP CN 规则直连国内落地，不过墙）。要真发邮件建议换 QQ/163（需用户提供授权码）。
 - ⚠️ 操作事故记录：`docker compose up` 忘带 `-p rxyprod` → 默认项目名 `rxycode` 起了一套空栈撞 8080 端口。已 `down` 清理（其卷仍在，未删数据）。生产命令一律 `-p rxyprod`。
 - 生产现状：`https://rxycode.xyz` 跑 `bda9a055`，capabilities `reset_delivery=smtp`；忘记密码在有验证码邮件通时发邮件、不通时 200 降级到日志链接，永不断路。
+
+### ~16:00 💻 验证码体系 + ALTCHA 人机校验落地（本机）
+- **后端**（`rxycode-server`）：新增 `altcha.py`（自研 ALTCHA wire 实现——HMAC 签名挑战 + SHA-256 PoW + 一次性焚毁 + 20min 过期，零三方依赖）；`EmailCode` 模型 + alembic `008_email_codes`（password_resets 泛化三用途 register/login/reset）；端点 `GET /auth/altcha`、`POST /auth/register/code`、`POST /auth/login/code`；register/login/forgot/两发码端点全部强制 captcha。capabilities 增 `code_delivery` + `captcha:"altcha"`。
+- **前端**（`apps/web`）：`altcha@3.4.1` npm 包；新组件 `AltchaWidget.tsx`（auto=onload 静默解题，提交后 remount 刷新挑战）；RegisterPage 加验证码发送/输入；LoginPage 加「密码/验证码」分段切换；ForgotPasswordPage 加 captcha；手机版细节（min-w-0、p-6 sm:p-8）。
+- **测试**：w9 helpers 全接真 PoW 求解；新增 `test_email_codes.py` 4 条。**w9 全量 69 passed**、`tsc --noEmit` 干净。
+- 待办：commit → git bundle 同步 VM → 重建三镜像 → 推 VM → rxyprod 升级 → 公网冒烟（注册要验证码+ALTCHA，登录可密码可验证码）。

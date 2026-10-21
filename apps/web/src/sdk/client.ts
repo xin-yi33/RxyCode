@@ -6,6 +6,8 @@ export type Capabilities = {
   local: boolean
   password_reset?: boolean
   reset_delivery?: "smtp" | "inline" | "operator-log" | "none"
+  code_delivery?: "smtp" | "inline" | "operator-log" | "none"
+  captcha?: "altcha"
 }
 
 export type Me = {
@@ -193,11 +195,38 @@ export function createClient() {
       password: string
       invite_code?: string
       display_name?: string
+      code?: string
+      captcha?: string
     }): Promise<Me> {
       return writeJson("/api/v1/auth/register", body) as Promise<Me>
     },
-    login(email: string, password: string): Promise<Me> {
-      return writeJson("/api/v1/auth/login", { email, password }) as Promise<Me>
+    login(input: {
+      email: string
+      password?: string
+      code?: string
+      captcha?: string
+    }): Promise<Me> {
+      return writeJson("/api/v1/auth/login", input) as Promise<Me>
+    },
+    requestRegisterCode(body: {
+      email: string
+      captcha?: string
+    }): Promise<{ ok: boolean; delivery?: string; dev_code?: string }> {
+      return writeJson("/api/v1/auth/register/code", body) as Promise<{
+        ok: boolean
+        delivery?: string
+        dev_code?: string
+      }>
+    },
+    requestLoginCode(body: {
+      email: string
+      captcha?: string
+    }): Promise<{ ok: boolean; delivery?: string; dev_code?: string }> {
+      return writeJson("/api/v1/auth/login/code", body) as Promise<{
+        ok: boolean
+        delivery?: string
+        dev_code?: string
+      }>
     },
     logout(): Promise<void> {
       return writeJson("/api/v1/auth/logout", {}).then(() => undefined)
@@ -207,8 +236,11 @@ export function createClient() {
         "x-local-secret": secret,
       }) as Promise<Me>
     },
-    forgotPassword(email: string): Promise<{ ok: boolean; reset_url?: string; delivery?: string }> {
-      return writeJson("/api/v1/auth/forgot", { email }) as Promise<{
+    forgotPassword(input: {
+      email: string
+      captcha?: string
+    }): Promise<{ ok: boolean; reset_url?: string; delivery?: string }> {
+      return writeJson("/api/v1/auth/forgot", input) as Promise<{
         ok: boolean
         reset_url?: string
         delivery?: string

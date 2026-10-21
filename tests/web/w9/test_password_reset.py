@@ -13,15 +13,23 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session
 
-from tests.web.w9.test_auth import _app, _csrf, _headers, _invite, _login, _register
+from tests.web.w9.test_auth import (
+    _app,
+    _csrf,
+    _headers,
+    _invite,
+    _login,
+    _register,
+    _solve_captcha,
+)
 
-from rxycode_server.persistence.models import PasswordReset  # noqa: E402
+from rxycode_server.persistence.models import EmailCode, PasswordReset  # noqa: E402
 
 
 def _forgot(client: TestClient, email: str):
     return client.post(
         "/api/v1/auth/forgot",
-        json={"email": email},
+        json={"email": email, "captcha": _solve_captcha(client)},
         headers=_headers(_csrf(client)),
     )
 
@@ -38,13 +46,29 @@ def _token_from_url(url: str) -> str:
     return parse_qs(urlparse(url).query)["token"][0]
 
 
-def _register_user(client: TestClient, postgres_url: str) -> tuple[str, str]:
-    email = f"reset-{uuid.uuid4().hex[:10]}@w9.example"
+def _new_email() -> str:
+    return f"reset-{uuid.uuid4().hex[:10]}@w9.example"
+
+
+def _register_user(
+    client: TestClient, postgres_url: str, email_code: str = "", email: str = ""
+) -> tuple[str, str]:
+    email = email or _new_email()
     code = "w9-invite-" + uuid.uuid4().hex[:12]
     _invite(postgres_url, code)
-    response = _register(client, email, "old-password-1", code)
+    response = _register(client, email, "old-password-1", code, email_code)
     assert response.status_code == 201, response.text
     return email, code
+
+
+def _send_register_code(client: TestClient, email: str):
+    response = client.post(
+        "/api/v1/auth/register/code",
+        json={"email": email, "captcha": _solve_captcha(client)},
+        headers=_headers(_csrf(client)),
+    )
+    assert response.status_code == 200, response.text
+    return response
 
 
 def test_w9_a1_reset_flow_and_session_revoke(postgres_url: str):
@@ -170,8 +194,18 @@ def test_w9_a1_operator_log_delivery(postgres_url: str, caplog):
     caps = cloud.get("/api/v1/auth/capabilities").json()
     assert caps["password_reset"] is True
     assert caps["reset_delivery"] == "operator-log"
+    assert caps["code_delivery"] == "operator-log"
 
-    email, _ = _register_user(cloud, postgres_url)
+    # Registration now requires an emailed code; the operator outbox carries it.
+    email = _new_email()
+    with caplog.at_level(logging.WARNING, logger="rxycode_server.api.auth"):
+        sent = _send_register_code(cloud, email)
+    assert sent.json().get("delivery") == "operator-log"
+    reg = re.search(r"operator outbox\): (\d{6})", "\n".join(r.getMessage() for r in caplog.records))
+    assert reg
+    caplog.clear()
+    email, _ = _register_user(cloud, postgres_url, reg.group(1), email)
+
     with caplog.at_level(logging.WARNING, logger="rxycode_server.api.auth"):
         response = _forgot(cloud, email)
     assert response.status_code == 200
@@ -223,7 +257,9 @@ def test_w9_a1_smtp_code_flow(postgres_url: str, monkeypatch):
     """SMTP delivery issues a 6-digit code; email+code redeems it."""
     app, outbox = _smtp_app(postgres_url, monkeypatch)
     client = TestClient(app, base_url="https://testserver")
-    email, _ = _register_user(client, postgres_url)
+    email = _new_email()
+    _send_register_code(client, email)
+    email, _ = _register_user(client, postgres_url, _code_from(outbox), email)
 
     response = _forgot(client, email)
     assert response.status_code == 200
@@ -248,7 +284,9 @@ def test_w9_a1_smtp_code_attempts_burn(postgres_url: str, monkeypatch):
     app, outbox = _smtp_app(postgres_url, monkeypatch)
     app.state.auth_rate = None  # isolate the cumulative-attempts counter
     client = TestClient(app, base_url="https://testserver")
-    email, _ = _register_user(client, postgres_url)
+    email = _new_email()
+    _send_register_code(client, email)
+    email, _ = _register_user(client, postgres_url, _code_from(outbox), email)
 
     _forgot(client, email)
     code = _code_from(outbox)
@@ -264,16 +302,18 @@ def test_w9_a1_smtp_code_attempts_burn(postgres_url: str, monkeypatch):
 def test_w9_a1_smtp_code_expiry_and_validation(postgres_url: str, monkeypatch):
     app, outbox = _smtp_app(postgres_url, monkeypatch)
     client = TestClient(app, base_url="https://testserver")
-    email, _ = _register_user(client, postgres_url)
+    email = _new_email()
+    _send_register_code(client, email)
+    email, _ = _register_user(client, postgres_url, _code_from(outbox), email)
 
     _forgot(client, email)
     code = _code_from(outbox)
     engine = create_engine(postgres_url)
     with Session(engine) as db:
         db.execute(
-            update(PasswordReset).values(
-                expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)
-            )
+            update(EmailCode)
+            .where(EmailCode.purpose == "reset", EmailCode.email == email)
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(minutes=1))
         )
         db.commit()
     engine.dispose()
@@ -302,7 +342,16 @@ def test_w9_a1_smtp_send_failure_falls_back(postgres_url: str, monkeypatch, capl
 
     monkeypatch.setattr(mailer, "send_mail", lambda *a, **k: False)
     client = TestClient(app, base_url="https://testserver")
-    email, _ = _register_user(client, postgres_url)
+    email = _new_email()
+    with caplog.at_level(logging.WARNING, logger="rxycode_server.api.auth"):
+        _send_register_code(client, email)
+    reg = re.search(
+        r"operator outbox\): (\d{6})",
+        "\n".join(r.getMessage() for r in caplog.records),
+    )
+    assert reg
+    caplog.clear()
+    email, _ = _register_user(client, postgres_url, reg.group(1), email)
 
     with caplog.at_level(logging.WARNING, logger="rxycode_server.api.auth"):
         response = _forgot(client, email)

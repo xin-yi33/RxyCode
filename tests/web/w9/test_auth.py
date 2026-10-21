@@ -51,6 +51,34 @@ def _headers(token: str) -> dict[str, str]:
     return {"X-CSRF-Token": token, "Origin": ORIGIN}
 
 
+def _solve_captcha(client: TestClient) -> str:
+    """Fetch a real ALTCHA challenge and brute-force the PoW — the same math
+    the browser widget performs. Keeps every test exercising the real gate."""
+    import base64
+    import hashlib
+    import json as _json
+
+    challenge = client.get("/api/v1/auth/altcha")
+    assert challenge.status_code == 200, challenge.text
+    body = challenge.json()
+    salt, target = body["salt"], body["challenge"]
+    number = 0
+    while hashlib.sha256(f"{salt}{number}".encode()).hexdigest() != target:
+        number += 1
+    return base64.b64encode(
+        _json.dumps(
+            {
+                "algorithm": "SHA-256",
+                "challenge": target,
+                "number": number,
+                "salt": salt,
+                "signature": body["signature"],
+                "took": 0,
+            }
+        ).encode()
+    ).decode()
+
+
 def _invite(postgres_url: str, code: str, *, uses: int = 1, days: int | None = 30) -> None:
     expires = datetime.now(timezone.utc) + timedelta(days=days) if days else None
     engine = create_engine(postgres_url)
@@ -68,10 +96,18 @@ def _invite(postgres_url: str, code: str, *, uses: int = 1, days: int | None = 3
     engine.dispose()
 
 
-def _register(client: TestClient, email: str, password: str, invite_code: str = ""):
+def _register(
+    client: TestClient, email: str, password: str, invite_code: str = "", code: str = ""
+):
     return client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": password, "invite_code": invite_code},
+        json={
+            "email": email,
+            "password": password,
+            "invite_code": invite_code,
+            "captcha": _solve_captcha(client),
+            **({"code": code} if code else {}),
+        },
         headers=_headers(_csrf(client)),
     )
 
@@ -79,7 +115,7 @@ def _register(client: TestClient, email: str, password: str, invite_code: str = 
 def _login(client: TestClient, email: str, password: str):
     return client.post(
         "/api/v1/auth/login",
-        json={"email": email, "password": password},
+        json={"email": email, "password": password, "captcha": _solve_captcha(client)},
         headers=_headers(_csrf(client)),
     )
 

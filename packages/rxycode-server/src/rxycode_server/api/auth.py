@@ -30,8 +30,10 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from rxycode_server.altcha import _ReplayRegistry, create_challenge, verify_payload
 from rxycode_server.persistence.models import (
     AuthSession,
+    EmailCode,
     Invite,
     Membership,
     OAuthState,
@@ -285,6 +287,123 @@ def _same(left: str, right: str) -> bool:
     return hmac.compare_digest(left, right)
 
 
+def _require_captcha(request: Request, payload: dict) -> None:
+    """ALTCHA proof-of-work gate — cheap to solve once, expensive to spam."""
+    registry = getattr(request.app.state, "altcha_registry", None)
+    if registry is None:
+        registry = _ReplayRegistry()
+        request.app.state.altcha_registry = registry
+    if not verify_payload(
+        payload.get("captcha"), request.app.state.secret, registry
+    ):
+        raise HTTPException(status_code=400, detail="CAPTCHA_INVALID")
+
+
+def _code_digest(secret: str, purpose: str, email: str, code: str) -> str:
+    return _hash_token(secret, f"{purpose}:{email}:{code}")
+
+
+def _burn_codes(db: Session, purpose: str, email: str) -> None:
+    """Only the newest code works: spend outstanding ones for this pair."""
+    now = datetime.now(timezone.utc)
+    db.execute(
+        update(EmailCode)
+        .where(
+            EmailCode.purpose == purpose,
+            EmailCode.email == email,
+            EmailCode.used_at.is_(None),
+        )
+        .values(used_at=now)
+    )
+
+
+def _mint_code(
+    request: Request, db: Session, purpose: str, email: str, user_id: str | None
+) -> str:
+    _burn_codes(db, purpose, email)
+    now = datetime.now(timezone.utc)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.add(
+        EmailCode(
+            code_hash=_code_digest(request.app.state.secret, purpose, email, code),
+            purpose=purpose,
+            email=email,
+            user_id=user_id,
+            created_at=now,
+            expires_at=now + _CODE_TTL,
+        )
+    )
+    db.flush()
+    return code
+
+
+def _deliver_code(request: Request, email: str, code: str, subject: str) -> str | None:
+    """Send/log/hand back the code. Returns the delivery channel used."""
+    state = request.app.state
+    smtp_url = str(getattr(state, "smtp_url", "") or "")
+    if smtp_url:
+        from rxycode_server.mailer import send_mail
+
+        if send_mail(
+            smtp_url,
+            to=email,
+            subject=subject,
+            sender=str(getattr(state, "smtp_from", "") or ""),
+            body=(
+                f"你的验证码：{code}\n\n"
+                "15 分钟内有效，输错 5 次失效。如果不是你本人操作，忽略本邮件即可。"
+            ),
+        ):
+            return "smtp"
+    if state.mode == "local":
+        return "inline"
+    if getattr(state, "reset_operator_log", False):
+        # Operator outbox — register/login pages accept the code directly.
+        log.warning(
+            "verification code for %s (operator outbox): %s", email, code
+        )
+        return "operator-log"
+    return None
+
+
+def _code_attempts(request: Request) -> dict:
+    attempts = getattr(request.app.state, "reset_code_attempts", None)
+    if attempts is None:
+        attempts = {}
+        request.app.state.reset_code_attempts = attempts
+    return attempts
+
+
+def _redeem_code(
+    request: Request,
+    db: Session,
+    purpose: str,
+    email: str,
+    code: str,
+    detail: str = "CODE_INVALID",
+) -> EmailCode:
+    """Verify a 6-digit code: fresh, unspent, unexpired — else burn one of
+    the five attempts and (at the ceiling) burn the outstanding code itself."""
+    if not re.fullmatch(r"[0-9]{6}", code):
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    attempts = _code_attempts(request)
+    key = f"{purpose}:{email}"
+    if attempts.get(key, 0) >= _CODE_MAX_ATTEMPTS:
+        raise HTTPException(status_code=400, detail=detail)
+    now = datetime.now(timezone.utc)
+    row = db.get(
+        EmailCode, _code_digest(request.app.state.secret, purpose, email, code)
+    )
+    if row is None or row.used_at is not None or _aware(row.expires_at) <= now:
+        attempts[key] = attempts.get(key, 0) + 1
+        if attempts[key] >= _CODE_MAX_ATTEMPTS:
+            _burn_codes(db, purpose, email)
+        raise HTTPException(status_code=400, detail=detail)
+    row.used_at = now
+    attempts.pop(key, None)
+    return row
+
+
 def _local_account(db: Session) -> tuple[User, Organization]:
     """Local mode has one user. A later login keeps that user and tenant."""
     user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
@@ -343,16 +462,20 @@ def _default_project_id(db: Session, user: User | None, tenant_id: str) -> str |
     return user.default_project_id
 
 
+def _delivery_channel(state) -> str:
+    """How a mailed code/link can reach the user on this deployment."""
+    if getattr(state, "smtp_url", ""):
+        return "smtp"
+    if state.mode == "local":
+        return "inline"
+    if getattr(state, "reset_operator_log", False):
+        return "operator-log"
+    return "none"
+
+
 def _capabilities(request: Request) -> dict[str, object]:
     state = request.app.state
-    if getattr(state, "smtp_url", ""):
-        reset_delivery = "smtp"
-    elif state.mode == "local":
-        reset_delivery = "inline"
-    elif getattr(state, "reset_operator_log", False):
-        reset_delivery = "operator-log"
-    else:
-        reset_delivery = "none"
+    reset_delivery = _delivery_channel(state)
     return {
         "mode": state.mode,
         "password": True,
@@ -368,6 +491,11 @@ def _capabilities(request: Request) -> dict[str, object]:
         # Cloud without any of these cannot deliver — hide the flow.
         "reset_delivery": reset_delivery,
         "password_reset": reset_delivery != "none",
+        # 6-digit email codes (register verify + code login) are offered only
+        # where a code can actually be delivered; ALTCHA proof-of-work gates
+        # every auth endpoint.
+        "code_delivery": reset_delivery if reset_delivery in ("smtp", "operator-log") else "none",
+        "captcha": "altcha",
     }
 
 
@@ -465,6 +593,15 @@ def register(
     password = str(payload.get("password") or "")
     if not 8 <= len(password) <= 128:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    _require_captcha(request, payload)
+    # Email proof is required whenever the deploy can actually deliver a code
+    # (smtp or the operator outbox). local/inline and no-channel deploys keep
+    # the bare email+password form.
+    if _delivery_channel(request.app.state) in ("smtp", "operator-log"):
+        code = str(payload.get("code") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="CODE_REQUIRED")
+        _redeem_code(request, db, "register", email, code)
     mode = getattr(request.app.state, "registration", "invite")
     if mode not in _REGISTRATION_MODES:
         mode = "invite"
@@ -528,11 +665,26 @@ def password_login(
     limiter = getattr(request.app.state, "auth_rate", None)
     if limiter is not None:
         limiter.check("login", request.client.host if request.client else "-", email)
+    _require_captcha(request, payload)
     user = db.scalars(select(User).where(User.email == email).limit(1)).first()
-    # Always run one scrypt so unknown-email and wrong-password look alike.
-    stored = user.password_hash if user is not None and user.password_hash else _DUMMY_HASH
-    if user is None or not verify_password(str(payload.get("password") or ""), stored):
-        raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+    code = str(payload.get("code") or "").strip()
+    if code:
+        # Code login — same error shape as a wrong password.
+        if user is None or user.disabled_at is not None:
+            raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+        try:
+            _redeem_code(
+                request, db, "login", email, code, detail="INVALID_CREDENTIALS"
+            )
+        except HTTPException:
+            raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS") from None
+    else:
+        # Always run one scrypt so unknown-email and wrong-password look alike.
+        stored = user.password_hash if user is not None and user.password_hash else _DUMMY_HASH
+        if user is None or not verify_password(
+            str(payload.get("password") or ""), stored
+        ):
+            raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     if user.disabled_at is not None:
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     _drop_current(request, db)
@@ -555,6 +707,7 @@ def forgot_password(
     limiter = getattr(request.app.state, "auth_rate", None)
     if limiter is not None:
         limiter.check("forgot", request.client.host if request.client else "-", email)
+    _require_captcha(request, payload)
     user = db.scalars(
         select(User).where(User.email == email).limit(1)
     ).first()
@@ -577,18 +730,9 @@ def forgot_password(
     smtp_url = str(getattr(request.app.state, "smtp_url", "") or "")
     if smtp_url:
         # SMTP deployments get a 6-digit code (typed on the forgot page);
-        # the digest is user-scoped so a guessed code only fits one account.
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        code_row = PasswordReset(
-            token_hash=_hash_token(
-                request.app.state.secret, f"code:{user.id}:{code}"
-            ),
-            user_id=user.id,
-            created_at=now,
-            expires_at=now + _CODE_TTL,
-        )
-        db.add(code_row)
-        db.flush()
+        # the digest is purpose+email-scoped so a guessed code fits nothing
+        # else.
+        code = _mint_code(request, db, "reset", email, user.id)
         from rxycode_server.mailer import send_mail
 
         if send_mail(
@@ -606,7 +750,7 @@ def forgot_password(
         if getattr(request.app.state, "reset_operator_log", False):
             # SMTP path down — the code has no redeeming UI in operator-log
             # mode, so burn it and log a standard link instead.
-            code_row.used_at = now
+            _burn_codes(db, "reset", email)
             token = secrets.token_urlsafe(32)
             reset_url = f"{request.headers.get('origin', '')}/reset?token={token}"
             db.add(
@@ -657,7 +801,7 @@ def _reset_with_code(
     request: Request, payload: dict, db: Session
 ) -> dict[str, object]:
     """Redeem an emailed 6-digit code. The stored digest is scoped to the
-    user (``code:{user_id}:{code}``) and repeated wrong codes burn the
+    purpose+email (``reset:{email}:{code}``) and repeated wrong codes burn the
     outstanding code — a 10^6 space stays safe at this ceiling."""
     email = _normalize_email(str(payload.get("email") or ""))
     code = str(payload.get("code") or "").strip()
@@ -671,46 +815,14 @@ def _reset_with_code(
         limiter.check(
             "reset-code", request.client.host if request.client else "-", email
         )
-    attempts = getattr(request.app.state, "reset_code_attempts", None)
-    if attempts is None:
-        attempts = {}
-        request.app.state.reset_code_attempts = attempts
-    now = datetime.now(timezone.utc)
     user = db.scalars(
         select(User).where(User.email == email).limit(1)
     ).first()
-    key = user.id if user is not None else f"mail:{email}"
-    if attempts.get(key, 0) >= _CODE_MAX_ATTEMPTS:
+    if user is None or user.disabled_at is not None:
         raise HTTPException(status_code=400, detail="RESET_INVALID")
-    row = (
-        db.get(
-            PasswordReset,
-            _hash_token(request.app.state.secret, f"code:{user.id}:{code}"),
-        )
-        if user is not None
-        else None
-    )
-    if (
-        user is None
-        or user.disabled_at is not None
-        or row is None
-        or row.used_at is not None
-        or _aware(row.expires_at) <= now
-    ):
-        attempts[key] = attempts.get(key, 0) + 1
-        if attempts[key] >= _CODE_MAX_ATTEMPTS and user is not None:
-            db.execute(
-                update(PasswordReset)
-                .where(
-                    PasswordReset.user_id == user.id,
-                    PasswordReset.used_at.is_(None),
-                )
-                .values(used_at=now)
-            )
-        raise HTTPException(status_code=400, detail="RESET_INVALID")
-    attempts.pop(key, None)
+    row = _redeem_code(request, db, "reset", email, code, detail="RESET_INVALID")
+    now = datetime.now(timezone.utc)
     user.password_hash = hash_password(password)
-    row.used_at = now
     db.execute(
         update(AuthSession)
         .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
@@ -759,6 +871,79 @@ def reset_password(
         .values(revoked_at=now)
     )
     return {"ok": True}
+
+
+@router.get("/api/v1/auth/altcha")
+def altcha_challenge(request: Request) -> dict[str, object]:
+    """Fresh signed PoW challenge for the ALTCHA widget (no side effects)."""
+    return create_challenge(request.app.state.secret)
+
+
+@router.post("/api/v1/auth/register/code")
+def register_code(
+    request: Request,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    """Send a 6-digit register-verify code. Always 200 — never reveals
+    whether the email is already registered."""
+    require_write(request)
+    email = _normalize_email(str(payload.get("email") or ""))
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check(
+            "register-code", request.client.host if request.client else "-", email
+        )
+    _check_email(email)
+    _require_captcha(request, payload)
+    channel = _delivery_channel(request.app.state)
+    body: dict[str, object] = {"ok": True, "delivery": channel}
+    taken = db.scalars(select(User.id).where(User.email == email).limit(1)).first()
+    if taken or channel == "none":
+        return body
+    code = _mint_code(request, db, "register", email, None)
+    body["delivery"] = _deliver_code(
+        request, email, code, "RxyCode 注册验证码"
+    ) or channel
+    if body["delivery"] == "inline":
+        body["dev_code"] = code
+    return body
+
+
+@router.post("/api/v1/auth/login/code")
+def login_code(
+    request: Request,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    """Send a 6-digit login code. Always 200 — never reveals whether the
+    email exists."""
+    require_write(request)
+    email = _normalize_email(str(payload.get("email") or ""))
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check(
+            "login-code", request.client.host if request.client else "-", email
+        )
+    _check_email(email)
+    _require_captcha(request, payload)
+    channel = _delivery_channel(request.app.state)
+    body: dict[str, object] = {"ok": True, "delivery": channel}
+    user = db.scalars(select(User).where(User.email == email).limit(1)).first()
+    if (
+        user is None
+        or user.disabled_at is not None
+        or user.kind != "email"
+        or channel == "none"
+    ):
+        return body
+    code = _mint_code(request, db, "login", email, user.id)
+    body["delivery"] = _deliver_code(
+        request, email, code, "RxyCode 登录验证码"
+    ) or channel
+    if body["delivery"] == "inline":
+        body["dev_code"] = code
+    return body
 
 
 @router.post("/api/v1/auth/logout", status_code=204)

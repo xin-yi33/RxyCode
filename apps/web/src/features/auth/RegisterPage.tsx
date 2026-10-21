@@ -5,6 +5,7 @@ import { Link, Navigate, useNavigate } from "react-router"
 import { Button } from "../../components/ui/button"
 import { createClient } from "../../sdk/client"
 import { apiErrorText, isUnauthorized } from "../../sdk/errors"
+import { AltchaWidget } from "./AltchaWidget"
 import { AuthLayout } from "./AuthLayout"
 
 const api = createClient()
@@ -30,10 +31,50 @@ export function RegisterPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [invite, setInvite] = useState("")
+  const [code, setCode] = useState("")
+  const [captcha, setCaptcha] = useState("")
+  const [captchaKey, setCaptchaKey] = useState(0)
   const [error, setError] = useState("")
+  const [notice, setNotice] = useState("")
   const [busy, setBusy] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [cooldown, setCooldown] = useState(0)
 
   const registration = capabilities.data?.registration ?? "invite"
+  const needsCode = (capabilities.data?.code_delivery ?? "none") !== "none"
+  const wantsCaptcha = capabilities.data?.captcha === "altcha"
+
+  const refreshCaptcha = () => {
+    setCaptcha("")
+    setCaptchaKey((k) => k + 1)
+  }
+
+  const sendCode = () => {
+    if (sending || cooldown > 0) return
+    setSending(true)
+    setError("")
+    api
+      .requestRegisterCode({ email: email.trim().toLowerCase(), captcha })
+      .then((body) => {
+        setNotice(
+          body.delivery === "operator-log"
+            ? "验证码已生成，请联系管理员从服务器日志获取。"
+            : "验证码已发送到邮箱（如已注册则不会收到），15 分钟内有效。",
+        )
+        setCooldown(60)
+        const timer = setInterval(() => {
+          setCooldown((s) => {
+            if (s <= 1) clearInterval(timer)
+            return s - 1
+          })
+        }, 1000)
+      })
+      .catch((err: unknown) => setError(apiErrorText(err)))
+      .finally(() => {
+        setSending(false)
+        refreshCaptcha() // captcha is single-use — remount for the register submit
+      })
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -45,12 +86,17 @@ export function RegisterPage() {
         email: email.trim().toLowerCase(),
         password,
         ...(registration === "invite" ? { invite_code: invite.trim() } : {}),
+        ...(needsCode ? { code: code.trim() } : {}),
+        captcha,
       })
       .then((body) => {
         queryClient.setQueryData(["me"], body)
         navigate("/app", { replace: true })
       })
-      .catch((err: unknown) => setError(apiErrorText(err)))
+      .catch((err: unknown) => {
+        setError(apiErrorText(err))
+        refreshCaptcha()
+      })
       .finally(() => setBusy(false))
   }
 
@@ -83,6 +129,12 @@ export function RegisterPage() {
     )
   }
 
+  const emailReady = /.+@.+\..+/.test(email.trim())
+  const canSend = emailReady && (!wantsCaptcha || !!captcha) && cooldown === 0
+  const canSubmit =
+    !!email.trim() && password.length >= 8 && (!needsCode || code.trim().length === 6) &&
+    (!wantsCaptcha || !!captcha)
+
   return (
     <AuthLayout>
       <form onSubmit={submit} className="space-y-4">
@@ -99,6 +151,35 @@ export function RegisterPage() {
             onChange={(event) => setEmail(event.target.value)}
           />
         </label>
+        {needsCode ? (
+          <label className="block text-sm font-medium">
+            邮箱验证码
+            <div className="mt-1 flex gap-2">
+              <input
+                className={inputClass + " mt-0 min-w-0 flex-1"}
+                type="text"
+                name="email-code"
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                placeholder="6 位数字"
+                autoComplete="one-time-code"
+                required
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0 whitespace-nowrap"
+                disabled={!canSend || sending}
+                onClick={sendCode}
+              >
+                {cooldown > 0 ? `${cooldown}s 后重发` : sending ? "发送中…" : "发送验证码"}
+              </Button>
+            </div>
+          </label>
+        ) : null}
         <label className="block text-sm font-medium">
           密码
           <input
@@ -128,12 +209,18 @@ export function RegisterPage() {
             />
           </label>
         ) : null}
+        {wantsCaptcha ? (
+          <div className="pt-1">
+            <AltchaWidget key={captchaKey} onVerify={setCaptcha} />
+          </div>
+        ) : null}
+        {notice ? <p className="text-sm text-muted">{notice}</p> : null}
         {error ? (
           <p role="alert" className="text-sm text-failure">
             {error}
           </p>
         ) : null}
-        <Button type="submit" className="w-full" disabled={busy}>
+        <Button type="submit" className="w-full" disabled={busy || !canSubmit}>
           {busy ? "正在注册…" : "注册"}
         </Button>
       </form>
