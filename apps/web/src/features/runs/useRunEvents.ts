@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 
 import { loginPathFor } from "../../app/AuthGate"
+import { appNavigate } from "../../app/nav"
 import { ApiError, createClient } from "../../sdk/client"
 import { reduceEvents, type RunEvent, type RunView } from "./eventReducer"
 import { isTerminalRunStatus } from "./status"
@@ -120,8 +121,10 @@ export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
     const redirectLogin = () => {
       dead = true
       source?.close()
-      window.location.assign(
+      // SPA 跳转：整页刷新会丢掉内存里的 Zustand 草稿（PRD §3.3）。
+      appNavigate(
         loginPathFor(window.location.pathname, window.location.search),
+        { replace: true },
       )
     }
 

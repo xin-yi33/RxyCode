@@ -158,6 +158,14 @@ function RunTab({ runs, views }: { runs: RunSummary[]; views: RunView[] }) {
             <Field label="权限模式">
               {PROFILE_TEXT[run.permission_profile] ?? run.permission_profile ?? "—"}
             </Field>
+            {/* CON-02：展示服务端解析的模型快照，不由前端猜。 */}
+            <Field label="模型">
+              {run.model
+                ? `${run.model.display_name || run.model.model_id}` +
+                  (run.model.provider_name ? ` · ${run.model.provider_name}` : "") +
+                  ` · ${run.model.credential_source === "platform" ? "平台" : "个人"}`
+                : "未记录"}
+            </Field>
           </dl>
         )
       })}
@@ -241,7 +249,11 @@ export function ConsolePanel() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setConsoleOpen(false)
+      if (event.key !== "Escape") return
+      // Esc 一次只关最上层：有模态 dialog 或弹层（经 stopPropagation
+      // 挡在 document 层）时控制台不跟着关。
+      if (document.querySelector("dialog[open]")) return
+      setConsoleOpen(false)
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)

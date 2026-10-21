@@ -43,9 +43,10 @@ export function ResetPasswordPage() {
         <div className="space-y-4">
           <p className="text-lg font-semibold">密码已重置</p>
           <p className="text-sm text-muted">所有已登录会话均已退出，请用新密码登录。</p>
-          <Button className="w-full" onClick={() => window.location.assign("/login")}>
-            去登录
-          </Button>
+          {/* SPA 返回登录页，避免整页刷新丢掉内存草稿。 */}
+          <Link to="/login">
+            <Button className="w-full">去登录</Button>
+          </Link>
         </div>
       ) : !token ? (
         <div className="space-y-4">

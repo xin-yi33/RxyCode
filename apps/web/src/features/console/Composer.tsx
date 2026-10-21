@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
-import { useNavigate } from "react-router"
+import { Link, useLocation, useNavigate } from "react-router"
 import { useQueryClient } from "@tanstack/react-query"
 
-import { IconSend, IconSpinner, IconStop } from "../../components/icons"
+import { IconClose, IconSend, IconSpinner, IconStop } from "../../components/icons"
 import { ApiError, createClient, type RunAccepted, type RunSummary } from "../../sdk/client"
-import { apiErrorText } from "../../sdk/errors"
+import { apiErrorText, isUnauthorized } from "../../sdk/errors"
 import { useUi, type PermissionProfile } from "../../state/ui"
+import { LoginPrompt } from "../auth/LoginPrompt"
+import { useAuth } from "../auth/useAuth"
+import { useModelsCatalog } from "../models/queries"
 import { isActiveRunStatus } from "../runs/status"
+import { ModelPicker } from "./ModelPicker"
 
 const api = createClient()
 
@@ -25,20 +29,41 @@ const PROFILES: { value: PermissionProfile; label: string; hint: string }[] = [
 
 export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const draftKey = sessionId ?? "__new__"
   const draft = useUi((state) => state.drafts[draftKey])
-  const setDraft = useUi((state) => state.setDraft)
+  const patchDraft = useUi((state) => state.patchDraft)
   const clearDraft = useUi((state) => state.clearDraft)
+  const pendingIntent = useUi((state) => state.pendingIntent)
+  const setPendingIntent = useUi((state) => state.setPendingIntent)
+  const auth = useAuth()
+  const authed = auth.status === "authed"
+  const catalog = useModelsCatalog(authed)
   const text = draft?.text ?? ""
   const requestId = draft?.requestId ?? ""
   const permission = draft?.permission ?? "confirm"
+  // undefined = 跟随服务端 default_model_ref；目录未加载时回退 null（默认链）。
+  const modelRef = draft?.modelRef
+  const effectiveModelRef =
+    modelRef !== undefined ? modelRef : (catalog.data?.default_model_ref ?? null)
   const [sending, setSending] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [error, setError] = useState("")
+  const [errorLink, setErrorLink] = useState<{ to: string; label: string } | null>(null)
+  // "send" | "model" —— 同一个登录提示层，措辞随触发点不同。
+  const [loginPrompt, setLoginPrompt] = useState<"send" | "model" | null>(null)
   const areaRef = useRef<HTMLTextAreaElement>(null)
 
   const active = activeRun != null && isActiveRunStatus(activeRun.status)
+  const showPendingBanner = pendingIntent && authed
+
+  // 登录流程中止（仍是访客）→ 清掉标记，不残留误导提示。
+  useEffect(() => {
+    if (pendingIntent && auth.status === "guest" && !auth.unavailable) {
+      setPendingIntent(false)
+    }
+  }, [pendingIntent, auth.status, auth.unavailable, setPendingIntent])
 
   // 自动增高（≤200px，超出内部滚动）；草稿清空时回到一行。
   useEffect(() => {
@@ -48,34 +73,55 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     area.style.height = `${Math.min(area.scrollHeight, 200)}px`
   }, [text])
 
+  const fail = (message: string, link: { to: string; label: string } | null = null) => {
+    setError(message)
+    setErrorLink(link)
+  }
+
   const update = (nextText: string) => {
     setError("")
-    setDraft(draftKey, {
+    setErrorLink(null)
+    patchDraft(draftKey, {
       text: nextText,
       // Editing the text after a failed send invalidates the old request_id;
       // a fresh one is minted at the next send.
       requestId: nextText === text ? requestId : "",
-      permission,
     })
   }
 
   const submit = async () => {
     const message = text.trim()
     if (sending || active || !message) return
+    if (auth.status === "pending") {
+      fail("正在确认登录状态，请稍候…")
+      return
+    }
+    if (auth.status === "guest") {
+      // 访客 → 不创建 run，弹登录提示层（PRD §3.2 动作级鉴权）。
+      if (auth.unavailable) {
+        fail("无法确认登录状态，请稍后重试")
+        return
+      }
+      setLoginPrompt("send")
+      return
+    }
     const rid = requestId || crypto.randomUUID()
-    setDraft(draftKey, { text, requestId: rid, permission })
+    patchDraft(draftKey, { text, requestId: rid })
     setSending(true)
     setError("")
+    setErrorLink(null)
     try {
       const body = {
         message,
         request_id: rid,
         permission_profile: permission,
+        model_ref: effectiveModelRef,
       }
       const accepted = sessionId
         ? await api.createRun(sessionId, body)
         : await api.createTask(body)
       clearDraft(draftKey)
+      setPendingIntent(false)
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
       void queryClient.invalidateQueries({
         queryKey: ["sessionRuns", accepted.session_id],
@@ -92,11 +138,24 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
       if (err instanceof ApiError) {
         // A real HTTP response arrived — the server has seen this request_id,
         // so a retry must use a new one.
-        setDraft(draftKey, { text, requestId: "", permission })
-        setError(apiErrorText(err))
+        patchDraft(draftKey, { text, requestId: "" })
+        if (isUnauthorized(err)) {
+          // 会话中途失效：就地登录提示，SPA 跳转保住草稿。
+          setLoginPrompt("send")
+          return
+        }
+        if (err.code === "BYOK_REQUIRED") {
+          // MOD-24：发送前未配置 → 引导到设置模型分区，草稿保留。
+          fail(apiErrorText(err), {
+            to: "/app/settings?section=models",
+            label: "去添加 API Key",
+          })
+          return
+        }
+        fail(apiErrorText(err))
       } else {
         // Network failure: keep the request_id so retry is idempotent.
-        setError("无法连接服务器")
+        fail("无法连接服务器")
       }
     } finally {
       setSending(false)
@@ -107,12 +166,13 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     if (!activeRun || !active || cancelling) return
     setCancelling(true)
     setError("")
+    setErrorLink(null)
     try {
       await api.cancelRun(activeRun.run_id)
       void queryClient.invalidateQueries({ queryKey: ["sessionRuns", sessionId] })
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
     } catch (err) {
-      setError(apiErrorText(err))
+      fail(apiErrorText(err))
     } finally {
       setCancelling(false)
     }
@@ -122,7 +182,8 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     if (
       event.key === "Enter" &&
       !event.shiftKey &&
-      !event.nativeEvent.isComposing
+      !event.nativeEvent.isComposing && // 中文输入法候选态不发送
+      !document.querySelector("dialog[open]") // 模态层开着时全局发送让位
     ) {
       event.preventDefault()
       void submit()
@@ -132,6 +193,20 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   return (
     <div className="px-4 pb-4 pt-1">
       <div className="mx-auto max-w-3xl">
+        {showPendingBanner ? (
+          <p className="mb-2 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-ink">
+            <span className="min-w-0 flex-1">草稿已保留，确认后发送</span>
+            <button
+              type="button"
+              aria-label="关闭提示"
+              title="关闭提示"
+              className="shrink-0 rounded p-0.5 text-muted hover:bg-sidebar"
+              onClick={() => setPendingIntent(false)}
+            >
+              <IconClose size={12} />
+            </button>
+          </p>
+        ) : null}
         <div
           className={
             "rounded-2xl border border-border bg-card transition-colors " +
@@ -163,10 +238,10 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
               value={permission}
               disabled={sending || active}
               onChange={(event) =>
-                setDraft(draftKey, {
-                  text,
-                  requestId,
+                patchDraft(draftKey, {
                   permission: event.target.value as PermissionProfile,
+                  // 权限属于幂等范围 —— 切换即重置 request_id。
+                  requestId: "",
                 })
               }
             >
@@ -176,7 +251,16 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                 </option>
               ))}
             </select>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              <ModelPicker
+                draftKey={draftKey}
+                catalog={catalog}
+                authStatus={auth.status}
+                disabled={sending || active}
+                disabledReason={active ? "运行中不可更换模型" : "提交中…"}
+                onGuest={() => setLoginPrompt("model")}
+                returnFocusRef={areaRef}
+              />
               {active ? (
                 <button
                   type="button"
@@ -220,6 +304,18 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
         {error ? (
           <p role="alert" className="mt-2 text-xs text-failure">
             {error}
+            {errorLink ? (
+              <>
+                {" "}
+                <Link
+                  className="underline"
+                  to={errorLink.to}
+                  state={{ from: location.pathname + location.search }}
+                >
+                  {errorLink.label}
+                </Link>
+              </>
+            ) : null}
           </p>
         ) : (
           <p className="mt-2 px-1 text-xs text-muted">
@@ -227,6 +323,12 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
           </p>
         )}
       </div>
+      {loginPrompt ? (
+        <LoginPrompt
+          title={loginPrompt === "model" ? "选择模型需要登录" : "发送任务需要登录"}
+          onClose={() => setLoginPrompt(null)}
+        />
+      ) : null}
     </div>
   )
 }

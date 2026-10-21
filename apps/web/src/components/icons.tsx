@@ -176,3 +176,60 @@ export function IconArrowDown(props: IconProps) {
     </IconBase>
   )
 }
+
+export function IconStar(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+    </IconBase>
+  )
+}
+
+export function IconTrash(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </IconBase>
+  )
+}
+
+export function IconEye(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </IconBase>
+  )
+}
+
+export function IconEyeOff(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+      <path d="M14.12 14.12A3 3 0 1 1 9.88 9.88" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </IconBase>
+  )
+}
+
+export function IconDots(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <circle cx="12" cy="5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="19" r="1" fill="currentColor" stroke="none" />
+    </IconBase>
+  )
+}
+
+export function IconRefresh(props: IconProps) {
+  return (
+    <IconBase {...props}>
+      <polyline points="23 4 23 10 17 10" />
+      <polyline points="1 20 1 14 7 14" />
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+    </IconBase>
+  )
+}

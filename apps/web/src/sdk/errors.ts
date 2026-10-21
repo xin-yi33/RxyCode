@@ -21,6 +21,13 @@ const CODE_TEXT: Record<string, string> = {
   AUTH_PROVIDER_NOT_CONFIGURED: "该登录方式暂未配置",
   CURSOR_EXPIRED: "事件游标已过期，请刷新",
   RESET_INVALID: "重置链接无效或已过期，请重新发起",
+  MODEL_NOT_FOUND: "模型不存在或已移除",
+  MODEL_UNAVAILABLE: "该模型当前不可用（连接已变更）",
+  BYOK_REQUIRED: "请先配置自己的 API Key",
+  BYOK_UNAVAILABLE: "模型服务暂不可用",
+  INVALID_BASE_URL: "接口地址无效（需 HTTPS 公网地址）",
+  BILLABLE_TEST_NOT_CONFIRMED: "请先确认计费测试",
+  CONNECTION_NOT_FOUND: "连接不存在",
   UNAVAILABLE: "服务暂不可用",
 }
 
@@ -39,6 +46,14 @@ export function apiErrorText(error: unknown): string {
     return CODE_TEXT[error.code] ?? `请求失败（${error.code}）`
   }
   return "无法连接服务器"
+}
+
+// PRD §10：失败文案保留 request/error code 便于对账 —— “文案（CODE）”。
+export function errorWithCode(error: unknown): string {
+  if (error instanceof ApiError) {
+    return `${apiErrorText(error)}（${error.code}）`
+  }
+  return apiErrorText(error)
 }
 
 export function isUnauthorized(error: unknown): boolean {

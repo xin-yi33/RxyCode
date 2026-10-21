@@ -1,6 +1,6 @@
 import { useState } from "react"
-import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link, NavLink, useLocation, useNavigate } from "react-router"
+import { useQuery } from "@tanstack/react-query"
+import { Link, NavLink, useLocation } from "react-router"
 
 import {
   IconClose,
@@ -9,8 +9,11 @@ import {
   IconSettings,
   IconUser,
 } from "../../components/icons"
-import { createClient, type Me } from "../../sdk/client"
+import { isAppPath, loginPathFor, safeNext } from "../../app/AuthGate"
+import { usePopover } from "../../lib/usePopover"
+import { createClient } from "../../sdk/client"
 import { useUi } from "../../state/ui"
+import { useAuth, useLogout } from "../auth/useAuth"
 import { runStatusKind, runStatusText } from "../runs/status"
 
 const api = createClient()
@@ -26,11 +29,37 @@ const chipClass: Record<string, string> = {
 function SessionList() {
   const location = useLocation()
   const setSidebarOpen = useUi((state) => state.setSidebarOpen)
+  const auth = useAuth()
   const query = useQuery({
     queryKey: ["sessions"],
     queryFn: ({ signal }) => api.listSessions(signal),
     refetchInterval: 15_000,
+    // 访客不拉私有会话列表（PRD §3.2）。
+    enabled: auth.status === "authed",
   })
+  if (auth.status === "guest") {
+    if (auth.unavailable) {
+      return (
+        <p role="alert" className="px-3 py-2 text-sm text-muted">
+          无法确认登录状态{" "}
+          <button type="button" className="underline" onClick={() => auth.refetch()}>
+            重试
+          </button>
+        </p>
+      )
+    }
+    return (
+      <p className="px-3 py-2 text-sm text-muted">
+        登录后查看历史会话{" "}
+        <Link
+          className="underline"
+          to={loginPathFor(location.pathname, location.search)}
+        >
+          登录
+        </Link>
+      </p>
+    )
+  }
   if (query.isPending) {
     return <p className="px-3 py-2 text-sm text-muted">正在加载会话…</p>
   }
@@ -86,36 +115,31 @@ function SessionList() {
   )
 }
 
-// 侧栏底部账户条：头像 + 邮箱/昵称，点开弹出“设置 / 登出”。
+// 侧栏底部账户条：访客显示“未登录”，菜单只有 登录/注册；
+// 登录态显示用户名，菜单为 设置/退出登录。Esc 或点击外部关闭。
 function AccountMenu() {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
+  const location = useLocation()
   const setSidebarOpen = useUi((state) => state.setSidebarOpen)
+  const auth = useAuth()
+  const { logout, busy: logoutBusy, error: logoutError } = useLogout()
   const [open, setOpen] = useState(false)
-  // 只读 AuthGate 已填充的 ["me"] 缓存；enabled:false + 真 queryFn 避免
-  // “No queryFn” 噪音，也保证缓存过期后能补拉。
-  const me = useQuery<Me>({
-    queryKey: ["me"],
-    queryFn: ({ signal }) => api.getMe(signal),
-    enabled: false,
-    staleTime: 30_000,
-  })
+  const popRef = usePopover<HTMLDivElement>(open, () => setOpen(false))
   const name =
-    me.data?.user?.display_name || me.data?.user?.email || "账户"
-
-  const logout = () => {
+    auth.status === "authed"
+      ? auth.user?.display_name || auth.user?.email || "账户"
+      : auth.status === "pending"
+        ? "账户"
+        : "未登录"
+  const next = safeNext(location.pathname + location.search)
+  const closeOnMobile = () => {
     setOpen(false)
-    void api
-      .logout()
-      .catch(() => undefined)
-      .then(() => {
-        queryClient.clear()
-        navigate("/login", { replace: true })
-      })
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setSidebarOpen(false)
+    }
   }
 
   return (
-    <div className="relative border-t border-border p-2">
+    <div className="relative border-t border-border p-2" ref={popRef}>
       <button
         type="button"
         aria-haspopup="menu"
@@ -133,45 +157,68 @@ function AccountMenu() {
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </button>
       {open ? (
-        <>
-          <button
-            type="button"
-            aria-label="关闭账户菜单"
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="menu"
-            className={
-              "absolute bottom-full left-2 right-2 z-50 mb-1 overflow-hidden " +
-              "rounded-lg border border-border bg-card shadow-md"
-            }
-          >
-            <NavLink
-              to="/app/settings"
-              role="menuitem"
-              className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar"
-              onClick={() => {
-                setOpen(false)
-                if (window.matchMedia("(max-width: 767px)").matches) {
-                  setSidebarOpen(false)
+        <div
+          role="menu"
+          className={
+            "absolute bottom-full left-2 right-2 z-50 mb-1 overflow-hidden " +
+            "rounded-lg border border-border bg-card shadow-md"
+          }
+        >
+          {auth.status === "authed" ? (
+            <>
+              <NavLink
+                to="/app/settings"
+                state={{ from: location.pathname + location.search }}
+                role="menuitem"
+                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar"
+                onClick={closeOnMobile}
+              >
+                <IconSettings size={15} />
+                设置
+              </NavLink>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={logoutBusy}
+                className={
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm " +
+                  "hover:bg-sidebar disabled:opacity-60"
                 }
-              }}
-            >
-              <IconSettings size={15} />
-              设置
-            </NavLink>
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-sidebar"
-              onClick={logout}
-            >
-              <IconLogout size={15} />
-              登出
-            </button>
-          </div>
-        </>
+                // 失败时菜单保持打开，错误就地显示（不假称已退出）。
+                onClick={logout}
+              >
+                <IconLogout size={15} />
+                {logoutBusy ? "退出中…" : "登出"}
+              </button>
+              {logoutError ? (
+                <p role="alert" className="px-3 pb-2 text-xs text-failure">
+                  {logoutError}
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <NavLink
+                to={loginPathFor(location.pathname, location.search)}
+                role="menuitem"
+                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar"
+                onClick={closeOnMobile}
+              >
+                <IconLogout size={15} />
+                登录
+              </NavLink>
+              <NavLink
+                to={isAppPath(next) ? `/register?next=${encodeURIComponent(next)}` : "/register"}
+                role="menuitem"
+                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-sidebar"
+                onClick={closeOnMobile}
+              >
+                <IconPlus size={15} />
+                注册
+              </NavLink>
+            </>
+          )}
+        </div>
       ) : null}
     </div>
   )

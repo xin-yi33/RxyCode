@@ -4,11 +4,11 @@ import {
   QueryCache,
   QueryClient,
   QueryClientProvider,
-  useQuery,
 } from "@tanstack/react-query"
 import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-router"
 
-import { AuthGate, loginPathFor } from "./AuthGate"
+import { AuthGate, isAppPath, loginPathFor } from "./AuthGate"
+import { appNavigate, registerNavigate } from "./nav"
 import { ForgotPasswordPage } from "../features/auth/ForgotPasswordPage"
 import { LoginPage } from "../features/auth/LoginPage"
 import { ResetPasswordPage } from "../features/auth/ResetPasswordPage"
@@ -27,10 +27,8 @@ import { UsagePage } from "../features/usage/UsagePage"
 import { DiffReview } from "../features/workspace/DiffReview"
 import { FileTree } from "../features/workspace/FileTree"
 import { GitPanel } from "../features/workspace/GitPanel"
-import { ApiError, createClient } from "../sdk/client"
+import { ApiError } from "../sdk/client"
 import { useUi } from "../state/ui"
-
-const api = createClient()
 
 // Applies the persisted theme at the app root so auth pages follow it too.
 function ThemeSync() {
@@ -42,27 +40,41 @@ function ThemeSync() {
   return null
 }
 
-// W9-F1: one global 401 path. Any authed-page query/mutation that gets a 401
-// sends the user to /login?next=… (only /app… paths are allowed as next).
-// Auth pages are excluded so a logged-out /me probe does not loop.
-const PUBLIC_PATHS = new Set(["/login", "/register", "/oauth/callback"])
+// W9-F1 + 访客入口：全局 401 处理改为 SPA 跳转（appNavigate →
+// router.navigate），不整页刷新 —— 内存里的草稿随之保留。
+// 例外：
+//  - PUBLIC_PATHS 上的认证页不自跳（避免 /me 探测循环）。
+//  - ["me"] 探测的 401 是“访客”语义，由 useAuth/AuthGate 就地解释。
+//  - /app 内的 mutation 401 交给触发处（Composer 等）弹登录提示；
+//    后台查询的 401 才直接跳（此时身份已失效，继续停留无意义）。
+const PUBLIC_PATHS = new Set([
+  "/login",
+  "/register",
+  "/forgot",
+  "/reset",
+  "/oauth/callback",
+])
 
 function redirectOn401() {
-  if (PUBLIC_PATHS.has(window.location.pathname)) return
-  window.location.assign(
-    loginPathFor(window.location.pathname, window.location.search),
-  )
+  const { pathname, search } = window.location
+  if (PUBLIC_PATHS.has(pathname)) return
+  appNavigate(loginPathFor(pathname, search), { replace: true })
 }
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
-    onError: (error) => {
-      if (error instanceof ApiError && error.status === 401) redirectOn401()
+    onError: (error, query) => {
+      if (!(error instanceof ApiError) || error.status !== 401) return
+      if (query.queryKey[0] === "me") return // 公共身份探测：401 = 访客
+      redirectOn401()
     },
   }),
   mutationCache: new MutationCache({
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 401) redirectOn401()
+      if (!(error instanceof ApiError) || error.status !== 401) return
+      // /app 内由动作发起方弹“需要登录”层，保住上下文与草稿。
+      if (isAppPath(window.location.pathname)) return
+      redirectOn401()
     },
   }),
   defaultOptions: {
@@ -70,33 +82,10 @@ const queryClient = new QueryClient({
   },
 })
 
-// "/" sends the user to /app when authenticated and /login otherwise.
+// "/" 永远进入 /app：访客先看壳与输入框，动作级再登录（PRD §3.2/E2E-01），
+// 不再先探测身份 —— 不再有“确认登录中”的等待屏。
 function RootRedirect() {
-  const me = useQuery({
-    queryKey: ["me"],
-    queryFn: ({ signal }) => api.getMe(signal),
-  })
-  if (me.isPending) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <p role="status" className="text-sm text-muted">
-          正在确认登录状态…
-        </p>
-      </main>
-    )
-  }
-  if (me.isSuccess) return <Navigate to="/app" replace />
-  if (me.isError && me.error instanceof ApiError && me.error.status !== 401) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
-        <section role="alert" className="w-full max-w-sm rounded-lg border border-border bg-card p-6">
-          <h1 className="text-lg font-semibold">无法连接服务器</h1>
-          <p className="mt-2 text-sm text-muted">服务端暂不可用，稍后重试。</p>
-        </section>
-      </main>
-    )
-  }
-  return <Navigate to="/login" replace />
+  return <Navigate to="/app" replace />
 }
 
 function WorkspacePage() {
@@ -161,12 +150,14 @@ const router = createBrowserRouter([
   { path: "/onboarding", element: <Navigate to="/app" replace /> },
   { path: "/projects", element: <Navigate to="/app" replace /> },
   {
+    // /app 壳本身对访客开放：侧栏/顶栏/新任务输入框立即可见；
+    // 会话详情与设置仍是私有子路由（AuthGate 就地拦截）。
     path: "/app",
-    element: gated(<ConsoleShell />),
+    element: <ConsoleShell />,
     children: [
       { index: true, element: <NewSessionPage /> },
-      { path: "s/:sessionId", element: <SessionPage /> },
-      { path: "settings", element: <SettingsPage /> },
+      { path: "s/:sessionId", element: gated(<SessionPage />) },
+      { path: "settings", element: gated(<SettingsPage />) },
     ],
   },
   {
@@ -182,6 +173,11 @@ const router = createBrowserRouter([
   { path: "/terminal/:sessionId", element: gated(<TerminalPage />) },
   { path: "/browser/:sessionId", element: gated(<BrowserHandoffPage />) },
 ])
+
+// React 树之外（query cache 回调、SSE 恢复链）统一走 SPA 导航。
+registerNavigate((to, opts) => {
+  void router.navigate(to, opts)
+})
 
 export function App() {
   return (

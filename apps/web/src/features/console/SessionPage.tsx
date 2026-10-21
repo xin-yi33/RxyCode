@@ -13,9 +13,23 @@ const api = createClient()
 
 function RunCard({ run }: { run: RunSummary }) {
   // W9-F4: 用户消息气泡、状态行、工具/审批/问题/Final 全部由 RunTimeline
-  // 渲染 —— 这里不再画重复的状态行。
+  // 渲染 —— 这里不再画重复的状态行。模型行回显提交时的解析快照
+  // （FR-17）；历史 run 没有记录就如实标注，不用当前选择补写过去。
+  const model = run.model
   return (
     <article className="space-y-3">
+      <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
+        <span>
+          模型：
+          {model ? (model.display_name || model.model_id) : "未记录（历史任务）"}
+        </span>
+        {model?.provider_name ? <span>· {model.provider_name}</span> : null}
+        {model ? (
+          <span className="rounded-full bg-border px-1.5 py-0.5 text-muted-ink">
+            {model.credential_source === "platform" ? "平台" : "个人"}
+          </span>
+        ) : null}
+      </p>
       <RunTimeline run={run} />
     </article>
   )

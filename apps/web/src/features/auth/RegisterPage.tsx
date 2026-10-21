@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, Navigate, useNavigate } from "react-router"
 
+import { useSafeNext } from "../../app/AuthGate"
 import { Button } from "../../components/ui/button"
 import { createClient } from "../../sdk/client"
 import { apiErrorText, isUnauthorized } from "../../sdk/errors"
@@ -17,6 +18,8 @@ const inputClass =
 export function RegisterPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  // 注册成功回到发起处（访客从 /app 触发登录/注册时带 ?next=）。
+  const target = useSafeNext("/app")
   const capabilities = useQuery({
     queryKey: ["capabilities"],
     queryFn: ({ signal }) => api.getCapabilities(signal),
@@ -91,7 +94,7 @@ export function RegisterPage() {
       })
       .then((body) => {
         queryClient.setQueryData(["me"], body)
-        navigate("/app", { replace: true })
+        navigate(target, { replace: true })
       })
       .catch((err: unknown) => {
         setError(apiErrorText(err))
@@ -100,7 +103,7 @@ export function RegisterPage() {
       .finally(() => setBusy(false))
   }
 
-  if (me.isSuccess) return <Navigate to="/app" replace />
+  if (me.isSuccess) return <Navigate to={target} replace />
   if (me.isError && !isUnauthorized(me.error)) {
     return (
       <AuthLayout>
@@ -121,7 +124,10 @@ export function RegisterPage() {
         <p className="text-center text-lg font-semibold">暂未开放注册</p>
         <p className="mt-4 text-center text-sm text-muted">
           已有账号？{" "}
-          <Link className="text-foreground underline" to="/login">
+          <Link
+            className="text-foreground underline"
+            to={`/login?next=${encodeURIComponent(target)}`}
+          >
             登录
           </Link>
         </p>
@@ -226,8 +232,16 @@ export function RegisterPage() {
       </form>
       <p className="mt-4 text-center text-sm text-muted">
         已有账号？{" "}
-        <Link className="text-foreground underline" to="/login">
+        <Link
+          className="text-foreground underline"
+          to={`/login?next=${encodeURIComponent(target)}`}
+        >
           登录
+        </Link>
+      </p>
+      <p className="mt-2 text-center text-xs">
+        <Link className="text-muted underline" to={target}>
+          返回应用
         </Link>
       </p>
     </AuthLayout>

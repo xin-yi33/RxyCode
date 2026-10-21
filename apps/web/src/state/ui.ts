@@ -9,6 +9,9 @@ export type ComposerDraft = {
   // id; editing the text after a failure mints a new one (see Composer).
   requestId: string
   permission: PermissionProfile
+  // 选中的模型引用（"m_…" 或 "platform"）。undefined = 跟随服务端
+  // default_model_ref；幂等范围含模型 —— 改选会重置 requestId。
+  modelRef?: string | null
 }
 
 type UiState = {
@@ -17,6 +20,9 @@ type UiState = {
   sidebarOpen: boolean
   consoleOpen: boolean
   drafts: Record<string, ComposerDraft>
+  // 访客登录跳转前置位：登录返回后 Composer 显示“草稿已保留”横幅，
+  // 绝不自动重新发送（PRD §3.3 禁止自动提交）。
+  pendingIntent: boolean
   setTheme: (theme: ThemeName) => void
   toggleTheme: () => void
   setOffline: (offline: boolean) => void
@@ -24,15 +30,20 @@ type UiState = {
   toggleSidebar: () => void
   setConsoleOpen: (open: boolean) => void
   toggleConsole: () => void
+  setPendingIntent: (value: boolean) => void
   draftFor: (sessionId: string) => ComposerDraft
   setDraft: (sessionId: string, draft: ComposerDraft) => void
+  patchDraft: (sessionId: string, patch: Partial<ComposerDraft>) => void
   clearDraft: (sessionId: string) => void
+  // 登出/换账号：清空全部草稿与登录意图（PRD §3.3.5 —— 草稿按身份隔离）。
+  resetDrafts: () => void
 }
 
 const EMPTY_DRAFT: ComposerDraft = {
   text: "",
   requestId: "",
   permission: "confirm",
+  modelRef: undefined,
 }
 
 // The theme persists in the `rxy_theme` cookie, not storage — the shipped
@@ -55,6 +66,7 @@ export const useUi = create<UiState>()((set, get) => ({
   sidebarOpen: true,
   consoleOpen: false,
   drafts: {},
+  pendingIntent: false,
   setTheme: (theme) => {
     persistTheme(theme)
     set({ theme })
@@ -69,12 +81,21 @@ export const useUi = create<UiState>()((set, get) => ({
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
   toggleConsole: () => set({ consoleOpen: !get().consoleOpen }),
+  setPendingIntent: (pendingIntent) => set({ pendingIntent }),
   draftFor: (sessionId) => get().drafts[sessionId] ?? EMPTY_DRAFT,
   setDraft: (sessionId, draft) =>
     set({ drafts: { ...get().drafts, [sessionId]: draft } }),
+  patchDraft: (sessionId, patch) =>
+    set({
+      drafts: {
+        ...get().drafts,
+        [sessionId]: { ...EMPTY_DRAFT, ...get().drafts[sessionId], ...patch },
+      },
+    }),
   clearDraft: (sessionId) => {
     const drafts = { ...get().drafts }
     delete drafts[sessionId]
     set({ drafts })
   },
+  resetDrafts: () => set({ drafts: {}, pendingIntent: false }),
 }))

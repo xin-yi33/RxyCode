@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link, Navigate, useNavigate, useSearchParams } from "react-router"
+import { Link, Navigate, useNavigate } from "react-router"
 
+import { useSafeNext } from "../../app/AuthGate"
 import { Button } from "../../components/ui/button"
 import { createClient, type Me } from "../../sdk/client"
 import { apiErrorText, isNetworkError, isUnauthorized } from "../../sdk/errors"
@@ -14,10 +15,9 @@ const inputClass =
   "mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm " +
   "text-foreground outline-none focus:border-muted"
 
+// 登录成功回跳目标：只认 /app 站内路径（含 query），其它一律 /app。
 function usePostLoginTarget(): string {
-  const [params] = useSearchParams()
-  const next = params.get("next") ?? ""
-  return next.startsWith("/app") ? next : "/app"
+  return useSafeNext("/app")
 }
 
 export function LoginPage() {
@@ -187,7 +187,10 @@ export function LoginPage() {
               <span className="flex items-baseline justify-between">
                 密码
                 {capabilities.data?.password_reset === true ? (
-                  <Link className="text-xs font-normal text-muted underline" to="/forgot">
+                  <Link
+                    className="text-xs font-normal text-muted underline"
+                    to={`/forgot?next=${encodeURIComponent(target)}`}
+                  >
                     忘记密码？
                   </Link>
                 ) : null}
@@ -249,8 +252,17 @@ export function LoginPage() {
       ) : null}
       <p className="mt-4 text-center text-sm text-muted">
         没有账号？{" "}
-        <Link className="text-foreground underline" to="/register">
+        <Link
+          className="text-foreground underline"
+          to={`/register?next=${encodeURIComponent(target)}`}
+        >
           注册
+        </Link>
+      </p>
+      <p className="mt-2 text-center text-xs">
+        {/* 访客可直接回到控制台草稿页，登录不是看 /app 的前置条件。 */}
+        <Link className="text-muted underline" to={target}>
+          返回应用
         </Link>
       </p>
       {github ? (

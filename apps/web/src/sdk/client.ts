@@ -32,6 +32,16 @@ export type RunAccepted = {
   events_url: string
 }
 
+// 提交时解析的模型快照回显（api/runs.py::_run_model_json）；历史 run 为 null。
+export type RunModel = {
+  model_ref: string
+  model_id: string
+  provider_id: string
+  provider_name: string
+  credential_source: string
+  display_name?: string
+}
+
 export type RunSummary = {
   run_id: string
   status: string
@@ -39,6 +49,7 @@ export type RunSummary = {
   message: string
   permission_profile: string
   final_preview: string
+  model?: RunModel | null
 }
 
 // GET /runs/{id} 的实际字段（api/runs.py::get_run）——没有 final_preview。
@@ -50,6 +61,87 @@ export type RunDetail = {
   created_at: string | null
   message: string
   permission_profile: string
+  model?: RunModel | null
+}
+
+// ---- BYOK（PRD §7.2，api/models.py） ---------------------------------------
+
+export type ProviderPreset = {
+  id: string
+  name: string
+  base_url: string
+  category?: string
+}
+
+export type ModelsAccess = {
+  require_byok: boolean
+  platform_allowed: boolean
+  byok_available: boolean
+  default_model_ref: string | null
+}
+
+export type ModelConnection = {
+  id: string
+  provider_id: string
+  provider_name: string
+  display_name: string
+  base_url: string
+  api_transport: string
+  has_key: boolean
+  credential_version: number
+  state: string
+  test_status: "untested" | "ok" | "failed" | string
+  test_error: string | null
+  tested_at: string | null
+  updated_at: string | null
+  model_count: number
+}
+
+export type DiscoveredModel = {
+  id: string
+  name?: string
+  added?: boolean
+} & Record<string, unknown>
+
+export type DiscoverResult = {
+  success: boolean
+  models: DiscoveredModel[]
+  error: string | null
+  error_code: string | null
+  elapsed?: number | null
+}
+
+export type AddModelResult = {
+  model_id: string
+  status: "added" | "exists" | "invalid" | string
+  model_ref?: string
+}
+
+export type ConnectionTestResult = {
+  success: boolean
+  provider_name: string
+  model_id: string | null
+  elapsed?: number | null
+  error: string | null
+  error_code: string | null
+  test_status: string
+}
+
+export type ModelItem = {
+  model_ref: string
+  model_id: string
+  display_name: string
+  provider_id: string
+  provider_name: string
+  connection_id: string
+  connection_name: string
+  source: "byok" | "platform" | string
+  status: "available" | "revoked" | "no_key" | string
+}
+
+export type ModelsCatalog = {
+  models: ModelItem[]
+  default_model_ref: string | null
 }
 
 export type SessionListItem = {
@@ -121,11 +213,12 @@ async function writeJson(
   path: string,
   body: unknown,
   extra: Record<string, string> = {},
+  method = "POST",
 ): Promise<unknown> {
   let token = await fetchCsrfToken()
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await fetch(path, {
-      method: "POST",
+      method,
       credentials: "same-origin",
       headers: {
         accept: "application/json",
@@ -274,6 +367,8 @@ export function createClient() {
       request_id: string
       permission_profile: "confirm" | "full"
       project_id?: string
+      // "platform" 哨兵或 "m_…" 目录引用；null/缺省 = 服务端默认链。
+      model_ref?: string | null
     }): Promise<RunAccepted> {
       return writeJson("/api/v1/tasks", body) as Promise<RunAccepted>
     },
@@ -283,6 +378,7 @@ export function createClient() {
         message: string
         request_id: string
         permission_profile: "confirm" | "full"
+        model_ref?: string | null
       },
     ): Promise<RunAccepted> {
       const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs`
@@ -447,6 +543,83 @@ export function createClient() {
     },
     openRunEvents(runId: string): EventSource {
       return new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`)
+    },
+    // ---- BYOK：服务商预设 / 连接 / 模型目录 -----------------------------
+    listModelProviders(signal?: AbortSignal): Promise<{ providers: ProviderPreset[] }> {
+      return readJson("/api/v1/models/providers", signal) as Promise<{
+        providers: ProviderPreset[]
+      }>
+    },
+    getModelsAccess(signal?: AbortSignal): Promise<ModelsAccess> {
+      return readJson("/api/v1/models/access", signal) as Promise<ModelsAccess>
+    },
+    listModelConnections(signal?: AbortSignal): Promise<{ connections: ModelConnection[] }> {
+      return readJson("/api/v1/model-connections", signal) as Promise<{
+        connections: ModelConnection[]
+      }>
+    },
+    createModelConnection(body: {
+      preset_id?: string
+      provider_name?: string
+      base_url?: string
+      display_name?: string
+      api_key: string
+    }): Promise<{ connection: ModelConnection }> {
+      return writeJson("/api/v1/model-connections", body) as Promise<{
+        connection: ModelConnection
+      }>
+    },
+    patchModelConnection(
+      connectionId: string,
+      body: { display_name?: string; base_url?: string; api_key?: string },
+    ): Promise<{ connection: ModelConnection }> {
+      const path = `/api/v1/model-connections/${encodeURIComponent(connectionId)}`
+      return writeJson(path, body, {}, "PATCH") as Promise<{
+        connection: ModelConnection
+      }>
+    },
+    clearModelConnectionKey(connectionId: string): Promise<{ connection: ModelConnection }> {
+      const path =
+        `/api/v1/model-connections/${encodeURIComponent(connectionId)}/clear-key`
+      return writeJson(path, {}) as Promise<{ connection: ModelConnection }>
+    },
+    deleteModelConnection(connectionId: string): Promise<{ deleted: boolean }> {
+      const path = `/api/v1/model-connections/${encodeURIComponent(connectionId)}`
+      return writeJson(path, {}, {}, "DELETE") as Promise<{ deleted: boolean }>
+    },
+    discoverConnectionModels(connectionId: string): Promise<DiscoverResult> {
+      const path =
+        `/api/v1/model-connections/${encodeURIComponent(connectionId)}/discover`
+      return writeJson(path, {}) as Promise<DiscoverResult>
+    },
+    addConnectionModels(
+      connectionId: string,
+      modelIds: string[],
+    ): Promise<{ results: AddModelResult[] }> {
+      const path =
+        `/api/v1/model-connections/${encodeURIComponent(connectionId)}/models`
+      return writeJson(path, { model_ids: modelIds }) as Promise<{
+        results: AddModelResult[]
+      }>
+    },
+    testModelConnection(
+      connectionId: string,
+      body: { model_id?: string; allow_billable: boolean },
+    ): Promise<ConnectionTestResult> {
+      const path = `/api/v1/model-connections/${encodeURIComponent(connectionId)}/test`
+      return writeJson(path, body) as Promise<ConnectionTestResult>
+    },
+    listModels(signal?: AbortSignal): Promise<ModelsCatalog> {
+      return readJson("/api/v1/models", signal) as Promise<ModelsCatalog>
+    },
+    setDefaultModel(modelRef: string | null): Promise<{ default_model_ref: string | null }> {
+      return writeJson("/api/v1/models/default", { model_ref: modelRef }) as Promise<{
+        default_model_ref: string | null
+      }>
+    },
+    deleteModel(modelRef: string): Promise<{ deleted: boolean }> {
+      const path = `/api/v1/models/${encodeURIComponent(modelRef)}`
+      return writeJson(path, {}, {}, "DELETE") as Promise<{ deleted: boolean }>
     },
     terminal(sessionId: string, signal?: AbortSignal): Promise<{
       id: string
