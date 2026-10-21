@@ -486,7 +486,6 @@ def test_e2_main_task(ctx_a: BrowserContext, page_a: Page):
     failed = page_a.locator(
         f'li[id="run-{run_id}"] [data-tool-status="failed"]'
     ).count()
-    ev_types = [e.get("type") for e in events]
     started_seqs = [e["seq"] for e in events if e.get("type") == "tool.started"]
     done_seqs = [
         e["seq"] for e in events if e.get("type") in ("tool.completed", "tool.failed")
@@ -512,7 +511,6 @@ def test_e2_main_task(ctx_a: BrowserContext, page_a: Page):
 
     # SSE closed after terminal: no further /events requests may fire.
     page_a.wait_for_timeout(8_000)
-    after = [u for u in event_requests]
     count_at_terminal = len(
         [u for u in event_requests if "events" in u]
     )  # snapshot BEFORE the quiet window would be ideal; instead compare two samples

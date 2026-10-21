@@ -291,7 +291,7 @@ def test_w9_a1_smtp_code_attempts_burn(postgres_url: str, monkeypatch):
     _forgot(client, email)
     code = _code_from(outbox)
     wrong = "999999" if code != "999999" else "888888"
-    for i in range(5):
+    for _i in range(5):
         r = _reset_code(client, email, wrong, "new-password-2")
         assert r.status_code == 400
     # Even the real code is dead now.

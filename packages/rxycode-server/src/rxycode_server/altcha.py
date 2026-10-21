@@ -22,7 +22,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl
 
 _TTL_SECONDS = 20 * 60
 _MAX_NUMBER = 100_000

@@ -934,7 +934,7 @@ def _reset_with_code(
     ).first()
     if user is None or user.disabled_at is not None:
         raise HTTPException(status_code=400, detail="RESET_INVALID")
-    row = _redeem_code(request, db, "reset", email, code, detail="RESET_INVALID")
+    _redeem_code(request, db, "reset", email, code, detail="RESET_INVALID")
     now = datetime.now(timezone.utc)
     user.password_hash = hash_password(password)
     db.execute(
