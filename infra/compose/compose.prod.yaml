@@ -134,6 +134,9 @@ services:
 
   worker:
     image: rxycode-worker:${RXYCODE_IMAGE_TAG:-latest}
+    # 全局在途并发 = worker 副本数；上游对并发敏感，封顶 3。
+    deploy:
+      replicas: ${RXYCODE_WORKER_REPLICAS:-3}
     # ENTRYPOINT worker-entry.sh (writes deployed model config when
     # RXYCODE_LLM_BASE_URL is set) + this CMD keeps the drain as PID 1.
     command: ["python", "-m", "rxycode_worker.drain"]
