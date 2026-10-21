@@ -48,6 +48,10 @@ async def test_cancelling_bash_kills_its_real_child_process(tmp_path, monkeypatc
         lambda: {
             "execution": {
                 "sandbox_mode": "workspace",
+                # The workload interpreter lives outside tmp_path; the
+                # kernel sandbox auto-enabled under the default permission
+                # mode would hide it. Cancellation is the subject here.
+                "os_sandbox": {"enabled": False},
                 "workspace_root": str(tmp_path),
                 "max_memory_mb": 0,
                 "max_processes": 0,

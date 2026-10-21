@@ -225,13 +225,20 @@ async def bench_tool_timeout_kill_rate(rounds: int) -> float:
             shell_executor.execute_argv_async(argv, timeout=600)
         )
         # Record the target process group / process ids right after spawn.
-        await asyncio.sleep(0.3)
+        # Poll instead of a fixed sleep: suspended-spawn + Job binding make
+        # listener bind latency variable on Windows (a fixed 0.3s raced on CI).
         if sys.platform == "win32":
-            target_pids = _win_port_listener(port)
+            target_pids: set[int] = set()
+            for _attempt in range(50):
+                await asyncio.sleep(0.1)
+                target_pids = _win_port_listener(port)
+                if target_pids or task.done():
+                    break
 
             def residual_after(_target=target_pids) -> bool:
                 return any(psutil.pid_exists(pid) for pid in _target)
         else:
+            await asyncio.sleep(0.3)
             target_pgids = _sleep_pgids()
 
             def residual_after(_target=target_pgids) -> bool:
