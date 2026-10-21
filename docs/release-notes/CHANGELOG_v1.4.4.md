@@ -300,6 +300,19 @@
 - **每日数据库备份**：`infra/scripts/backup_pg.sh`——对 `rxyprod` 项目的 `postgres` 服务 `pg_dump -Fc` 落 `/opt/rxycode/backups/rxycode-<日期>.dump` 并删除其余 `rxycode-*.dump`（单副本轮转）；runbook 补 crontab 行（每日 03:10）与 `pg_restore --clean --if-exists` 恢复步骤。
 - **测试**：新增 `tests/web/w9/test_rate_and_device.py`——同邮箱 5 分钟窗第 6 次发码 429、5 分钟窗独立生效（预填桶隔离 60s 桶）、每 IP 15 次/5 分钟、每 IP 每小时 5 次成功注册（第 6 次 429、失败不计数）、设备锁全链路（登录夺锁 → 被顶会话 `held_elsewhere` + 数据面 409、`/auth/*`/`/me` 豁免可达、claim 无条件接管、last_seen 超龄自动释放并被下个请求接管）。
 
+### W11 前端：Markdown 时间线 / 工具卡 / 思考链 / 单设备模态 / 取消直通 / 关于对话框（2026-10-23）
+
+- **Markdown 渲染**：`components/Markdown.tsx`——`react-markdown` + `remark-gfm`，不渲染裸 HTML，链接限 http(s)/mailto 且 `target=_blank rel=noopener`；assistant 文本块与时间线接入。
+- **工具调用卡**：`ToolRow.tsx` 展示工具名、参数、结果、状态、exit code、耗时，可折叠；`eventReducer.ts` 将 tool journal 通知与投影 tool 事件按 `call_id` 合并。
+- **思考链**：中间 `assistant.delta` 聚合为 ThinkingBlock——流式 shimmer、完成后自动折叠、`▸` 展开。
+- **模型切换提示**：Composer 切换模型即显 "已切换模型为 {名称}，下次任务生效"（4s），运行中锁定不可切。
+- **单设备 UI**：`DeviceConflictModal`——任一 query/mutation 在 `queryClient.onError` 命中 409 `DEVICE_IN_USE` 即弹层，"在此设备继续使用" 走 claim 后全量失效查询；设置页新增"安全"行（当前设备状态 + 切换按钮）。
+- **取消直通**：pending/未租用 run 的取消不再等 worker 认领——API 直接把 `cancel_requested` 落成终态 `cancelled`（含自愈：`cancel_requested` 且无 lease_owner 的历史卡死一并终态），修掉了"取消要点好几次"；活跃 run 仍由 worker supervisor 走 cancel_requested → confirm_cancel → cancelled/recovery_required。
+- **输入净化**：task/run 消息在 pydantic 边界剥离 C0 控制字符——粘贴含 NUL 的日志行曾让 `session_texts` 插入炸 `UntranslatableCharacter`（500）。
+- **关于对话框**：设置页"关于"按钮 → Modal 展示产品名与后端构建戳（`GET /api/v1/version`，commit + built_at）。
+- **生产验收证据**（镜像 `49ca62dc`，2026-10-23）：发码 1–5 = 200、第 6 发 = 429 `RATE_LIMITED`；双会话设备锁全链路（顶掉 → 数据面 409、`/me` 200、claim 夺回）；真实 BYOK run 用 `deepseek-flash` 完成并渲染 markdown 加粗 + 两条思考链 + bash 工具卡；设备冲突模态与抢占按钮实测通过；移动视口 390px 布局正常（chat-only）。实测并发模型：每用户在途 = 1（第 2 单 429 `QUOTA_EXCEEDED`），队列深 10，worker 串行——高并发上限即 worker 数。
+- **测试**：`test_pending_cancel_direct`（pending 取消直通终态 + 二次取消 409）。
+
 ### 已知限制（明示，非遗漏）
 
 - **终局应答证据门误报**（本轮实测发现）：`final_answer` 工具把"仅 pwd 只读调用"的应答判为"声称副作用无 WRITE/DANGER 证据"，最终文本被替换成 `[evidence failed: ...]`——Harness 条款校验器的误报（run 仍 succeeded、工具确实执行）。与 BYOK 无关，归 agent-runtime 后续修。
