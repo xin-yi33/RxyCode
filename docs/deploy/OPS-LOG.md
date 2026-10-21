@@ -176,3 +176,9 @@
 - prod overlay api `volumes: !reset` 清掉 base 挂载是已知坑——worker-data 需在 overlay 显式补回，否则 api 读不到工作区。
 - `--scale worker=4` 实测 4 用户并行 run 成功（4 个不同 lease_owner 同时持有 77s+）；生产保留 4 worker。
 - 测试用 mint 的 auth_sessions 已全部 revoke；PLATFORM_MODEL_USERS 恢复仅 owner。
+
+## 2026-10-23 并发封顶 + 重启验证（aea73aa→96ddbbf）
+
+- prod overlay worker `deploy.replicas: 3`（`RXYCODE_WORKER_REPLICAS` 可覆盖）——全局在途并发封顶 3，上游限流红线。
+- VM 整机重启验证：docker/cloudflared 均 enabled + 容器 restart unless-stopped——重启后 52s 全栈自愈，域名直接回 `3a8526c8`。
+- BYOK 链路复核：keyring 挂载修复后真实 run `32cf733a` succeeded（deepseek-flash 个人额度）。
