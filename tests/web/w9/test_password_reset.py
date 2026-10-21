@@ -292,7 +292,8 @@ def test_w9_a1_smtp_code_expiry_and_validation(postgres_url: str, monkeypatch):
 
 
 def test_w9_a1_smtp_send_failure_falls_back(postgres_url: str, monkeypatch, caplog):
-    """SMTP down + operator-log enabled → the code degrades to the api log."""
+    """SMTP down + operator-log enabled → a redeemable link goes to the log
+    and the minted code is burned (the operator-log UI only handles links)."""
     app = _app(postgres_url, mode="cloud")
     app.state.smtp_url = "smtps://u:p@smtp.example:465"
     app.state.reset_operator_log = True
@@ -307,10 +308,10 @@ def test_w9_a1_smtp_send_failure_falls_back(postgres_url: str, monkeypatch, capl
         response = _forgot(client, email)
     assert response.json().get("delivery") == "operator-log"
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    match = re.search(r"operator outbox\): (\d{6})", logged)
+    match = re.search(r"operator outbox\): (\S+)", logged)
     assert match, logged
-    code = match.group(1)
-    assert _reset_code(client, email, code, "new-password-2").status_code == 200
+    token = _token_from_url(match.group(1))
+    assert _reset(client, token, "new-password-2").status_code == 200
     assert _login(client, email, "new-password-2").status_code == 200
 
 

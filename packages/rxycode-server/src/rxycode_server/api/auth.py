@@ -579,16 +579,15 @@ def forgot_password(
         # SMTP deployments get a 6-digit code (typed on the forgot page);
         # the digest is user-scoped so a guessed code only fits one account.
         code = f"{secrets.randbelow(1_000_000):06d}"
-        db.add(
-            PasswordReset(
-                token_hash=_hash_token(
-                    request.app.state.secret, f"code:{user.id}:{code}"
-                ),
-                user_id=user.id,
-                created_at=now,
-                expires_at=now + _CODE_TTL,
-            )
+        code_row = PasswordReset(
+            token_hash=_hash_token(
+                request.app.state.secret, f"code:{user.id}:{code}"
+            ),
+            user_id=user.id,
+            created_at=now,
+            expires_at=now + _CODE_TTL,
         )
+        db.add(code_row)
         db.flush()
         from rxycode_server.mailer import send_mail
 
@@ -603,12 +602,26 @@ def forgot_password(
             ),
         ):
             body["delivery"] = "smtp"
-        elif getattr(request.app.state, "reset_operator_log", False):
-            # SMTP path down — the code degrades to the operator outbox.
+            return body
+        if getattr(request.app.state, "reset_operator_log", False):
+            # SMTP path down — the code has no redeeming UI in operator-log
+            # mode, so burn it and log a standard link instead.
+            code_row.used_at = now
+            token = secrets.token_urlsafe(32)
+            reset_url = f"{request.headers.get('origin', '')}/reset?token={token}"
+            db.add(
+                PasswordReset(
+                    token_hash=_hash_token(request.app.state.secret, token),
+                    user_id=user.id,
+                    created_at=now,
+                    expires_at=now + _RESET_TTL,
+                )
+            )
+            db.flush()
             log.warning(
-                "password reset code for %s (SMTP failed, operator outbox): %s",
+                "password reset link for %s (SMTP failed, operator outbox): %s",
                 email,
-                code,
+                reset_url,
             )
             body["delivery"] = "operator-log"
         return body
