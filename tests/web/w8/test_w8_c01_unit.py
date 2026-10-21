@@ -2967,7 +2967,7 @@ def test_w8_c01_scrub_bare_scheme_prose_survives() -> None:
     drain._scrub_credential_values(cfg)
     assert cfg["note"] == "the bearer of bad news"
     # Real token-shaped bare-scheme values still die.
-    out = drain._scrub_inline_secrets("Bearer eyJhbGciOiJIUzI1NiJ9.x.y")
+    out = drain._scrub_inline_secrets("Bearer fakeeyJhbGciOiJIUzI1NiJ9fake.fake")
     assert out == "Bearer confined"
 
 

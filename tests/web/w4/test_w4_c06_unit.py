@@ -184,7 +184,7 @@ def test_w4_c06_negative(tmp_path: Path) -> None:
     """The audit log keeps the event and drops secrets and clipboard text."""
     from rxycode_runner.local.audit import AuditLog
 
-    secret = "sk-proj-c06-secret-value"
+    secret = "sk-test-key-c06-secret-value"
     github = "ghp_c06secretvalue0123456789abcd"
     clipboard = "clipboard plaintext c06"
     log = AuditLog(tmp_path / "audit.jsonl")

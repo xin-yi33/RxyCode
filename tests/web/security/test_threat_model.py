@@ -303,8 +303,8 @@ def test_threat_secret_redaction(tmp_path: Path) -> None:
         RiskLevel.WRITE,
         {
             "command": "curl https://api.example",
-            "api_key": "sk-proj-a1b2c3d4e5f6a7b8",
-            "headers": {"Authorization": "Bearer ghp_a1b2c3d4e5f6a7b8c9d0"},
+            "api_key": "sk-test-key-a1b2c3d4e5f6a7b8",
+            "headers": {"Authorization": "Bearer ghp_fakea1b2c3d4e5f6a7b8c9d0"},
         },
         "auto-approved",
         "token=zzz9yyy8xxx7 saved ok",
@@ -313,7 +313,7 @@ def test_threat_secret_redaction(tmp_path: Path) -> None:
     )
     text = path.read_text(encoding="utf-8")
     for leaked in (
-        "sk-proj-a1b2c3d4e5f6a7b8",
+        "sk-test-key-a1b2c3d4e5f6a7b8",
         "ghp_a1b2c3d4e5f6a7b8c9d0",
         "zzz9yyy8xxx7",
     ):

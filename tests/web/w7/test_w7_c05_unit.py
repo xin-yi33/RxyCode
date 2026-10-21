@@ -507,7 +507,7 @@ def test_w7_c05_negative(tmp_path: Path) -> None:
     apikey_override = tmp_path / "apikey.override.yaml"
     apikey_override.write_text(
         "services:\n  worker:\n    environment:\n"
-        "      RXYCODE_API_KEY: sk-literal-private-credential\n",
+        "      RXYCODE_API_KEY: sk-test-key-literal-credential\n",
         encoding="utf-8",
         newline="\n",
     )

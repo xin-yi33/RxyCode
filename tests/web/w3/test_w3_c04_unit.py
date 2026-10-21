@@ -108,7 +108,7 @@ def test_w3_c04_negative() -> None:
     root = _workspace()
     outside = root.parent / f"outside-{root.name}"
     outside.mkdir()
-    secret = "workspace-secret-c04"
+    secret = "workspace-test-secret-c04"
     (outside / "secret.txt").write_text(secret + "\n", encoding="utf-8")
     stack = _c02._Stack()
     try:

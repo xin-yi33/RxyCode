@@ -526,8 +526,8 @@ def test_w7_c04_negative(postgres_url: str, tmp_path: Path) -> None:
     # Fabricated-but-realistic secrets (never real keys) in the tool's
     # stderr, in span attrs, and nested inside a list of dicts — the stored
     # payload must mask or drop every form.
-    api_secret = "sk-c04testsecret1234567890abcdef"
-    password = "hunter2-super-secret"
+    api_secret = "sk-test-secret-c04-1234567890abcdef"
+    password = "test-secret-hunter2"
     gh_token = "ghp_c04fakegithubtoken9Zxq"
     nested_secret = "nested-hunter3"
     inner_prompt = "inner prompt body never stored"
