@@ -37,10 +37,14 @@ app = serve(
     s3_secret_key=os.environ.get("RXYCODE_S3_SECRET_KEY", ""),
     rate_limit_rpm=int(os.environ.get("RXYCODE_WEB_RATE_LIMIT_RPM", "0")),
 )
+# Only private hops may set X-Forwarded-For/Proto — the gateway peer is the
+# compose-network address, so uvicorn picks the first UNtrusted XFF entry
+# from the right (the real client) instead of the spoofable leftmost.
 uvicorn.run(
     app,
     host=host,
     port=int(os.environ.get("RXYCODE_WEB_PORT", "8000")),
     proxy_headers=True,
-    forwarded_allow_ips="*",
+    forwarded_allow_ips="127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,"
+    "192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10",
 )

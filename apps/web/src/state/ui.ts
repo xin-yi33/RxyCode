@@ -23,6 +23,9 @@ type UiState = {
   // 访客登录跳转前置位：登录返回后 Composer 显示“草稿已保留”横幅，
   // 绝不自动重新发送（PRD §3.3 禁止自动提交）。
   pendingIntent: boolean
+  // 409 DEVICE_IN_USE：任一请求撞上“另一台设备使用中”就置位，
+  // ConsoleShell 顶层的 <DeviceConflictModal> 据此弹全局模态。
+  deviceConflict: boolean
   setTheme: (theme: ThemeName) => void
   toggleTheme: () => void
   setOffline: (offline: boolean) => void
@@ -31,6 +34,7 @@ type UiState = {
   setConsoleOpen: (open: boolean) => void
   toggleConsole: () => void
   setPendingIntent: (value: boolean) => void
+  setDeviceConflict: (value: boolean) => void
   draftFor: (sessionId: string) => ComposerDraft
   setDraft: (sessionId: string, draft: ComposerDraft) => void
   patchDraft: (sessionId: string, patch: Partial<ComposerDraft>) => void
@@ -67,6 +71,7 @@ export const useUi = create<UiState>()((set, get) => ({
   consoleOpen: false,
   drafts: {},
   pendingIntent: false,
+  deviceConflict: false,
   setTheme: (theme) => {
     persistTheme(theme)
     set({ theme })
@@ -82,6 +87,7 @@ export const useUi = create<UiState>()((set, get) => ({
   setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
   toggleConsole: () => set({ consoleOpen: !get().consoleOpen }),
   setPendingIntent: (pendingIntent) => set({ pendingIntent }),
+  setDeviceConflict: (deviceConflict) => set({ deviceConflict }),
   draftFor: (sessionId) => get().drafts[sessionId] ?? EMPTY_DRAFT,
   setDraft: (sessionId, draft) =>
     set({ drafts: { ...get().drafts, [sessionId]: draft } }),

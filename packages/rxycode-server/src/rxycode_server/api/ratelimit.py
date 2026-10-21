@@ -18,6 +18,8 @@ import json
 import time
 from typing import Any
 
+from rxycode_server.api.client_ip import client_ip_from_scope
+
 
 class RateLimitMiddleware:
     """Refuse a client once it exceeds ``rpm`` requests in a 60s window."""
@@ -44,10 +46,7 @@ class RateLimitMiddleware:
         if self.rpm <= 0 or scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
-        client = "unknown"
-        pair = scope.get("client")
-        if isinstance(pair, (list, tuple)) and pair:
-            client = str(pair[0])
+        client = client_ip_from_scope(scope) or "unknown"
         _key, hits, reset_in = self._bucket(client)
         if hits <= self.rpm:
             await self.app(scope, receive, send)

@@ -1,21 +1,53 @@
-import { useQuery } from "@tanstack/react-query"
+import { useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router"
 
 import { Button } from "../../components/ui/button"
-import { type Me } from "../../sdk/client"
+import { createClient, type DeviceStatus, type Me } from "../../sdk/client"
+import { apiErrorText } from "../../sdk/errors"
 import { useUi } from "../../state/ui"
 import { useAuth, useLogout } from "../auth/useAuth"
 import { ModelsSection } from "./ModelsSection"
+
+const api = createClient()
+
+const DEVICE_STATUS_TEXT: Record<string, string> = {
+  active: "当前设备持有使用权",
+  held_elsewhere: "另一台设备使用中",
+  none: "—",
+}
 
 export function SettingsPage() {
   const theme = useUi((state) => state.theme)
   const toggleTheme = useUi((state) => state.toggleTheme)
   const me = useQuery<Me>({ queryKey: ["me"], enabled: false })
   const auth = useAuth()
+  const queryClient = useQueryClient()
   const { logout, busy: logoutBusy, error: logoutError } = useLogout()
   // ?section=models 深链（Composer/错误提示跳转过来直接定位模型分区）。
   const [params] = useSearchParams()
   const section = params.get("section")
+
+  // 安全区：单设备持有状态（GET /auth/device）。仅登录态查询。
+  const device = useQuery<DeviceStatus>({
+    queryKey: ["deviceStatus"],
+    queryFn: ({ signal }) => api.getDeviceStatus(signal),
+    enabled: auth.status === "authed",
+    staleTime: 30_000,
+  })
+  const [claimBusy, setClaimBusy] = useState(false)
+  const [claimError, setClaimError] = useState("")
+
+  const claimDevice = () => {
+    if (claimBusy) return
+    setClaimBusy(true)
+    setClaimError("")
+    api
+      .claimDevice()
+      .then(() => void queryClient.invalidateQueries())
+      .catch((err: unknown) => setClaimError(apiErrorText(err)))
+      .finally(() => setClaimBusy(false))
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
@@ -65,6 +97,38 @@ export function SettingsPage() {
             <dt className="w-20 shrink-0">角色</dt>
             <dd>{me.data?.membership.role ?? "—"}</dd>
           </div>
+          <div className="flex items-center gap-2">
+            <dt className="w-20 shrink-0">安全</dt>
+            <dd className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span>
+                {device.isPending
+                  ? "…"
+                  : device.isError
+                    ? "无法获取设备状态"
+                    : (DEVICE_STATUS_TEXT[device.data?.status ?? ""] ??
+                      device.data?.status ??
+                      "—")}
+              </span>
+              {device.data?.status === "held_elsewhere" ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={claimBusy}
+                  onClick={claimDevice}
+                >
+                  {claimBusy ? "切换中…" : "切换到此设备"}
+                </Button>
+              ) : null}
+            </dd>
+          </div>
+          {claimError ? (
+            <div className="flex gap-2">
+              <dt className="w-20 shrink-0" />
+              <dd role="alert" className="text-xs text-failure">
+                {claimError}
+              </dd>
+            </div>
+          ) : null}
         </dl>
         <Button
           variant="outline"

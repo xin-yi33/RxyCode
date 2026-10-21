@@ -415,6 +415,36 @@ docker compose -p rxyprod --env-file D:\rxycode-prod\.env `
   # 脚本恢复卷 → 单独拉起 postgres 做 pg_restore --clean → 停掉 → 手动 up -d
   ```
 
+#### 单副本数据库轮转（backup_pg.sh，Linux VM）
+
+`infra/scripts/backup_pg.sh` 只做数据库一件事：对 `rxyprod` 项目的
+`postgres` 服务跑 `pg_dump -Fc`，落到
+`/opt/rxycode/backups/rxycode-<YYYY-MM-DD>.dump`，随后删掉目录里其它
+`rxycode-*.dump` —— 始终只保留最新一份。每日跑一次 = 单副本轮转；要
+多日历史或卷级快照仍用上面的 `backup.sh`。
+
+调度（VM crontab，每日一次，`crontab -e` 追加一行；脚本不随仓库自动
+安装）：
+
+```cron
+10 3 * * * /opt/rxycode/src/infra/scripts/backup_pg.sh --env-file /opt/rxycode/.env >>/opt/rxycode/backups/backup_pg.log 2>&1
+```
+
+恢复（建议先停 api/worker，`pg_restore --clean` 逐表清库再灌）：
+
+```bash
+docker compose -p rxyprod --env-file /opt/rxycode/.env \
+  -f infra/compose/compose.yaml -f infra/compose/compose.prod.yaml \
+  stop api worker
+docker compose -p rxyprod --env-file /opt/rxycode/.env \
+  -f infra/compose/compose.yaml -f infra/compose/compose.prod.yaml \
+  exec -T postgres sh -c 'pg_restore -U rxycode -d rxycode --clean --if-exists' \
+  < /opt/rxycode/backups/rxycode-<YYYY-MM-DD>.dump
+docker compose -p rxyprod --env-file /opt/rxycode/.env \
+  -f infra/compose/compose.yaml -f infra/compose/compose.prod.yaml up -d
+# 备份早于当前镜像时先跑：... run --rm migrate
+```
+
 ### 暂停新任务 / 回滚 / 重启恢复
 
 - **暂停新任务（kill switch）**：`.env` 中设 `RXYCODE_QUEUE_MAX=0` 后

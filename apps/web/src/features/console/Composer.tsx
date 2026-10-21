@@ -53,7 +53,20 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const [errorLink, setErrorLink] = useState<{ to: string; label: string } | null>(null)
   // "send" | "model" —— 同一个登录提示层，措辞随触发点不同。
   const [loginPrompt, setLoginPrompt] = useState<"send" | "model" | null>(null)
+  // 模型切换提示（对齐 CLI）：换模型后输入框上方挂一行，约 4s 自动消失。
+  const [modelHint, setModelHint] = useState("")
+  const modelHintTimer = useRef(0)
   const areaRef = useRef<HTMLTextAreaElement>(null)
+
+  const showModelHint = (label: string) => {
+    setModelHint(`已切换模型为 ${label}，下次任务生效`)
+    window.clearTimeout(modelHintTimer.current)
+    modelHintTimer.current = window.setTimeout(() => setModelHint(""), 4000)
+  }
+  useEffect(
+    () => () => window.clearTimeout(modelHintTimer.current),
+    [],
+  )
 
   const active = activeRun != null && isActiveRunStatus(activeRun.status)
   const showPendingBanner = pendingIntent && authed
@@ -207,6 +220,11 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             </button>
           </p>
         ) : null}
+        {modelHint ? (
+          <p role="status" data-model-hint className="mb-2 px-1 text-xs text-muted-ink">
+            {modelHint}
+          </p>
+        ) : null}
         <div
           className={
             "rounded-2xl border border-border bg-card transition-colors " +
@@ -227,7 +245,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             onChange={(event) => update(event.target.value)}
             onKeyDown={onKeyDown}
           />
-          <div className="flex items-center gap-2 px-2 pb-2">
+          <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
             <select
               aria-label="权限模式"
               title={PROFILES.find((item) => item.value === permission)?.hint}
@@ -259,6 +277,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                 disabled={sending || active}
                 disabledReason={active ? "运行中不可更换模型" : "提交中…"}
                 onGuest={() => setLoginPrompt("model")}
+                onSwitched={showModelHint}
                 returnFocusRef={areaRef}
               />
               {active ? (

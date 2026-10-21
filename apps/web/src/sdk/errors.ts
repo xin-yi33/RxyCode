@@ -28,6 +28,7 @@ const CODE_TEXT: Record<string, string> = {
   INVALID_BASE_URL: "接口地址无效（需 HTTPS 公网地址）",
   BILLABLE_TEST_NOT_CONFIRMED: "请先确认计费测试",
   CONNECTION_NOT_FOUND: "连接不存在",
+  DEVICE_IN_USE: "该账号正在另一台设备上使用",
   UNAVAILABLE: "服务暂不可用",
 }
 

@@ -61,9 +61,25 @@ function redirectOn401() {
   appNavigate(loginPathFor(pathname, search), { replace: true })
 }
 
+// 409 DEVICE_IN_USE 是全局模态（不跳转）：置 Zustand 位，ConsoleShell 顶层的
+// <DeviceConflictModal> 渲染“在此设备继续使用”。mutation 的 isAppPath 早退
+// 只管 401，设备冲突一律先到这里 —— /app 内的写操作同样弹层。
+function raiseDeviceConflict(error: unknown): boolean {
+  if (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.code === "DEVICE_IN_USE"
+  ) {
+    useUi.getState().setDeviceConflict(true)
+    return true
+  }
+  return false
+}
+
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: (error, query) => {
+      if (raiseDeviceConflict(error)) return
       if (!(error instanceof ApiError) || error.status !== 401) return
       if (query.queryKey[0] === "me") return // 公共身份探测：401 = 访客
       redirectOn401()
@@ -71,6 +87,7 @@ const queryClient = new QueryClient({
   }),
   mutationCache: new MutationCache({
     onError: (error) => {
+      if (raiseDeviceConflict(error)) return
       if (!(error instanceof ApiError) || error.status !== 401) return
       // /app 内由动作发起方弹“需要登录”层，保住上下文与草稿。
       if (isAppPath(window.location.pathname)) return

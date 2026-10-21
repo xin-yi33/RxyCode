@@ -32,6 +32,8 @@ export type ModelPickerProps = {
   disabledReason?: string
   // 访客点击 → 打开登录提示层（与发送同一条路径）。
   onGuest: () => void
+  // 选择了与当前不同的模型 → Composer 显示一行“下次任务生效”提示。
+  onSwitched?: (label: string) => void
   // 选择完成后焦点回到输入框。
   returnFocusRef?: RefObject<HTMLElement | null>
 }
@@ -43,6 +45,7 @@ export function ModelPicker({
   disabled = false,
   disabledReason,
   onGuest,
+  onSwitched,
   returnFocusRef,
 }: ModelPickerProps) {
   const draft = useUi((state) => state.drafts[draftKey])
@@ -126,9 +129,11 @@ export function ModelPicker({
   const choose = (item: ModelItem) => {
     if (item.status !== "available") return
     // 模型属于幂等范围 —— 换模型即换 request_id。
+    const changed = item.model_ref !== selectedRef
     patchDraft(draftKey, { modelRef: item.model_ref, requestId: "" })
     setOpen(false)
     setFilter("")
+    if (changed) onSwitched?.(item.display_name || item.model_id)
     const focusTarget = returnFocusRef?.current
     if (focusTarget) focusTarget.focus()
   }

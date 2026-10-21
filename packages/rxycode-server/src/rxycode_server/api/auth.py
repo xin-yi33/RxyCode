@@ -31,8 +31,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from rxycode_server.altcha import _ReplayRegistry, create_challenge, verify_payload
+from rxycode_server.api.client_ip import client_ip
 from rxycode_server.persistence.models import (
     AuthSession,
+    DeviceLock,
     EmailCode,
     Invite,
     Membership,
@@ -52,6 +54,7 @@ _STATE_TTL = timedelta(minutes=10)
 _RESET_TTL = timedelta(minutes=30)
 _CODE_TTL = timedelta(minutes=15)
 _CODE_MAX_ATTEMPTS = 5
+_DEVICE_LOCK_TTL = timedelta(minutes=10)
 _REGISTRATION_MODES = ("invite", "open", "closed")
 _DEFAULT_PROJECT_NAME = "默认项目"
 _DUMMY_HASH = (
@@ -147,12 +150,21 @@ def _aware(value: datetime) -> datetime:
 class _Window:
     """Fixed-window counter — per replica, resets on restart (spec's intent)."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, window_seconds: int = 60) -> None:
         self.limit = limit
+        self.window_seconds = window_seconds
         self.buckets: dict[tuple[str, int], int] = {}
 
+    def _window(self) -> int:
+        return int(time.monotonic()) // self.window_seconds
+
+    def count(self, key: str) -> int:
+        """Hits so far in the current window — no increment (success-only
+        counters peek here and ``hit`` once the counted event lands)."""
+        return self.buckets.get((key, self._window()), 0)
+
     def hit(self, key: str) -> bool:
-        window = int(time.monotonic()) // 60
+        window = self._window()
         bucket = (key, window)
         seen = self.buckets.get(bucket, 0)
         if seen >= self.limit:
@@ -164,17 +176,40 @@ class _Window:
 
 
 class AuthRateLimit:
-    """Per-IP 10/min + per-email 5/min on /auth/register and /auth/login."""
+    """Per-IP 10/min + per-email 5/min on /auth/register and /auth/login;
+    per-email 5/5min + per-IP 15/5min on the code-send paths; per-IP
+    5 successful registrations per hour."""
 
     def __init__(self) -> None:
         self.ip = _Window(10)
         self.email = _Window(5)
+        self.code_email = _Window(5, window_seconds=300)
+        self.code_ip = _Window(15, window_seconds=300)
+        self.register_hour = _Window(5, window_seconds=3600)
 
     def check(self, route: str, ip: str, email: str) -> None:
         if not self.ip.hit(f"{route}:ip:{ip}") or not self.email.hit(
             f"{route}:email:{email}"
         ):
             raise HTTPException(status_code=429, detail="RATE_LIMITED")
+
+    def check_code(self, route: str, ip: str, email: str) -> None:
+        """Send-side ceiling for the three code paths: a 5-minute window so a
+        burst under the per-minute caps still cannot mailbomb one address."""
+        if not self.code_email.hit(
+            f"{route}:email:{email}"
+        ) or not self.code_ip.hit(f"{route}:ip:{ip}"):
+            raise HTTPException(status_code=429, detail="RATE_LIMITED")
+
+    def check_register_hour(self, ip: str) -> None:
+        """Anti-batch gate: refuse before invite/user work once this IP already
+        produced ``limit`` successful registrations in the window."""
+        if self.register_hour.count(f"register:ip:{ip}") >= self.register_hour.limit:
+            raise HTTPException(status_code=429, detail="RATE_LIMITED")
+
+    def record_register(self, ip: str) -> None:
+        """Count a committed registration — failed attempts never reach here."""
+        self.register_hour.hit(f"register:ip:{ip}")
 
 
 def _secure(request: Request) -> bool:
@@ -223,6 +258,73 @@ def _lookup_session(app, raw: str) -> AuthRecord | None:
         )
 
 
+def _claim_device(db: Session, user_id: str, token_hash: str, now: datetime) -> None:
+    """Unconditional takeover: ``user_id``'s lock row now names ``token_hash``.
+    Callers commit it in the same transaction as the session row."""
+    lock = db.get(DeviceLock, user_id)
+    if lock is None:
+        db.add(
+            DeviceLock(
+                user_id=user_id,
+                token_hash=token_hash,
+                created_at=now,
+                last_seen_at=now,
+            )
+        )
+    else:
+        lock.token_hash = token_hash
+        lock.last_seen_at = now
+
+
+def _lock_expired(lock: DeviceLock, now: datetime) -> bool:
+    return _aware(lock.last_seen_at) <= now - _DEVICE_LOCK_TTL
+
+
+def _device_gate(request: Request, record: AuthRecord, raw: str) -> None:
+    """Single active device: an authenticated request whose session is NOT the
+    lock holder gets 409 DEVICE_IN_USE — unless the holder went idle past the
+    TTL, in which case the lock is provably stale and this request auto-claims
+    it (a dead device can never strand the account). The holder's requests
+    refresh ``last_seen_at`` — that one UPDATE is the lock's keepalive.
+
+    ``/api/v1/auth/*`` and ``/api/v1/me`` stay exempt: the displaced device
+    must still reach status/claim/logout, and a lock row only exists once an
+    ``engine``-backed login issued it (in-memory session mode has none)."""
+    path = request.url.path
+    if (
+        path == "/api/v1/me"
+        or path == "/api/v1/auth"
+        or path.startswith("/api/v1/auth/")
+    ):
+        return
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        return
+    digest = _hash_token(request.app.state.secret, raw)
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        lock = db.get(DeviceLock, record.user_id)
+        if (
+            lock is not None
+            and lock.token_hash != digest
+            and not _lock_expired(lock, now)
+        ):
+            raise HTTPException(status_code=409, detail="DEVICE_IN_USE")
+        if lock is None:
+            db.add(
+                DeviceLock(
+                    user_id=record.user_id,
+                    token_hash=digest,
+                    created_at=now,
+                    last_seen_at=now,
+                )
+            )
+        else:
+            lock.token_hash = digest
+            lock.last_seen_at = now
+        db.commit()
+
+
 def current_record(request: Request) -> AuthRecord:
     raw = request.cookies.get("rxy_session", "")
     if not raw:
@@ -230,6 +332,7 @@ def current_record(request: Request) -> AuthRecord:
     record = _lookup_session(request.app, raw)
     if record is None:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED")
+    _device_gate(request, record, raw)
     return record
 
 
@@ -266,6 +369,8 @@ def _issue(request: Request, db: Session | None, user_id: str, tenant_id: str) -
             last_seen_at=now,
         )
     )
+    # The new session takes the single-device lock in the same commit.
+    _claim_device(db, user_id, digest, now)
     return token
 
 
@@ -587,8 +692,12 @@ def register(
     require_write(request)
     email = _normalize_email(str(payload.get("email") or ""))
     limiter = getattr(request.app.state, "auth_rate", None)
+    ip = client_ip(request)
     if limiter is not None:
-        limiter.check("register", request.client.host if request.client else "-", email)
+        limiter.check("register", ip, email)
+        # Anti-batch: at the hourly ceiling, refuse before an invite seat or
+        # a user row is touched — only committed registrations count.
+        limiter.check_register_hour(ip)
     _check_email(email)
     password = str(payload.get("password") or "")
     if not 8 <= len(password) <= 128:
@@ -645,6 +754,9 @@ def register(
         db.flush()
     except IntegrityError:
         raise HTTPException(status_code=409, detail="EMAIL_TAKEN") from None
+    if limiter is not None:
+        # Only now does the attempt count — the user row survived flush.
+        limiter.record_register(ip)
     _set_session(
         response,
         _issue(request, db, user.id, tenant_id),
@@ -664,7 +776,7 @@ def password_login(
     email = _normalize_email(str(payload.get("email") or ""))
     limiter = getattr(request.app.state, "auth_rate", None)
     if limiter is not None:
-        limiter.check("login", request.client.host if request.client else "-", email)
+        limiter.check("login", client_ip(request), email)
     _require_captcha(request, payload)
     user = db.scalars(select(User).where(User.email == email).limit(1)).first()
     code = str(payload.get("code") or "").strip()
@@ -705,8 +817,10 @@ def forgot_password(
     require_write(request)
     email = _normalize_email(str(payload.get("email") or ""))
     limiter = getattr(request.app.state, "auth_rate", None)
+    ip = client_ip(request)
     if limiter is not None:
-        limiter.check("forgot", request.client.host if request.client else "-", email)
+        limiter.check("forgot", ip, email)
+        limiter.check_code("forgot", ip, email)
     _require_captcha(request, payload)
     user = db.scalars(
         select(User).where(User.email == email).limit(1)
@@ -813,7 +927,7 @@ def _reset_with_code(
     limiter = getattr(request.app.state, "auth_rate", None)
     if limiter is not None:
         limiter.check(
-            "reset-code", request.client.host if request.client else "-", email
+            "reset-code", client_ip(request), email
         )
     user = db.scalars(
         select(User).where(User.email == email).limit(1)
@@ -847,7 +961,7 @@ def reset_password(
     if limiter is not None:
         limiter.check(
             "reset",
-            request.client.host if request.client else "-",
+            client_ip(request),
             f"tk:{token[:12]}",
         )
     if not 8 <= len(password) <= 128:
@@ -890,10 +1004,10 @@ def register_code(
     require_write(request)
     email = _normalize_email(str(payload.get("email") or ""))
     limiter = getattr(request.app.state, "auth_rate", None)
+    ip = client_ip(request)
     if limiter is not None:
-        limiter.check(
-            "register-code", request.client.host if request.client else "-", email
-        )
+        limiter.check("register-code", ip, email)
+        limiter.check_code("register-code", ip, email)
     _check_email(email)
     _require_captcha(request, payload)
     channel = _delivery_channel(request.app.state)
@@ -921,10 +1035,10 @@ def login_code(
     require_write(request)
     email = _normalize_email(str(payload.get("email") or ""))
     limiter = getattr(request.app.state, "auth_rate", None)
+    ip = client_ip(request)
     if limiter is not None:
-        limiter.check(
-            "login-code", request.client.host if request.client else "-", email
-        )
+        limiter.check("login-code", ip, email)
+        limiter.check_code("login-code", ip, email)
     _check_email(email)
     _require_captcha(request, payload)
     channel = _delivery_channel(request.app.state)
@@ -1066,3 +1180,40 @@ def github_callback(
 @router.get("/api/v1/me")
 def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]:
     return _me_body(current_record(request), db)
+
+
+def _session_digest(request: Request) -> str:
+    return _hash_token(
+        request.app.state.secret, request.cookies.get("rxy_session", "")
+    )
+
+
+@router.get("/api/v1/auth/device")
+def device_status(
+    request: Request, db: Session = Depends(db_session)
+) -> dict[str, str]:
+    """The caller's lock view: ``active`` (this session holds it),
+    ``held_elsewhere`` (a live other session holds it), ``none`` (no row or
+    the holder went idle past the TTL — the lock is free for the taking)."""
+    record = current_record(request)
+    digest = _session_digest(request)
+    now = datetime.now(timezone.utc)
+    lock = db.get(DeviceLock, record.user_id)
+    if lock is None or _lock_expired(lock, now):
+        return {"status": "none"}
+    if lock.token_hash != digest:
+        return {"status": "held_elsewhere"}
+    # Holder polling status is liveness — same refresh the data-plane gate does.
+    lock.last_seen_at = now
+    return {"status": "active"}
+
+
+@router.post("/api/v1/auth/device/claim")
+def device_claim(
+    request: Request, db: Session = Depends(db_session)
+) -> dict[str, bool]:
+    """Takeover: unconditionally re-points the lock at the caller's session."""
+    require_write(request)
+    record = current_record(request)
+    _claim_device(db, record.user_id, _session_digest(request), datetime.now(timezone.utc))
+    return {"claimed": True}

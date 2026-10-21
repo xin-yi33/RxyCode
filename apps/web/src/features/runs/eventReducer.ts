@@ -17,6 +17,8 @@ export type QuestionOption = { label: string; value: string }
 export type TimelineItem =
   | { kind: "user"; seq: number; text: string }
   | { kind: "text"; seq: number; text: string }
+  // 思考链：intermediate delta 的连续段 —— 一条一块，与事件顺序一致。
+  | { kind: "thinking"; seq: number; text: string }
   | {
       kind: "tool"
       seq: number
@@ -25,6 +27,9 @@ export type TimelineItem =
       title: string
       status: ToolStatus
       summary?: string
+      // 展示用详情：参数（tool_begin 的 arguments）与结果文本，已截断。
+      args?: string
+      result?: string
       exitCode?: number
       durationMs?: number
     }
@@ -127,6 +132,31 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
+// 工具卡展开详情用：对象走 JSON 缩进，字符串原样，超限截断（不落库，仅展示）。
+const DETAIL_CAP = 4000
+
+function detail(value: unknown): string | undefined {
+  if (value == null) return undefined
+  let text = ""
+  if (typeof value === "string") {
+    text = value
+  } else {
+    try {
+      text = JSON.stringify(value, null, 2)
+    } catch {
+      return undefined
+    }
+  }
+  if (!text) return undefined
+  return text.length > DETAIL_CAP ? `${text.slice(0, DETAIL_CAP)}…` : text
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
 function approvalStatus(decision: string): ApprovalStatus {
   if (decision === "approved" || decision === "rejected") return decision
   if (decision === "expired" || decision === "cancelled") return decision
@@ -222,8 +252,16 @@ export function reduceEvents(
       case "assistant.delta": {
         const text = str(payload.text)
         if (payload.intermediate === true) {
-          // intermediate 只更新顶部“正在…”状态行，不进时间线。
+          // intermediate 仍驱动顶部“正在…”状态行，同时累积进“思考过程”块
+          // （连续的 intermediate 段并成一块；被打断则开新块，保持事件顺序）。
           view.activity = text
+          if (!text) return
+          const last = view.timeline[view.timeline.length - 1]
+          if (last && last.kind === "thinking") {
+            last.text += text
+          } else {
+            view.timeline.push({ kind: "thinking", seq: event.seq, text })
+          }
           return
         }
         const last = view.timeline[view.timeline.length - 1]
@@ -236,10 +274,12 @@ export function reduceEvents(
       }
       case "tool.started": {
         const callId = str(payload.call_id)
+        const args = detail(payload.arguments)
         const found = findTool(view.timeline, callId)
         if (found) {
           found.tool = str(payload.tool) || found.tool
           found.title = str(payload.title) || found.title
+          if (args !== undefined) found.args = args
         } else {
           view.timeline.push({
             kind: "tool",
@@ -248,6 +288,7 @@ export function reduceEvents(
             tool: str(payload.tool),
             title: str(payload.title),
             status: "running",
+            args,
           })
         }
         return
@@ -257,6 +298,7 @@ export function reduceEvents(
         const callId = str(payload.call_id)
         const status: ToolStatus = event.type === "tool.failed" ? "failed" : "completed"
         const summary = str(payload.summary)
+        const result = detail(payload.result ?? payload.output)
         // exit_code/duration_ms 仅在协议带上时透传，绝不编造。
         const exitCode = num(payload.exit_code)
         const durationMs = num(payload.duration_ms)
@@ -265,6 +307,7 @@ export function reduceEvents(
           found.status = status
           found.tool = str(payload.tool) || found.tool
           if (summary) found.summary = summary
+          if (result !== undefined) found.result = result
           if (exitCode !== undefined) found.exitCode = exitCode
           if (durationMs !== undefined) found.durationMs = durationMs
         } else {
@@ -277,8 +320,86 @@ export function reduceEvents(
             title: "",
             status,
             summary: summary || undefined,
+            result,
             exitCode,
             durationMs,
+          })
+        }
+        return
+      }
+      case "notify.event/tool_begin": {
+        // 审计行（drain journal）：投影的 tool.* 行之前的原始协议参数，
+        // 用来补齐工具卡的 arguments —— 同一 call_id 合并，不产生重复卡。
+        const params = record(payload.params) ?? payload
+        const callId = str(params.call_id ?? params.callId)
+        const toolName = str(params.tool_name ?? params.tool ?? params.name)
+        const argsRecord = record(params.arguments)
+        // 与 worker 投影一致的标题提取：description/command/path/filePath。
+        let title = str(params.title)
+        if (!title && argsRecord) {
+          for (const key of ["description", "command", "path", "filePath"]) {
+            const value = argsRecord[key]
+            if (value) {
+              title = str(value).slice(0, 300)
+              break
+            }
+          }
+        }
+        const args = detail(params.arguments ?? params.args)
+        if (!callId && !toolName && args === undefined) return
+        const found = callId ? findTool(view.timeline, callId) : undefined
+        if (found) {
+          found.tool = toolName || found.tool
+          if (title) found.title = title
+          if (args !== undefined) found.args = args
+        } else {
+          view.timeline.push({
+            kind: "tool",
+            seq: event.seq,
+            callId,
+            tool: toolName,
+            title,
+            status: "running",
+            args,
+          })
+        }
+        return
+      }
+      case "notify.event/tool_end": {
+        const params = record(payload.params) ?? payload
+        const callId = str(params.call_id ?? params.callId)
+        const toolName = str(params.tool_name ?? params.tool ?? params.name)
+        const okRaw = params.ok
+        const statusText = str(params.status).toLowerCase()
+        // ok 布尔优先；否则 status 文案里的失败词兜底，其余按成功。
+        const failed =
+          okRaw === false ||
+          (okRaw == null &&
+            (statusText === "failed" ||
+              statusText === "error" ||
+              statusText === "cancelled"))
+        const result = detail(
+          params.summary ?? params.result ?? params.output ?? params.error,
+        )
+        if (!callId) return
+        const found = findTool(view.timeline, callId)
+        if (found) {
+          found.status = failed ? "failed" : "completed"
+          found.tool = toolName || found.tool
+          if (result !== undefined) {
+            found.result = result
+            if (!found.summary) found.summary = result
+          }
+        } else {
+          view.timeline.push({
+            kind: "tool",
+            seq: event.seq,
+            callId,
+            tool: toolName,
+            title: "",
+            status: failed ? "failed" : "completed",
+            summary: result,
+            result,
           })
         }
         return

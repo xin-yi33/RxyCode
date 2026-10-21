@@ -59,6 +59,24 @@ class AuthSession(Base):
     user: Mapped[User] = relationship()
 
 
+class DeviceLock(Base):
+    """Single active-device lock — one session holds the data plane at a time.
+
+    ``token_hash`` names the holding ``auth_sessions`` row; ``last_seen_at``
+    is the keepalive — a lock idle past 10 minutes is implicitly released
+    (next claim or non-holder request takes it). Sessions themselves are
+    never revoked: the displaced device keeps auto-login and can re-claim.
+    """
+
+    __tablename__ = "device_locks"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship()
+
+
 class OAuthState(Base):
     __tablename__ = "oauth_states"
 
@@ -484,6 +502,7 @@ WEB_TABLES = (
     "artifacts",
     "usage_records",
     "auth_sessions",
+    "device_locks",
     "oauth_states",
     "invites",
     "password_resets",

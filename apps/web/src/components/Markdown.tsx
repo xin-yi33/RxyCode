@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Components } from "react-markdown"
 
-import { IconCheck, IconCopy } from "../../components/icons"
+import { IconCheck, IconCopy } from "./icons"
 
 // 代码块：复制按钮 + 横向可滚动。复制文本取自渲染后的 <pre>。
 function CodeBlock({ children }: { children?: React.ReactNode }) {
@@ -47,7 +47,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
       </button>
       <pre
         ref={ref}
-        className="overflow-x-auto rounded-lg bg-sidebar p-3 text-xs leading-relaxed"
+        className="overflow-x-auto rounded-lg bg-sidebar p-3 font-mono text-xs leading-relaxed"
       >
         {children}
       </pre>
@@ -141,6 +141,8 @@ const components: Components = {
   },
 }
 
+// 助手消息体的唯一 markdown 渲染入口：react-markdown 默认不渲染原始
+// HTML（等价于注入面已消毒），链接再经 linkIsSafe 白名单 + noopener。
 export function Markdown({ text }: { text: string }) {
   return (
     <div className="rxy-md text-sm leading-relaxed">

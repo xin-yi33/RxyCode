@@ -21,35 +21,55 @@ function StatusIcon({ status }: { status: ToolItem["status"] }) {
   return <IconClose size={13} className="text-failure-ink" />
 }
 
-// 一行灰色小字工具行：▸ {tool} {title} + 状态；点击展开 summary（等宽、20 行内滚动）。
+function DetailSection({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="mx-1 mb-1">
+      <p className="px-1 pb-0.5 text-[11px] text-muted">{label}</p>
+      <pre
+        className={
+          "max-h-80 overflow-y-auto whitespace-pre-wrap break-all rounded " +
+          "bg-sidebar p-2 font-mono text-xs text-muted-ink"
+        }
+      >
+        {text}
+      </pre>
+    </div>
+  )
+}
+
+// 紧凑工具卡：工具名 chip + 标题 + 状态图标（spinner→对勾/叉）。点击展开
+// 参数/结果详情；运行中默认展开，终态默认折叠（点过之后以用户为准）。
 export function ToolRow({ item }: { item: ToolItem }) {
-  const [open, setOpen] = useState(false)
-  const summary = item.summary ?? ""
+  const [open, setOpen] = useState<boolean | null>(null)
+  const isOpen = open ?? item.status === "running"
+  const hasDetail = Boolean(item.args || item.result || item.summary)
   return (
     <div data-tool-id={item.callId} data-tool-status={item.status}>
       <button
         type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        aria-expanded={isOpen}
+        onClick={() => setOpen(!isOpen)}
         className={
           "flex w-full items-start gap-1.5 rounded px-1 py-0.5 text-left " +
-          "font-mono text-xs text-muted hover:bg-sidebar"
+          "text-xs text-muted hover:bg-sidebar"
         }
       >
         <span
           aria-hidden="true"
           className={
             "mt-0.5 inline-block shrink-0 transition-transform " +
-            (open ? "rotate-90" : "")
+            (isOpen ? "rotate-90" : "")
           }
         >
           ▸
         </span>
         <span className="min-w-0 flex-1">
-          <span className="break-all">
-            {item.tool}
-            {item.title ? ` ${item.title}` : ""}
+          <span className="mr-1.5 rounded bg-sidebar px-1.5 py-0.5 font-mono text-[11px] text-muted-ink">
+            {item.tool || "tool"}
           </span>
+          {item.title ? (
+            <span className="break-all text-muted">{item.title}</span>
+          ) : null}
         </span>
         <span className="ml-2 flex shrink-0 items-center gap-1">
           <StatusIcon status={item.status} />
@@ -57,22 +77,23 @@ export function ToolRow({ item }: { item: ToolItem }) {
           {item.exitCode !== undefined ? (
             <span className="text-muted-ink">exit {item.exitCode}</span>
           ) : null}
+          {item.durationMs !== undefined ? (
+            <span className="text-muted-ink">{item.durationMs} ms</span>
+          ) : null}
         </span>
       </button>
-      {open && summary ? (
-        <pre
-          className={
-            "mx-1 mb-1 max-h-80 overflow-y-auto whitespace-pre-wrap break-all " +
-            "rounded bg-sidebar p-2 font-mono text-xs text-muted-ink"
-          }
-        >
-          {summary}
-        </pre>
-      ) : null}
-      {item.durationMs !== undefined ? (
-        <p className="px-1 pb-0.5 font-mono text-xs text-muted">
-          {item.durationMs} ms
-        </p>
+      {isOpen ? (
+        <div className="pb-1">
+          {item.args ? <DetailSection label="参数" text={item.args} /> : null}
+          {item.result ? (
+            <DetailSection label="结果" text={item.result} />
+          ) : item.summary ? (
+            <DetailSection label="结果" text={item.summary} />
+          ) : null}
+          {!hasDetail && item.status === "running" ? (
+            <p className="px-1 pb-0.5 text-[11px] text-muted">等待工具返回…</p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )

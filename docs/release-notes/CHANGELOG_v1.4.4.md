@@ -291,6 +291,15 @@
 - **实测分段**（warm，worker 进程已暖）：claimed 69ms → gateway_resolved 222ms → env_ready 255ms → sandbox_probed 289ms（TTL 缓存命中，冷启动为 9.7s）→ child_spawned 325ms → child_started 1155ms → imports_ready 2386ms → agent_assembled 4080ms → prompt_dispatched 4342ms → final 6449ms。**lease→agent 组装 ≈4.0s**（基线 13.068s，×3.2）；距离 ≤3s 目标差约 1s，残余在子进程 spawn+import+assemble，需 warm 池才能再压，记为后续项。"你好"→final ≈6.4s（≤8s 达标）；SSE 增量实时推送可见。
 - **E2E 证据**（生产 `https://rxycode.xyz`，浏览器实测）：访客 `/app` 壳可见（侧栏"登录后查看历史会话"+输入框+模型选择器）；发送→"发送任务需要登录"模态→"去登录"SPA 跳 `/login?next=/app`；登录态模型弹层显示平台模型+搜索+管理入口；设置 `?section=models` 深链到 BYOK 分区；连接创建/拉取模型/测试连接/清除/删除全链路（假 key 下发现失败显示 `认证失败（auth）`、目录保留）；run 卡片回显模型快照（deepseek-flash · 平台额度 · 平台）；运行中模型选择器禁用；停止按钮"取消中…"→DB `cancelled`；`tool_begin→tool.completed→final_answer→succeeded` 全事件链。
 
+### W11 安全加固：验证码发送限流 / 注册防批量 / 单设备登录锁 / 单副本数据库备份（2026-10-23）
+
+- **验证码发送频率上限**：`_Window` 增加 `window_seconds` 参数（原 60s 语义不变），`AuthRateLimit` 新增 `check_code(route, ip, email)`——每邮箱 5 次 / 5 分钟 + 每 IP 15 次 / 5 分钟两个固定窗口桶，超限一律 429 `RATE_LIMITED`。`/auth/register/code`、`/auth/login/code`、`/auth/forgot` 三条发码路径在既有按分钟限流与 ALTCHA 之外全部接入。
+- **注册防批量（每 IP 每小时）**：`AuthRateLimit` 再增 `register_hour` 桶——同一 IP 每小时最多 5 次**成功**注册；`check_register_hour` 在建用户/扣邀请码之前拒（429 `RATE_LIMITED`），`record_register` 只在用户行 flush 成功后计数，失败尝试不占额度。
+- **真实客户端 IP**（`api/client_ip.py`）：部署链路 uvicorn `proxy_headers` 已把网关注入的 XFF 写回 `scope["client"]`；新 helper 在直接对等方仍为私网/回环地址（compose 网关、TestClient/unix 传输）时才采信 `CF-Connecting-IP`（CF 覆写不可伪造前缀）与 `X-Forwarded-For`（从右往左跳过可信私网跳），公网直连一律退回对等 IP。全部限流键（auth 各端点 + `RateLimitMiddleware`）统一改用它。同时把 compose.yaml 与 `infra/docker/serve_web.py` 的 `forwarded_allow_ips` 由 `"*"` 收紧为私网网段——uvicorn 改取 XFF 中首个非可信跳，杜绝客户端伪造 XFF 前缀刷限流桶。
+- **单设备登录锁**：迁移 `010_device_locks` 建表（`user_id` PK → `users.id`、`token_hash`、`created_at`、`last_seen_at`）；同一账号数据面只服务一个会话。`_issue` 在登录/注册/OAuth/local 发会话时同事务认领锁；`current_record` 统一加 `_device_gate`——非持锁会话打数据面一律 409 `{"code":"DEVICE_IN_USE"}`（会话本身不吊销，另一台设备的自动登录不受影响），持锁请求顺带刷新 `last_seen_at` 作 keepalive；持锁方闲置 >10 分钟锁即过期，非持锁方请求自动接管（死设备困不死账号）。`/api/v1/auth/*` 与 `/api/v1/me` 豁免——被顶掉的设备仍能看状态与夺回。新增 `GET /api/v1/auth/device`（`{"status":"active"|"held_elsewhere"|"none"}`）与 `POST /api/v1/auth/device/claim`（require_write，`{"claimed":true}`，无条件接管）。
+- **每日数据库备份**：`infra/scripts/backup_pg.sh`——对 `rxyprod` 项目的 `postgres` 服务 `pg_dump -Fc` 落 `/opt/rxycode/backups/rxycode-<日期>.dump` 并删除其余 `rxycode-*.dump`（单副本轮转）；runbook 补 crontab 行（每日 03:10）与 `pg_restore --clean --if-exists` 恢复步骤。
+- **测试**：新增 `tests/web/w9/test_rate_and_device.py`——同邮箱 5 分钟窗第 6 次发码 429、5 分钟窗独立生效（预填桶隔离 60s 桶）、每 IP 15 次/5 分钟、每 IP 每小时 5 次成功注册（第 6 次 429、失败不计数）、设备锁全链路（登录夺锁 → 被顶会话 `held_elsewhere` + 数据面 409、`/auth/*`/`/me` 豁免可达、claim 无条件接管、last_seen 超龄自动释放并被下个请求接管）。
+
 ### 已知限制（明示，非遗漏）
 
 - **终局应答证据门误报**（本轮实测发现）：`final_answer` 工具把"仅 pwd 只读调用"的应答判为"声称副作用无 WRITE/DANGER 证据"，最终文本被替换成 `[evidence failed: ...]`——Harness 条款校验器的误报（run 仍 succeeded、工具确实执行）。与 BYOK 无关，归 agent-runtime 后续修。

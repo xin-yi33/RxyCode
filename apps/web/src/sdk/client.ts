@@ -152,6 +152,16 @@ export type SessionListItem = {
   last_run: { run_id: string; status: string } | null
 }
 
+// 单设备契约（后端冻结）：GET /auth/device 返回持有状态；
+// 409 + DEVICE_IN_USE 时 POST /auth/device/claim 把使用权切到本设备。
+export type DeviceStatus = {
+  status: "active" | "held_elsewhere" | "none" | string
+}
+
+export type DeviceClaimResult = {
+  claimed: boolean
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -328,6 +338,12 @@ export function createClient() {
       return writeJson("/api/v1/auth/local/login", {}, {
         "x-local-secret": secret,
       }) as Promise<Me>
+    },
+    getDeviceStatus(signal?: AbortSignal): Promise<DeviceStatus> {
+      return readJson("/api/v1/auth/device", signal) as Promise<DeviceStatus>
+    },
+    claimDevice(): Promise<DeviceClaimResult> {
+      return writeJson("/api/v1/auth/device/claim", {}) as Promise<DeviceClaimResult>
     },
     forgotPassword(input: {
       email: string

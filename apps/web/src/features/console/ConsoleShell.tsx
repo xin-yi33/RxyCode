@@ -2,6 +2,7 @@ import { useEffect } from "react"
 import { Outlet } from "react-router"
 
 import { useUi } from "../../state/ui"
+import { DeviceConflictModal } from "../devices/DeviceConflictModal"
 import { ConsolePanel } from "./ConsolePanel"
 import { Sidebar } from "./Sidebar"
 import { Topbar } from "./Topbar"
@@ -47,6 +48,8 @@ export function ConsoleShell() {
           {consoleOpen ? <ConsolePanel /> : null}
         </div>
       </div>
+      {/* 409 DEVICE_IN_USE 全局模态（queryClient.onError 置位后渲染）。 */}
+      <DeviceConflictModal />
     </div>
   )
 }

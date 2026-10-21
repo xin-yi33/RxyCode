@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 
 import { IconArrowDown } from "../../components/icons"
+import { Markdown } from "../../components/Markdown"
 import { ApprovalItem } from "../approvals/ApprovalItem"
 import { QuestionItem } from "../approvals/QuestionItem"
 import {
@@ -9,7 +10,7 @@ import {
   runStatusText,
 } from "../runs/status"
 import type { RunView } from "../runs/eventReducer"
-import { Markdown } from "./Markdown"
+import { ThinkingBlock } from "./ThinkingBlock"
 import { ToolRow } from "./ToolRow"
 
 const chipClass: Record<string, string> = {
@@ -118,8 +119,12 @@ export function Timeline({
         ) : null}
       </p>
       <ol ref={listRef} className="relative mt-3 space-y-3">
-        {view.timeline.map((item) => {
+        {view.timeline.map((item, index) => {
           const key = `${item.kind}-${item.seq}`
+          // 思考块的“正在思考”微光只在它还是流尾时亮：后面一旦出现
+          // 工具/正文/终答，说明这段思考已收口。
+          const streaming =
+            active && index === view.timeline.length - 1
           switch (item.kind) {
             case "user":
               return (
@@ -133,6 +138,12 @@ export function Timeline({
               return (
                 <li key={key}>
                   <Markdown text={item.text} />
+                </li>
+              )
+            case "thinking":
+              return (
+                <li key={key}>
+                  <ThinkingBlock text={item.text} active={streaming} />
                 </li>
               )
             case "tool":
