@@ -396,6 +396,12 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "decisions",
         "agents",
         "specs",
+        # RxyCode Web (feat/rxycode-web): architecture docs, deploy runbooks,
+        # portfolio case study, and product guides ship with the web product.
+        "architecture",
+        "deploy",
+        "portfolio",
+        "product",
     }
     allowed_files = {
         "quickstart.md",
