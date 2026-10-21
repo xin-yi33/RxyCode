@@ -202,7 +202,8 @@ def test_foreign_connection_is_404_everywhere(
         ("post", "/api/v1/models/default", {"model_ref": model_ref}),
     ]
     for method, path, body in verbs:
-        resp = getattr(client_b, method)(
+        resp = client_b.request(
+            method.upper(),
             path,
             json=body,
             headers=_headers(_csrf(client_b)),
@@ -248,10 +249,9 @@ def test_discover_and_add_models(postgres_url, byok_keyring, monkeypatch):
     assert all(m["added"] is False for m in body["models"])
 
     added = _add_models(client, conn_id, ["deepseek-chat", "deepseek-chat", "bad id!!", "x" * 300])
-    statuses = {r["model_id"]: r["status"] for r in added.json()["results"]}
-    assert statuses["deepseek-chat"] == "added"
-    # second occurrence of the same id inside one request -> exists
     results = added.json()["results"]
+    # first occurrence adds; second occurrence of the same id -> exists
+    assert results[0]["status"] == "added"
     assert results[1]["status"] == "exists"
     assert results[2]["status"] == "invalid"
     assert results[3]["status"] == "invalid"
