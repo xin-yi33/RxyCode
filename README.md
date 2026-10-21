@@ -1,4 +1,4 @@
-<!-- README_SYNC: source=working-tree; updated=2026-10-09 -->
+<!-- README_SYNC: source=working-tree; updated=2026-10-22 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
@@ -9,7 +9,7 @@
 
 [⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, and asks before risky writes.
 
-[![Version](https://img.shields.io/badge/version-1.4.3-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3)
+[![Version](https://img.shields.io/badge/version-1.4.4-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
@@ -25,10 +25,10 @@
 
 RxyCode is an autonomous coding agent running locally on your hardware. Bring an API key for any OpenAI-compatible model (DeepSeek, Qwen, Kimi, Claude, GPT, GLM, Doubao, or custom endpoints), and RxyCode takes over: decompose tasks, code solutions, execute commands, research the web, and mechanically verify the outcome. Terminal TUI out-of-the-box, optional Desktop GUI, and extensible with MCP and Skills.
 
-**v1.4.3 keeps a small frozen tool schema and loads MCP tools on demand.** `tool_search` stays on the task that asked for it, and a full schema is not dropped by generic dedupe or the 2000-character cut. Code writes come back with syntax and linter findings. Catastrophic shell commands on Linux, macOS, and Windows are refused before they run. Command output longer than 200 lines keeps the first and last 50 lines in context and stores the rest in a file. Every gated tool call is audited with duration, session, and failure alerts. Product metadata is 1.4.3; JSON-RPC stays `1.1.0`. No new Desktop installer is published. Details are in the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.3.md).
+**v1.4.4 ships RxyCode Web — the same headless agent, now reachable from a browser.** A live instance runs at [rxycode.xyz](https://rxycode.xyz): visitor shell, email-code auth with ALTCHA proof-of-work, single-device login lock, BYOK key vault, durable runs on PostgreSQL worker leases, per-run kernel sandboxes, and an explicit device bridge (`rxycode connect`) that lets a paired machine execute shell calls under a local approval gate. The deployment runs on a small community VM and the web surface is still early — expect rough edges, not SLAs. Product metadata is 1.4.4; JSON-RPC stays `1.1.0`. The CLI/OpenTUI/Desktop behavior is unchanged from v1.4.3; no new Desktop installer is published. Details are in the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.4.md).
 
 > 💡 **Want a quick test drive?** Run instantly without installation if you have Python 3.10+:  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode`
+> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4" rxycode`
 > See [⚡ Quick Start & Deployment](#-quick-start--deployment) for complete install options, Desktop app, Docker, and Node.js frontend builds.
 
 ---
@@ -97,7 +97,7 @@ Claude Code requires an Anthropic subscription; Codex runs the agent loop on rem
 The whole repository is **not** uploaded automatically. Only content the agent actually read or produced, then placed into the model messages, is sent. `websearch` sends the query to DDGS; `webfetch` contacts the target URL; MCP servers see whatever those tools return. Bring your own keys—DeepSeek, Qwen, Kimi, Doubao, GLM, SiliconFlow, OpenAI, Anthropic proxies—with no middleware lock-in.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.4/install.ps1 | iex"
 rxycode
 ```
 
@@ -123,22 +123,22 @@ Choose the installation or deployment method that best fits your workflow:
 Requires only Python 3.10+. No global installation, instant execution:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.4/install.sh | sh
 rxycode
 ```
 
-The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.4.3`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
+The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.4.4`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
 
 The installer bootstraps `uv` (if missing) and configures an isolated runtime without touching system packages:
 
-**Downloads:** the latest release (**`v1.4.3`**) publishes **one** asset: `rxycode-1.4.3.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
+**Downloads:** the latest release (**`v1.4.4`**) publishes **one** asset: `rxycode-1.4.4.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
 
 Upgrade from an older CLI install with:
 
 ```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4"
 
-python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.3.tar.gz
+python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.4.tar.gz
 ```
 
 Launch anytime by running `rxycode`.
@@ -149,7 +149,7 @@ Ideal for sandbox isolation or hosting an always-on headless API service.
 
 **Step 1: Clone repo & prepare environment**
 ```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4" rxycode
 ```
 
 **Step 2: Start container**
@@ -165,7 +165,7 @@ uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3" rxycode
 
 **Manual Single Image Build:**
 ```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.3"
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4"
 rxycode
 ```
 
@@ -343,7 +343,7 @@ OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -
 
 ## Desktop GUI
 
-v1.4.3 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
+v1.4.4 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
 
 | OS | Asset |
 |----|--------|
@@ -412,6 +412,14 @@ rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
 
 ## 🌐 RxyCode Web (multi-tenant cloud workspace — `feat/rxycode-web`)
 
+**Live instance: [rxycode.xyz](https://rxycode.xyz)** — hosted on a small
+community VM and still early in development; treat it as a working preview,
+not a production SLA.
+
+<p>
+  <img src="docs/assets/rxycode-web-console-v1.4.4.png" alt="RxyCode Web console" width="800">
+</p>
+
 This branch adds a deployable multi-tenant web surface on top of the same
 headless core: PostgreSQL-backed durable runs, an SSE event spine, a
 React/Vite workbench, and a worker that executes each turn inside a real
@@ -428,14 +436,19 @@ no running code path; `blocked` names its blocker.
 | Persisted approvals/questions + cross-day resume (API surface; the deployed public worker has no approval-answer channel — confirm_all runs fail honestly at run_timeout) | shipped | evidence/web/WEB-W2-C06 | tests/web/w2/test_w2_c06_unit.py |
 | React workbench: login, sessions, diff review, PTY, workbench | shipped | evidence/web/WEB-W3-C06 | tests/web/w3/test_w3_c06_module.py |
 | Local Full runner + device pairing + emergency stop | shipped | evidence/web/WEB-W4-C06 | tests/web/w4/test_w4_c06_module.py |
+| Email-code auth + ALTCHA PoW + per-IP/per-mailbox rate ceilings | shipped | CHANGELOG_v1.4.4 (W9) | tests/web/w9/test_rate_and_device.py |
+| Single-device login lock + 409 takeover modal | shipped | CHANGELOG_v1.4.4 (W9) | tests/web/w9/test_rate_and_device.py |
+| BYOK key vault (AES-256-GCM) + provider discovery + composer model picker | shipped | CHANGELOG_v1.4.4 (W10) | tests/web/w9 (byok suites) |
+| Session workspace file list/download API + panel | shipped | CHANGELOG_v1.4.4 (W12) | tests/web/w9/test_session_files.py |
+| Device bridge: `rxycode connect` + invoke + approval inbox | shipped | CHANGELOG_v1.4.4 (W13, live E2E on Windows) | — |
 | Cloud sandbox control plane; tenant fs isolation shipped in the deployed per-run sandbox (net isolation is standalone-path only — the deployed turn needs DB/LLM egress) | shipped | evidence/web/WEB-W5-C02 | tests/web/w5/test_w5_c02_unit.py |
 | Reproducible agent evals + baseline compare | shipped | evidence/web/WEB-W7-C03 | tests/web/w7/test_w7_c03_unit.py |
 | OpenTelemetry spans + per-run cost ledger | shipped | evidence/web/WEB-W7-C04 | tests/web/w7/test_w7_c04_unit.py |
 | Compose deploy (two-step: `up -d` + repo-seed into `repo-src`) + HTTPS gateway + confined turns | shipped | evidence/web/WEB-W7-C05 | tests/web/w7/test_w7_c05_module.py |
 | Security review corpus (auth/injection/leak sweeps) | shipped | evidence/web/WEB-W7-C01 | tests/web/w7/test_w7_c01_unit.py |
-| Public demo full-stack browser E2E | blocked: apps/web carries no Playwright dependency | evidence/web/WEB-W7-C06 | tests/web/w7/test_w7_c06_module.py |
-| Anonymous visitor cloud run over HTTP | blocked: no anonymous run endpoint exists; unauthenticated access is refused 401/403 by design | evidence/web/WEB-W7-C06 | tests/web/w7/test_w7_c06_module.py |
-| Hosted public demo URL | planned | — | bring your own host via infra/compose |
+| Public demo full-stack browser E2E | shipped: manual browser E2E on the live site (visitor shell, login modal, BYOK CRUD, device lock takeover, cancel, file panel) | docs/OPS-LOG.md | manual verification |
+| Anonymous visitor cloud run over HTTP | refused by design: visitors get the app shell, but sending a task requires login | — | — |
+| Hosted public demo URL | shipped: [rxycode.xyz](https://rxycode.xyz) — small community VM, early development | — | deploy your own via infra/compose |
 
 Deploy it yourself: `docs/deploy/web-runbook.md` (bring-up, migrations,
 upgrade/rollback, boundaries). User guide: `docs/product/web-user-guide.md`.
@@ -462,6 +475,7 @@ Architecture + ADR chain: `docs/architecture/web-system-design.md`.
 
 | Version | Release Date | Key Features |
 |---|---|---|
+| [v1.4.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4) | 2026-10-22 | RxyCode Web lands: hosted console at rxycode.xyz, durable multi-tenant runs, BYOK vault, device bridge for paired local machines, 3-worker ceiling, backup cron. Product metadata 1.4.4; protocol 1.1.0; no new Desktop installer |
 | [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | On-demand MCP schemas, write-time lint feedback, hard shell blacklist, 200-line output spill, and tool audit metrics. Product metadata 1.4.3; protocol 1.1.0; no new Desktop installer |
 | [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo ledger/dock, model-facing status band, incremental compaction, output spill, and default-off timeout decisions. Product metadata 1.4.2; protocol 1.1.0; no new Desktop installer |
 | [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | CLI maintenance: optional OS sandbox, Windows venv Job binding, log retention, retry/circuit-breaker and session/build fixes. No new Desktop installer |
@@ -519,6 +533,7 @@ Writes outside the whitelist are blocked. The TUI and Desktop raise an approval 
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| [v1.4.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4) | 2026-10-22 | RxyCode Web lands: hosted console at rxycode.xyz, durable multi-tenant runs, BYOK vault, device bridge for paired local machines, 3-worker ceiling, backup cron. Product metadata 1.4.4; protocol 1.1.0; no new Desktop installer |
 | [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | On-demand MCP schemas, write-time lint feedback, hard shell blacklist, 200-line output spill, and tool audit metrics. Product metadata 1.4.3; protocol 1.1.0; no new Desktop installer |
 | [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo ledger/dock, model-facing status band, incremental compaction, output spill, and default-off timeout decisions. Product metadata 1.4.2; protocol 1.1.0; no new Desktop installer |
 | [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | Product version **1.4.1** across CLI, OpenTUI, Ink, Desktop metadata, MCP identification, installers, and appserver. Protocol stays `1.1.0`. |

@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes recorded.
 
+---
+
+## [1.4.4] - 2026-10-22
+
+Web release: `feat/rxycode-web` lands the hosted product on top of the shared
+harness. Product metadata is `1.4.4`; JSON-RPC remains `1.1.0`. The CLI,
+OpenTUI, and Desktop surfaces keep their v1.4.3 behavior — no new Desktop
+installer is published.
+
+- **RxyCode Web (new surface)**: browser console at `https://rxycode.xyz` —
+  visitor shell, email+code auth with ALTCHA proof-of-work and per-IP /
+  per-account rate ceilings, single-device login lock with takeover, BYOK
+  key vault (AES-256-GCM, provider discovery, model picker in the composer),
+  durable runs on PostgreSQL with worker leases, Redis SSE fan-out, per-run
+  userns sandboxes, session workspace file list/download, Markdown tool
+  cards and collapsible reasoning blocks, mobile viewport support.
+- **Device bridge**: `rxycode connect` pairs a local machine over outbound
+  WSS; the cloud dispatches bash invocations through an approval inbox,
+  confined to the connect workspace root — verified end-to-end on Windows.
+- **Ops**: worker replicas capped at 3 (`RXYCODE_WORKER_REPLICAS`), daily
+  pg_dump backup cron, tenant-isolated workspaces, C0/NUL sanitization at
+  the API boundary, pending→cancelled fast path.
+
+See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.4.md) and the
+full [v1.4.4 changelog](docs/release-notes/CHANGELOG_v1.4.4.md).
+
 ## [1.4.3] - 2026-10-14
 
 CLI / OpenTUI release. Product metadata is `1.4.3`; JSON-RPC remains

@@ -95,7 +95,7 @@ def create_app(
             await asyncio.gather(ticker, return_exceptions=True)
             app.state.engine.dispose()
 
-    app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
+    app = FastAPI(title="RxyCode Web", version="1.4.4", lifespan=lifespan)
     app.state.engine = create_engine(database_url, poolclass=NullPool)
     app.state.database_url = database_url
     try:

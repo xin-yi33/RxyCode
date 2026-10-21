@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode-runner"
-version = "1.4.3"
+version = "1.4.4"
 description = "Local runner for rxycode connect"
 requires-python = ">=3.10"
 dependencies = ["websockets"]

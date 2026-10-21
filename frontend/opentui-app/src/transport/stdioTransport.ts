@@ -20,7 +20,7 @@ import {
   type CommandResult,
 } from "./httpAdmin.ts";
 import { applyThoughtExpandedOverride, nextThoughtExpanded, resetThinkingDisplay } from "../lib/thinkingDisplay.ts";
-import { looksLikePlanDocument, parsePlanDoc } from "../planDoc.ts";
+import { finalTextOpensPlan, parsePlanDoc } from "../planDoc.ts";
 import { liveProgressText, notifyToStreamEvent, toolWaitText } from "./notifyToStreamEvent.ts";
 import {
   composeTurnWithSteers,
@@ -508,7 +508,7 @@ export class StdioAppserverSession {
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.4.3",
+        client_version: "1.4.4",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),
@@ -1047,7 +1047,7 @@ export class StdioAppserverSession {
             newId,
           );
           publish(finalEvent);
-          if (mode === "plan" && looksLikePlanDocument(result.text)) {
+          if (finalTextOpensPlan(result.text, mode)) {
             callbacks.onPlan?.(parsePlanDoc(result.text));
           }
         }
