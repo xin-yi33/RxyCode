@@ -257,7 +257,10 @@ def build_router() -> APIRouter:
                 raise HTTPException(status_code=403, detail="FORBIDDEN")
         from rxycode_worker.supervisor import attempt_tool
 
-        call_id = str(body.get("call_id") or "")
+        # Standalone invocations have no run journal; both correlation ids
+        # must exist and match the journal's formats for dispatch to run.
+        call_id = str(body.get("call_id") or "") or f"call_{secrets.token_hex(16)}"
+        attempt_id = str(body.get("attempt_id") or "") or f"att_{secrets.token_hex(16)}"
 
         async def _cancel_call() -> None:
             socket = book.sockets.get(device_id)
@@ -273,7 +276,7 @@ def build_router() -> APIRouter:
             asyncio.to_thread(
                 attempt_tool,
                 None,
-                str(body.get("attempt_id") or ""),
+                attempt_id,
                 tool_name,
                 tool_args,
                 None,

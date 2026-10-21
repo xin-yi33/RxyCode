@@ -338,3 +338,34 @@
 - 重写 W8 之后的施工文档 `docs/plans/opus5-plan/rxycode -web/phases/PHASE-W9-PRODUCT-CLOSURE-AND-DEPLOYMENT.md`（`docs/plans/` 被 gitignore，仅本地；GPT 草稿归档为 `research/W9-gpt-draft-2026-10-20-superseded.md`）。
 - 文档中登记的已核实缺口——其中以下已被上述 W9 后端批次修复：`run.status` 事件缺失、notify.* repr 审计行、流式 token 逐条写（已合并）、`tool_begin` 未投影、`_JOURNAL_CAP` 误丢 tool/approval 行、队列随机序、准入无默认、无注册/无持久会话/无建 Run 路由。尚未修复：run 时间线的完整投影渲染与审批/提问操作（F4/F5）、终态后停止 follow 的产品化收尾、浏览器端到端九场景验收（Q1）。`stale` 误判导致的 token 浪费已由 W9-H1 修复（见上节），输入框已随 W9 前端落地。
 - 已定：邮箱 + 密码 + 邀请码注册（GitHub 可选）、控制台面板、首台服务器选境外区域、镜像预构建、W9/W10/W11 分期与日期。
+
+### W13 — Device bridge E2E verified (cloud → paired Windows host)
+
+Real verification on this Windows PC via `rxycode connect` + Devices API:
+pairing code → outbound WSS → `POST /devices/{id}/invocations` (bash) →
+`confirm_all` approval published to `/approvals/pending` → approved →
+`run_bash` executed inside the connect workspace root — file create, edit,
+and read-back all confirmed on `D:\rxy-device-workspace\proof.txt`.
+
+Two real bugs found and fixed by the E2E:
+
+- `gateway.invoke_device` fell through to the journaled path whenever the
+  caller omitted `call_id`/`attempt_id` → `AttributeError` on `journal=None`
+  → HTTP 500. Standalone invocations now mint `call_<32hex>`/`att_<32hex>`
+  correlation ids matching the journal wire formats.
+- `core/session_runtime.py` used `from ..config.settings` style imports that
+  only resolve under the nested `RxyCode.RxyCode1_1_0.*` package layout. The
+  API image loads it as top-level `core.session_runtime`, so `..` blew past
+  the top-level package → HTTP 500 on any device bash call that wrote a
+  relative path (`is_write_allowed` reached it). Dual-layout try/except
+  import added.
+
+Known gaps (documented, not shipped silently):
+
+- Device token is in-memory only (`_TOKENS`) — a client restart requires a
+  fresh pairing code (`BAD_TOKEN` otherwise). Persisting the token to the
+  device data dir is the next step.
+- No web UI surface for pairing/devices/approvals yet — API-only today.
+- Cloud sandbox stays untouched: run agents can never reach the host; only
+  explicit device invocations cross to the paired machine, confined to the
+  connect workspace root by the local grant store + sandbox check.

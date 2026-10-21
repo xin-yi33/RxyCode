@@ -8,9 +8,16 @@ import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
 
-from ..config.settings import get_data_dir, get_dated_data_dir, get_output_dir
-from ..memory.long_term import validate_session_id
-from ..utils.atomic_file import atomic_write_text
+try:
+    from ..config.settings import get_data_dir, get_dated_data_dir, get_output_dir
+    from ..memory.long_term import validate_session_id
+    from ..utils.atomic_file import atomic_write_text
+except ImportError:
+    # Flat deployment layout: core/ is a top-level package on sys.path, so the
+    # nested-package relative imports above have no parent to resolve against.
+    from config.settings import get_data_dir, get_dated_data_dir, get_output_dir
+    from memory.long_term import validate_session_id
+    from utils.atomic_file import atomic_write_text
 
 
 _ACTIVE_SESSION_ID: ContextVar[str] = ContextVar(
