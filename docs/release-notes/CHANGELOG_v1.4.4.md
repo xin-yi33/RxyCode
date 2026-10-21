@@ -313,6 +313,13 @@
 - **生产验收证据**（镜像 `49ca62dc`，2026-10-23）：发码 1–5 = 200、第 6 发 = 429 `RATE_LIMITED`；双会话设备锁全链路（顶掉 → 数据面 409、`/me` 200、claim 夺回）；真实 BYOK run 用 `deepseek-flash` 完成并渲染 markdown 加粗 + 两条思考链 + bash 工具卡；设备冲突模态与抢占按钮实测通过；移动视口 390px 布局正常（chat-only）。实测并发模型：每用户在途 = 1（第 2 单 429 `QUOTA_EXCEEDED`），队列深 10，worker 串行——高并发上限即 worker 数。
 - **测试**：`test_pending_cancel_direct`（pending 取消直通终态 + 二次取消 409）。
 
+### W12 会话工作区文件 API + 多用户并发扩容（2026-10-23，镜像 `3a8526c8`/`aa5581a6`）
+
+- **会话工作区文件面**：`GET /api/v1/sessions/{id}/files` 列出 agent 写入会话工作区（`{tenant}/{session}` 目录，在共享 `worker-data` 卷上）的非隐藏文件；`GET /api/v1/sessions/{id}/files/download?path=` 流式下载——路径穿越/绝对路径/符号链接一律 403/404，下载上限 32MiB，dotfile（`.turn-result.json` 等内部文件）永不可见。api 容器以只读方式挂 `worker-data:/workspaces-ro`（prod overlay 的 api `volumes: !reset` 会把 base 挂载清掉，故在 prod overlay 显式补回）。前端会话页新增「工作区文件」折叠面板（运行中 10s 轮询，文件名+大小+下载链接）——这就是 Notion/ChatGPT 式"agent 产出的文件用户可见"的服务端工作区模式。
+- **多用户并发实测**：`--scale worker=4` 起 4 个 drain，4 个不同用户 0.7s 内提交 4 个任务全部 202，4s 内被 4 个不同 `lease_owner`（`drain-{hostname}-1`）并行认领并同时保持执行 77s+。**并行度 = worker 副本数**，PG `FOR UPDATE` 认领保证同一 run 不被两个 worker 拿走，按 `--scale worker=N` 线性扩。当前生产保留 4 个 worker（VM 7.8G 内存，worker mem_limit 2g 为上限非预留）。Redis 的角色只是 SSE 事件扇出，不参与排队——并发瓶颈在 worker 数而非 Redis。
+- **测试**：`tests/web/w9/test_session_files.py` 3 条全绿（pg 实测）——列表/下载/穿越 403/dotfile 404/跨租户 404/未配置 root 404。
+- **事故**：部署时发现 api 容器只剩 keyring 挂载——prod overlay api `volumes:` 无 !reset 的对齐缺口导致 base 卷被清，补回 `worker-data:/workspaces-ro:ro` 修复。
+
 ### 已知限制（明示，非遗漏）
 
 - **终局应答证据门误报**（本轮实测发现）：`final_answer` 工具把"仅 pwd 只读调用"的应答判为"声称副作用无 WRITE/DANGER 证据"，最终文本被替换成 `[evidence failed: ...]`——Harness 条款校验器的误报（run 仍 succeeded、工具确实执行）。与 BYOK 无关，归 agent-runtime 后续修。

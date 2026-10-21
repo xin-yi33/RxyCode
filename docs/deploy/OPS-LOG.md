@@ -169,3 +169,10 @@
 - **事故**：`compose -f prod.yaml -f base.yaml` 顺序写反让 dev 配置赢（migrate 变 dev-seed 等待 sync 哨兵卡死）；正确顺序 = base 在前 overlay 在后。顺手起了 `rxycode-*` 游离栈抢 54433，已清。rxyprod-postgres 重建但同卷，数据无损（12 sessions / 6 users / 1 device_lock / 1 conn 复核）。
 - 生产终态：web/api `49ca62d`，worker `5499470`（代码等价已打双 tag），version 端点回 `49ca62dc`。浏览器实测：设备冲突模态+抢占、markdown 加粗、思考链×2、bash 工具卡、BYOK `deepseek-flash` 徽标、模型切换提示、390px 移动视口、About 对话框全部通过。
 - VM 源码 checkout `5e81f215`（含 changelog 补记）。未做整机重启——容器重启已满足"域名最新内容"，SSH 断连风险不值。
+
+## 2026-10-23 W12 文件 API + 并发扩容（aa5581a6）
+
+- `files.py`：会话工作区列表/下载，`{tenant}/{session}` 目录 scoped、穿越/符号链接/dotfile 全部拒绝。
+- prod overlay api `volumes: !reset` 清掉 base 挂载是已知坑——worker-data 需在 overlay 显式补回，否则 api 读不到工作区。
+- `--scale worker=4` 实测 4 用户并行 run 成功（4 个不同 lease_owner 同时持有 77s+）；生产保留 4 worker。
+- 测试用 mint 的 auth_sessions 已全部 revoke；PLATFORM_MODEL_USERS 恢复仅 owner。
