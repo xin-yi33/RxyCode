@@ -18,6 +18,7 @@ export function ForgotPasswordPage() {
   const [busy, setBusy] = useState(false)
   const [sent, setSent] = useState(false)
   const [devLink, setDevLink] = useState("")
+  const [delivery, setDelivery] = useState("")
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -29,6 +30,7 @@ export function ForgotPasswordPage() {
       .then((body) => {
         setSent(true)
         setDevLink(body.reset_url ?? "")
+        setDelivery(body.delivery ?? "")
       })
       .catch((err: unknown) => setError(apiErrorText(err)))
       .finally(() => setBusy(false))
@@ -38,10 +40,20 @@ export function ForgotPasswordPage() {
     <AuthLayout>
       {sent ? (
         <div className="space-y-4">
-          <p className="text-lg font-semibold">重置邮件已发送</p>
-          <p className="text-sm text-muted">
-            如果该邮箱已注册，你会在几分钟内收到一封带重置链接的邮件（30 分钟内有效）。
+          <p className="text-lg font-semibold">
+            {delivery === "operator-log" ? "重置链接已生成" : "重置邮件已发送"}
           </p>
+          {delivery === "operator-log" ? (
+            <p className="text-sm text-muted">
+              该邮箱如已注册，重置链接已写入服务器日志。请联系管理员获取
+              （例如 <code className="text-foreground">docker logs rxyprod-api-1 | grep "password reset"</code>），
+              30 分钟内有效。
+            </p>
+          ) : (
+            <p className="text-sm text-muted">
+              如果该邮箱已注册，你会在几分钟内收到一封带重置链接的邮件（30 分钟内有效）。
+            </p>
+          )}
           {devLink ? (
             <p className="rounded-md border border-border bg-sidebar p-3 text-sm">
               开发模式：{" "}

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 import time
 import uuid
@@ -39,6 +40,7 @@ from rxycode_server.persistence.models import (
     User,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 _SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 _SESSION_TTL = timedelta(days=7)
@@ -340,6 +342,14 @@ def _default_project_id(db: Session, user: User | None, tenant_id: str) -> str |
 
 def _capabilities(request: Request) -> dict[str, object]:
     state = request.app.state
+    if getattr(state, "smtp_url", ""):
+        reset_delivery = "smtp"
+    elif state.mode == "local":
+        reset_delivery = "inline"
+    elif getattr(state, "reset_operator_log", False):
+        reset_delivery = "operator-log"
+    else:
+        reset_delivery = "none"
     return {
         "mode": state.mode,
         "password": True,
@@ -350,10 +360,11 @@ def _capabilities(request: Request) -> dict[str, object]:
             and getattr(state, "github_redirect_uri", "")
         ),
         "local": state.mode == "local",
-        # A reset link is deliverable over SMTP, or handed back inline in
-        # local dev mode. Cloud without SMTP cannot deliver — hide the flow.
-        "password_reset": bool(getattr(state, "smtp_url", ""))
-        or state.mode == "local",
+        # A reset link is deliverable over SMTP, handed back inline in local
+        # dev mode, or logged for the operator when explicitly enabled.
+        # Cloud without any of these cannot deliver — hide the flow.
+        "reset_delivery": reset_delivery,
+        "password_reset": reset_delivery != "none",
     }
 
 
@@ -586,6 +597,17 @@ def forgot_password(
         )
     elif request.app.state.mode == "local":
         body["reset_url"] = reset_url
+        body["delivery"] = "inline"
+    elif getattr(request.app.state, "reset_operator_log", False):
+        # Operator outbox for self-hosted single-admin deployments: the link
+        # goes to the api log (log readers already hold database access), the
+        # response only names the channel — never the URL.
+        log.warning(
+            "password reset link for %s (operator outbox, no SMTP configured): %s",
+            email,
+            reset_url,
+        )
+        body["delivery"] = "operator-log"
     return body
 
 

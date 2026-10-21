@@ -105,6 +105,9 @@ services:
       # Password-reset delivery (optional — forgot-password hides without it).
       RXYCODE_SMTP_URL: ${RXYCODE_SMTP_URL:-}
       RXYCODE_SMTP_FROM: ${RXYCODE_SMTP_FROM:-}
+      # Operator outbox for self-hosted single-admin deploys without SMTP:
+      # =1 makes forgot-password log the reset link to the api log.
+      RXYCODE_RESET_OPERATOR_LOG: ${RXYCODE_RESET_OPERATOR_LOG:-}
     depends_on:
       postgres:
         condition: service_healthy

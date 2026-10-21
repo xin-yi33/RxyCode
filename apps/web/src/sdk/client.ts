@@ -5,6 +5,7 @@ export type Capabilities = {
   github: boolean
   local: boolean
   password_reset?: boolean
+  reset_delivery?: "smtp" | "inline" | "operator-log" | "none"
 }
 
 export type Me = {
@@ -206,10 +207,11 @@ export function createClient() {
         "x-local-secret": secret,
       }) as Promise<Me>
     },
-    forgotPassword(email: string): Promise<{ ok: boolean; reset_url?: string }> {
+    forgotPassword(email: string): Promise<{ ok: boolean; reset_url?: string; delivery?: string }> {
       return writeJson("/api/v1/auth/forgot", { email }) as Promise<{
         ok: boolean
         reset_url?: string
+        delivery?: string
       }>
     },
     resetPassword(token: string, password: string): Promise<{ ok: boolean }> {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
@@ -154,6 +156,37 @@ def test_w9_a1_capabilities_and_cloud_shape(postgres_url: str):
     response = _forgot(cloud, email)
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+    assert caps["reset_delivery"] == "none"
+    assert caps["password_reset"] is False
+
+
+def test_w9_a1_operator_log_delivery(postgres_url: str, caplog):
+    """Self-hosted cloud + operator-log flag: the link lands in the api log,
+    the response names the channel only — deploys without SMTP stay usable."""
+    app = _app(postgres_url, mode="cloud")
+    app.state.reset_operator_log = True
+    cloud = TestClient(app, base_url="https://testserver")
+
+    caps = cloud.get("/api/v1/auth/capabilities").json()
+    assert caps["password_reset"] is True
+    assert caps["reset_delivery"] == "operator-log"
+
+    email, _ = _register_user(cloud, postgres_url)
+    with caplog.at_level(logging.WARNING, logger="rxycode_server.api.auth"):
+        response = _forgot(cloud, email)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body.get("delivery") == "operator-log"
+    assert "reset_url" not in body  # the URL never leaves the host
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "password reset link" in logged and email in logged
+    match = re.search(r"/reset\?token=(\S+)", logged)
+    assert match, caplog.records
+    token = match.group(1)
+    assert _reset(cloud, token, "new-password-2").status_code == 200
+    assert _login(cloud, email, "new-password-2").status_code == 200
 
 
 def test_w9_a1_reset_needs_valid_token_and_password(postgres_url: str):

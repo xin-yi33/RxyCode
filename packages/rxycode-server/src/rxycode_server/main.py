@@ -117,9 +117,14 @@ def create_app(
     )
     app.state.auth_rate = AuthRateLimit()
     # Password-reset delivery: smtps://user:pass@host:465 or smtp://…:587
-    # (STARTTLS). Without it the reset link only exists in local dev mode.
+    # (STARTTLS). Without it the reset link only exists in local dev mode —
+    # unless the operator explicitly opts into log delivery for self-hosted
+    # single-admin deployments (link goes to the api log, not the response).
     app.state.smtp_url = os.environ.get("RXYCODE_SMTP_URL", "").strip()
     app.state.smtp_from = os.environ.get("RXYCODE_SMTP_FROM", "").strip()
+    app.state.reset_operator_log = os.environ.get(
+        "RXYCODE_RESET_OPERATOR_LOG", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
     app.state.github_client_id = github_client_id
     app.state.github_client_secret = github_client_secret
     app.state.github_redirect_uri = github_redirect_uri
