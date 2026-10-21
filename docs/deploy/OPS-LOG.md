@@ -113,3 +113,11 @@
 - [ ] cloudflared 授权回来后：tunnel create → `rxycode.xyz` route → 接入 8080 → 公网验收
 - [ ] SMTP / 重置链接投递方案（等用户选 Gmail 应用密码 或 日志回退）
 - [ ] Funnel 域名浏览器全流程验收
+
+### ~14:30 🐧 验证码重置上线 + Gmail 链路实测结论
+- **镜像 `bda9a055`**（api+web+worker）已上 VM `rxyprod` 与本机 `rxylocal`：忘记密码改 6 位验证码（SMTP 投递），`send_mail` 加一次重试。
+- **SMTP 失败降级修正**：日志产物从"6 位验证码"改为"30 分钟链接"（operator-log UI 只认链接，验证码无处可填）。两次实测 forgot 均走通降级。
+- **Gmail SMTP 实测结论**：全量扫测 56 节点（运行时把 MAIL filter 展宽 `.*` 逐个切换探测，扫完还原）——仅「香港高速02/03|BGP|CMCU」放行 gmail:465，且**分钟级抖动**（扫时 TLS+banner、发信时 SSLEOF 往返波动）；587/STARTTLS 同样被掐。结论：**此订阅无法可靠投递 Gmail**。
+- **可达的对照**：同链路下 `smtp.qq.com:465`、`smtp.163.com:465`、`smtp.exmail.qq.com:465` 全部 TLS+banner 通过（GEOIP CN 规则直连国内落地，不过墙）。要真发邮件建议换 QQ/163（需用户提供授权码）。
+- ⚠️ 操作事故记录：`docker compose up` 忘带 `-p rxyprod` → 默认项目名 `rxycode` 起了一套空栈撞 8080 端口。已 `down` 清理（其卷仍在，未删数据）。生产命令一律 `-p rxyprod`。
+- 生产现状：`https://rxycode.xyz` 跑 `bda9a055`，capabilities `reset_delivery=smtp`；忘记密码在有验证码邮件通时发邮件、不通时 200 降级到日志链接，永不断路。
