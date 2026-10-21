@@ -140,6 +140,15 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
         pass
     if callable(_unify):
         _unify()
+    # The editable finder purge above also removes the flat first-party
+    # packages (rxycode_runner, rxycode_server, rxycode_worker, ...), which
+    # live under packages/*/src rather than the checkout root.  Re-expose
+    # them on sys.path so lazy imports like ``rxycode_runner.local.supervisor``
+    # resolve to THIS checkout exactly as the editable install would.
+    for _src in sorted((_checkout_root / "packages").glob("*/src")):
+        _src_str = str(_src)
+        if _src_str not in sys.path:
+            sys.path.insert(0, _src_str)
     sys._rxycode_test_checkout_ready = True  # type: ignore[attr-defined]
 
 import pytest

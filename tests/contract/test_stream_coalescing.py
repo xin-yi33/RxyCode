@@ -400,7 +400,7 @@ async def test_worker_switch_0_does_not_build_coalescer(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(aw, "stream_coalesce_enabled", lambda: False)
     monkeypatch.setattr(aw, "StreamCoalescer", lambda sink: _coalescer_stub(built))
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
 
     async def fake_write(message):
         if "result" in message:
@@ -554,7 +554,7 @@ async def test_worker_success_wind_down_order(monkeypatch: pytest.MonkeyPatch):
     import appserver.jsonrpc as jrpc
 
     monkeypatch.setattr(aw, "write_message", fake_write)
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
     # A coalescer sink that records its flush against the result order.
 
     class FakeCoalescer:
@@ -664,7 +664,7 @@ async def test_worker_error_wind_down_orders_stream_before_error(
             order.append("result")
 
     monkeypatch.setattr(aw, "write_message", fake_write)
-    monkeypatch.setattr(aw, "Session", BoomSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: BoomSession)
 
     class FakeCoalescer:
         """Mirrors production StreamCoalescer.stop() idempotency: a second
@@ -717,7 +717,7 @@ async def test_worker_session_construction_failure_no_ticker_leak(
             order.append("write")
 
     monkeypatch.setattr(aw, "write_message", fake_write)
-    monkeypatch.setattr(aw, "Session", BoomSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: BoomSession)
 
     class FakeCoalescer:
         """Mirrors production stop() idempotency (unified finally re-runs it)."""
@@ -775,7 +775,7 @@ async def test_worker_switch_1_real_coalescer_orders_stream_before_result(
         input_tokens = 1
         output_tokens = 1
 
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
     monkeypatch.setattr(aw, "stream_coalesce_enabled", lambda: True)
 
     async def fake_write(message):
@@ -1213,7 +1213,7 @@ async def test_plain_emit_after_token_stays_ordered(monkeypatch: pytest.MonkeyPa
         input_tokens = 1
         output_tokens = 1
 
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
     monkeypatch.setattr(aw, "stream_coalesce_enabled", lambda: True)
 
     worker = aw.AgentWorker()
@@ -1370,7 +1370,7 @@ async def test_worker_result_sent_even_when_coalescer_degraded(
             writes.append("error")
 
     monkeypatch.setattr(aw, "write_message", fake_write)
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
     monkeypatch.setattr(aw, "StreamCoalescer", BoomCoalescer)
     monkeypatch.setattr(aw, "stream_coalesce_enabled", lambda: True)
 
@@ -1416,7 +1416,7 @@ async def test_worker_real_path_counts_thread_switches(monkeypatch: pytest.Monke
         input_tokens = 1
         output_tokens = 1
 
-    monkeypatch.setattr(aw, "Session", FakeSession)
+    monkeypatch.setattr(aw, "session_type_for_worker", lambda: FakeSession)
     monkeypatch.setattr(aw, "write_message", counting_write)
 
     # Switch ON (default): 100 tokens -> far fewer than 100 writes.

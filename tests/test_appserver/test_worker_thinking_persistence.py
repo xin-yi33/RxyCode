@@ -40,7 +40,7 @@ def _make_worker(monkeypatch) -> tuple[AgentWorker, dict]:
 
     monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", fake_bind)
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", fake_reset)
-    monkeypatch.setattr("appserver.agent_worker.Session", FakeSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: FakeSession)
     messages: list[dict] = []
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",
@@ -100,7 +100,7 @@ async def test_cancelled_prompt_returns_a_terminal_cancelled_result(monkeypatch)
             raise asyncio.CancelledError
 
     messages: list[dict] = []
-    monkeypatch.setattr("appserver.agent_worker.Session", CancelledSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: CancelledSession)
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",
         AsyncMock(side_effect=lambda msg: messages.append(msg)),
