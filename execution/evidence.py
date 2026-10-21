@@ -80,6 +80,10 @@ class ToolEvidence(BaseModel):
     call_id: str | None = None
     artifacts: list[ArtifactEvidence] = Field(default_factory=list)
     detail: str = ""
+    # Bounded projection of the invocation args (small scalars only — enough
+    # to classify the call, e.g. a git ``operation``; file contents and big
+    # payloads are dropped so nothing new leaks into the journal).
+    args: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -234,7 +238,24 @@ def build_tool_evidence(
         call_id=str(call_id) if call_id else None,
         artifacts=artifacts,
         detail=text[:500],
+        args=_evidence_args_projection(args),
     )
+
+
+def _evidence_args_projection(args: Any) -> dict | None:
+    """Small-scalar projection of tool args for the evidence record.
+
+    Enough to classify the invocation (git ``operation``, git ``args``
+    flags) without copying file contents or payloads into the journal."""
+    if not isinstance(args, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) <= 200:
+            out[str(key)] = value
+        elif isinstance(value, (int, float, bool)) or value is None:
+            out[str(key)] = value
+    return out or None
 
 
 def _is_rejected_helper_path(path: str) -> bool:

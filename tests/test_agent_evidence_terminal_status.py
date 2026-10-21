@@ -201,6 +201,83 @@ async def test_read_only_probe_failure_does_not_override_completed_answer():
 
 
 @pytest.mark.asyncio
+async def test_failed_readonly_git_probe_does_not_override_written_artifact(tmp_path):
+    """A failed ``git status`` — e.g. no git binary in the confined sandbox —
+    is a version-probe attempt, same as a failed bash smoke test: it must not
+    erase a completed write. Mutating git ops (commit/push) stay critical."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    artifact = tmp_path / "hello.py"
+    artifact.write_text('print("hello")\n', encoding="utf-8")
+    agent = object.__new__(AgentV2)
+
+    async def completed_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(artifact), "content": 'print("hello")\n'},
+            f"[wrote {artifact.stat().st_size} bytes to {artifact}]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "git",
+            {"operation": "status"},
+            "[error executing git: git: command not found]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        return "hello.py 已创建并验证通过。"
+
+    agent._run_impl = completed_run
+    result = await agent.run("create hello.py printing hello")
+
+    assert result.startswith("hello.py")
+    assert "evidence failed" not in result
+
+
+@pytest.mark.asyncio
+async def test_failed_mutating_git_still_overrides_completed_answer(tmp_path):
+    """``git commit`` failing is mutating — it stays authoritative even with
+    a verified write in the same run."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    artifact = tmp_path / "hello.py"
+    artifact.write_text('print("hello")\n', encoding="utf-8")
+    agent = object.__new__(AgentV2)
+
+    async def completed_run(_user_input: str, _mode: str) -> str:
+        ToolOrchestrator()._finish(
+            "write",
+            {"filePath": str(artifact), "content": 'print("hello")\n'},
+            f"[wrote {artifact.stat().st_size} bytes to {artifact}]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        ToolOrchestrator()._finish(
+            "git",
+            {"operation": "commit", "args": "-m init"},
+            "[error executing git: fatal: not a git repository]",
+            executed=True,
+            approval="auto",
+            risk=RiskLevel.WRITE,
+        )
+        return "committed everything"
+
+    agent._run_impl = completed_run
+    result = await agent.run("commit the work")
+
+    assert result.startswith("[evidence failed:")
+    assert "committed everything" not in result
+
+
+@pytest.mark.asyncio
 async def test_write_failure_still_overrides_even_with_read_probe_failure():
     """A WRITE-level failure must still override, even when a read-only probe
     also failed in the same run."""

@@ -1239,6 +1239,84 @@ def test_blocked_check_is_not_a_passing_receipt():
     assert AgentV2._workflow_completion_feedback(host) is not None
 
 
+def test_decorated_check_commands_still_record_receipts(tmp_path, monkeypatch):
+    """Models wrap contract checks in echo markers / cd prefixes — a verbatim
+    compare left every check 'missing' and the agent re-ran equivalents until
+    it asked the user (W9 e2e). Clause-equality is what 'ran' means."""
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import (
+        AgentV2,
+        _command_effective_workdir,
+        _command_ran_check,
+    )
+
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    _bind_shell(monkeypatch, repo)
+
+    def workspace_host():
+        item = _host()
+        item._workspace_root = str(repo)
+        return item
+
+    # Unit surface: clause matching keeps pipes whole and quotes distinct.
+    assert _command_ran_check(
+        'test -f hello.py; echo "hello_file_exists exit=$?"', "test -f hello.py"
+    )
+    assert _command_ran_check(
+        'python3 hello.py; echo "x"', "python3 hello.py"
+    )
+    assert _command_ran_check(
+        'python3 hello.py | grep -qx hello; echo "x"',
+        "python3 hello.py | grep -qx hello",
+    )
+    assert not _command_ran_check("test -f other.py", "test -f hello.py")
+    assert not _command_ran_check('echo "test -f hello.py"', "test -f hello.py")
+    assert _command_effective_workdir('cd /w/sess && test -f x') == "/w/sess"
+    assert _command_effective_workdir("test -f x") == ""
+
+    # Receipt path: echo-suffixed variant records for the check.
+    command = "python -m pytest tests/test_parser.py -q"
+    decorated = workspace_host()
+    decorated._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        decorated,
+        "bash",
+        {"command": f"{command}; echo \"parser exit=$?\"", "cwd": "pkg"},
+        "1 passed",
+        False,
+        call_id="bash-decorated",
+    )
+    receipt = decorated._build_workflow_receipts.get("parser")
+    assert receipt is not None and receipt.predicate_passed
+
+    # cd clause to the contract dir works like an explicit workdir arg.
+    cd_host = workspace_host()
+    cd_host._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        cd_host,
+        "bash",
+        {"command": f"cd {repo / 'pkg'} && {command}"},
+        "1 passed",
+        False,
+        call_id="bash-cd",
+    )
+    assert cd_host._build_workflow_receipts.get("parser") is not None
+
+    # cd clause to a different dir must not satisfy the check.
+    (repo / "other").mkdir()
+    wrong = workspace_host()
+    wrong._build_workflow = _pkg_decision()
+    AgentV2._record_workflow_receipt(
+        wrong,
+        "bash",
+        {"command": f"cd {repo / 'other'} && {command}"},
+        "1 passed",
+        False,
+        call_id="bash-wrong",
+    )
+    assert wrong._build_workflow_receipts.get("parser") is None
+
+
 def test_continue_keeps_the_active_goal():
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 

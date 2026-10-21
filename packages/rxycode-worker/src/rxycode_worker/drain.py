@@ -1180,60 +1180,22 @@ async def _lease_watchdog(
     # strictly BEFORE expiry; a probe arriving at/past deadline would already
     # be unowned in DB terms.
     margin = 0.25
+    # Cancel detection must not wait a full renewal period: a cheap status
+    # SELECT runs every ``poll`` seconds while the expensive lease UPDATE
+    # keeps the original ``interval`` cadence. Otherwise a stop request
+    # could sit unseen for ~ttl/2 seconds while the turn keeps burning
+    # model calls (observed: cancel at +0.7s, turn ran another ~58s).
+    poll = min(3.0, interval)
+    # A renewal must land strictly before expiry — with a short TTL the
+    # nominal interval can sit at/past the deadline, so the renewal
+    # schedule is the tighter of the two.
+    renew_period = min(interval, max(0.05, lease_ttl - margin))
+    next_renew = claimed_at + renew_period
     while not turn.done():
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        remaining = deadline - now
         if remaining <= 0:
             _LOG.error("run %s: lease expired without a proven renewal", run_id)
-            turn.cancel()
-            raise _LeaseRenewalLost(run_id)
-        await asyncio.sleep(min(interval, max(0.05, remaining - margin)))
-        if turn.done():
-            return
-        now = time.monotonic()
-        if now >= deadline:
-            turn.cancel()
-            raise _LeaseRenewalLost(run_id)
-        try:
-            req_start = time.monotonic()
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    renew_lease,
-                    database_url,
-                    run_id,
-                    worker_id,
-                    epoch,
-                    ttl_seconds=lease_ttl,
-                ),
-                timeout=max(0.05, min(_LEASE_IO_BUDGET, deadline - now)),
-            )
-            # Anchor at request-START, not completion: the store computes
-            # lease_until from its own clock inside the transaction, so the
-            # DB expiry is ~req_start+ttl — extending from completion would
-            # let the turn outlive the real lease by the response latency
-            # (audit r5-F1).
-            deadline = req_start + lease_ttl
-        except LeaseRejected:
-            turn.cancel()
-            raise
-        except Exception as exc:
-            # Covers both real store errors and wait_for timeouts. A timed-out
-            # renewal keeps running in its thread — if it lands late it only
-            # re-checks the fence; the conservative outcome (we step aside)
-            # stays correct.
-            if time.monotonic() >= deadline:
-                _LOG.error(
-                    "run %s: lease renewals unproven past TTL; cancelling turn",
-                    run_id,
-                )
-                turn.cancel()
-                raise _LeaseRenewalLost(run_id) from exc
-            _LOG.warning(
-                "run %s: lease renewal failed; retrying before lease expiry",
-                run_id,
-                exc_info=True,
-            )
-        now = time.monotonic()
-        if now >= deadline:
             turn.cancel()
             raise _LeaseRenewalLost(run_id)
         try:
@@ -1250,6 +1212,50 @@ async def _lease_watchdog(
         if status == "cancel_requested":
             turn.cancel()
             raise _RunCancelled(run_id)
+        if now >= next_renew:
+            try:
+                req_start = time.monotonic()
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        renew_lease,
+                        database_url,
+                        run_id,
+                        worker_id,
+                        epoch,
+                        ttl_seconds=lease_ttl,
+                    ),
+                    timeout=max(0.05, min(_LEASE_IO_BUDGET, deadline - now)),
+                )
+                # Anchor at request-START, not completion: the store computes
+                # lease_until from its own clock inside the transaction, so the
+                # DB expiry is ~req_start+ttl — extending from completion would
+                # let the turn outlive the real lease by the response latency
+                # (audit r5-F1).
+                deadline = req_start + lease_ttl
+                next_renew = req_start + renew_period
+            except LeaseRejected:
+                turn.cancel()
+                raise
+            except Exception as exc:
+                # Covers both real store errors and wait_for timeouts. A timed-out
+                # renewal keeps running in its thread — if it lands late it only
+                # re-checks the fence; the conservative outcome (we step aside)
+                # stays correct.
+                if time.monotonic() >= deadline:
+                    _LOG.error(
+                        "run %s: lease renewals unproven past TTL; cancelling turn",
+                        run_id,
+                    )
+                    turn.cancel()
+                    raise _LeaseRenewalLost(run_id) from exc
+                _LOG.warning(
+                    "run %s: lease renewal failed; retrying before lease expiry",
+                    run_id,
+                    exc_info=True,
+                )
+        if turn.done():
+            return
+        await asyncio.sleep(min(poll, max(0.05, deadline - time.monotonic() - margin)))
 
 
 def _execution_gate(
@@ -3521,6 +3527,25 @@ async def _wait_child(
                 await collector
             except BaseException:
                 pass
+
+
+def _cancel_effects_known(proc: Any | None, proc_identity: Any | None) -> bool:
+    """True when the confined child is provably dead after our own cancel.
+
+    This drain performed the cancel — it cancelled the turn task and killed
+    the confined child, and the durable journal records every side-effect
+    call up to that kill. 'Unknown' is only the residual case where the
+    child could not be proven dead — THAT is what recovery_required exists
+    for (audit r13, narrowed to actually-unproven effects, same split as
+    claim-time cancels). ``proc_identity.is_running()`` re-verifies
+    (pid, create_time) so a reaped-and-reused pid is not ours (W8-r3).
+    """
+    if proc is None or proc.returncode is not None:
+        return True
+    try:
+        return proc_identity is not None and not proc_identity.is_running()
+    except Exception:
+        return False
 
 
 class _ResumeSettled(Exception):
@@ -6301,6 +6326,8 @@ async def execute_run(
         # A cancelled run is still committed cancelled — the cancel was real
         # — but a failed ledger write is surfaced on the durable log first,
         # never dropped silently.
+        #
+        effects_known = _cancel_effects_known(proc, proc_identity)
         if usage_error:
             try:
                 await asyncio.wait_for(
@@ -6331,7 +6358,7 @@ async def execute_run(
                     run_id,
                     cfg.worker_id,
                     epoch,
-                    effects_known=False,
+                    effects_known=effects_known,
                 ),
                 timeout=_LEASE_IO_BUDGET,
             )

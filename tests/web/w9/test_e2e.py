@@ -957,7 +957,9 @@ def test_e9_visual(browser: Browser, ctx_a: BrowserContext):
             )
             ap = ctx.new_page()
             ap.goto(f"{BASE_URL}/app")
-            ap.locator('textarea[aria-label="消息"]').wait_for(timeout=15_000)
+            # loaded-stack first paint can exceed 15s (session list + me + SSE
+            # handshake); 30s keeps the check meaningful without false flakes.
+            ap.locator('textarea[aria-label="消息"]').wait_for(timeout=30_000)
             check(ap, f"e9-home-{tag}")
 
             # finished session: Final + tool rows visible

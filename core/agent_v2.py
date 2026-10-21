@@ -1108,6 +1108,51 @@ def _gate_raw_segments(text: str) -> list[str] | None:
     return segments
 
 
+_SHELL_CLAUSE_SPLIT_RE = re.compile(r"&&|\|\||;")
+
+
+def _command_clauses(command: str) -> list:
+    """Split a shell command into clause texts on ``&&``/``||``/``;`` that
+    appear outside quotes (masked view finds the split positions, raw text
+    is compared so quoted literals still distinguish clauses). ``|`` pipes
+    stay inside clauses."""
+    text = str(command or "")
+    visible = _shell_text_outside_quotes(text)
+    out = []
+    start = 0
+    for m in _SHELL_CLAUSE_SPLIT_RE.finditer(visible):
+        p = re.sub(r"\s+", " ", text[start:m.start()]).strip()
+        if p:
+            out.append(p)
+        start = m.end()
+    tail = re.sub(r"\s+", " ", text[start:]).strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def _command_ran_check(executed: str, check_cmd: str) -> bool:
+    """True when every clause of the contract check appears as a clause of
+    the executed command — models legitimately decorate checks
+    (``cmd; echo "exit=$?"``, ``cd dir && cmd``) and a verbatim compare
+    would leave required receipts unrecorded forever (W9 e2e finding)."""
+    executed_clauses = set(_command_clauses(executed))
+    check_clauses = _command_clauses(check_cmd)
+    if not check_clauses:
+        return False
+    return set(check_clauses) <= executed_clauses
+
+
+def _command_effective_workdir(command: str) -> str:
+    """Last ``cd <dir>`` clause target in the command, else ''."""
+    cwd = ""
+    for clause in _command_clauses(command):
+        m = re.match(r"cd\s+(?:-[LP]\s+)?(\S.*)$", clause)
+        if m:
+            cwd = m.group(1).strip().strip("'\"")
+    return cwd
+
+
 def _gate_command_is_readonly(command: str) -> bool:
     """True only when every segment of the command is provably read-only.
 
@@ -6439,13 +6484,23 @@ class AgentV2:
             str(result or ""),
             executed=not not_run,
         )
+        # W9 e2e: models legitimately decorate contract checks —
+        # ``test -f hello.py; echo "check exit=$?"``, ``cd <run-dir> && cmd``.
+        # A verbatim compare leaves every required check "missing" while the
+        # agent re-runs equivalent variants until it gives up and asks the
+        # user (~1M tokens observed). Clause-equality (split on
+        # ``&&``/``||``/``;``, whitespace-collapsed — a ``|`` pipe stays
+        # inside its clause) is what "ran the check" means; a ``cd <dir>``
+        # clause before it is the effective workdir when no explicit
+        # workdir/cwd arg was passed.
+        inline_cwd = provided_dir or _command_effective_workdir(command) or ""
         for check in decision.required_checks:
-            if check.command != command:
+            if not _command_ran_check(command, check.command):
                 continue
             if not self._shell_cwd_matches_check(
-                explicit_cwd if provided_dir else "",
+                explicit_cwd if provided_dir else inline_cwd,
                 check.cwd,
-                provided=provided_dir,
+                provided=bool(provided_dir or inline_cwd),
             ):
                 continue
             ran = bool(evidence.executed and evidence.status == "succeeded")
@@ -10048,6 +10103,33 @@ class AgentV2:
             return False
         return has_verified_write
 
+    @classmethod
+    def _evidence_git_failure_is_attempt(cls, item, *, has_verified_write: bool) -> bool:
+        """True when a failed *read-only* git invocation must not discard a
+        completed write. ``git`` is statically WRITE (it can commit/push), but
+        a ``status``/``diff``/``log`` probe failing — e.g. no git binary in
+        the sandbox — is a version-probe attempt, same as a failed bash
+        smoke test. ``git_invocation_is_readonly`` rebuilds the exact argv,
+        so mutating forms (commit, push, checkout -b, branch -d, …) stay
+        critical."""
+        if cls._evidence_tool_name(item) != "git":
+            return False
+        if not has_verified_write:
+            return False
+        raw_args = getattr(item, "args", None)
+        if raw_args is None and isinstance(item, dict):
+            raw_args = item.get("args")
+        if not isinstance(raw_args, dict):
+            return False
+        try:
+            from RxyCode.RxyCode1_1_0.tools.git_tool import git_invocation_is_readonly
+        except Exception:
+            return False
+        return git_invocation_is_readonly(
+            str(raw_args.get("operation") or "status"),
+            str(raw_args.get("args") or ""),
+        )
+
     @staticmethod
     def _evidence_has_artifact_issue(item) -> bool:
         """Return True when a failed record carries artifact-validation issues.
@@ -10421,6 +10503,9 @@ class AgentV2:
                     or (
                         self._evidence_is_critical(item)
                         and not self._evidence_bash_failure_is_attempt(
+                            item, has_verified_write=has_verified_write
+                        )
+                        and not self._evidence_git_failure_is_attempt(
                             item, has_verified_write=has_verified_write
                         )
                     )

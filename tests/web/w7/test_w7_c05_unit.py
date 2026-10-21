@@ -449,8 +449,8 @@ def test_w7_c05_contract(compose_stack: dict[str, Any]) -> None:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "006_auth_and_runs", revision
-            for table in ("runs", "run_events", "outbox", "users", "projects"):
+            assert revision == "007_password_resets", revision
+            for table in ("runs", "run_events", "outbox", "users", "projects", "password_resets"):
                 found = conn.execute(
                     text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
                 ).scalar()
@@ -716,6 +716,87 @@ def test_w7_c05_lease_watchdog_semantics(monkeypatch) -> None:
             await turn5
 
     asyncio.run(_drive())
+
+
+def test_w7_c05_watchdog_polls_cancel_faster_than_renewal(monkeypatch) -> None:
+    """Cancel detection is decoupled from the renewal cadence: a cheap
+    status SELECT runs every ~3s while lease UPDATEs keep the ttl/2
+    interval. Before the split a stop request could sit unseen for ~ttl/2
+    seconds while the turn kept burning model calls (W9 e2e: cancel at
+    +0.7s, child ran another ~58s under a 120s lease)."""
+    import asyncio
+
+    import rxycode_worker.drain as drain
+    from rxycode_worker import supervisor
+
+    async def _drive() -> None:
+        renewals = {"n": 0}
+        polls = {"n": 0}
+
+        def renew(*_a, **_k):
+            renewals["n"] += 1
+
+        def status(*_a, **_k):
+            polls["n"] += 1
+            return "cancel_requested" if polls["n"] >= 2 else "running"
+
+        monkeypatch.setattr(supervisor, "renew_lease", renew)
+        monkeypatch.setattr(drain, "run_status", status)
+        turn = asyncio.ensure_future(asyncio.sleep(60))
+        t0 = time.monotonic()
+        # ttl=40 -> renewal interval 20s, poll 3s: the cancel is seen on the
+        # second poll (~3s), long before the first renewal would be due.
+        with pytest.raises(drain._RunCancelled):
+            await drain._lease_watchdog(
+                "db", "r9", "w1", 1, lease_ttl=40, claimed_at=t0, turn=turn
+            )
+        elapsed = time.monotonic() - t0
+        assert elapsed < 10, f"cancel sat unseen for {elapsed:.1f}s"
+        assert renewals["n"] == 0
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+        # And the renewal cadence itself is unchanged: with the turn done
+        # before the first interval elapses, no renewal is sent at all.
+        renewals["n"] = 0
+        monkeypatch.setattr(drain, "run_status", lambda *_a, **_k: "running")
+        turn2 = asyncio.ensure_future(asyncio.sleep(4.0))
+        await drain._lease_watchdog(
+            "db", "r10", "w1", 1, lease_ttl=40, claimed_at=time.monotonic(), turn=turn2
+        )
+        assert renewals["n"] == 0
+
+    asyncio.run(_drive())
+
+
+def test_w7_c05_cancel_effects_known_split() -> None:
+    """A user stop settles `cancelled` once the child is provably dead
+    (journal is complete to the kill point); only an unproven child keeps
+    `recovery_required` (W9 e2e: parked-turn cancels and finished-attempt
+    cancels must not strand runs)."""
+    import rxycode_worker.drain as drain
+
+    class _Proc:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    class _Ident:
+        def __init__(self, running=True, raises=False):
+            self._running = running
+            self._raises = raises
+
+        def is_running(self):
+            if self._raises:
+                raise RuntimeError("psutil gone")
+            return self._running
+
+    assert drain._cancel_effects_known(None, None) is True
+    assert drain._cancel_effects_known(_Proc(0), None) is True
+    assert drain._cancel_effects_known(_Proc(-9), _Ident(running=True)) is True
+    assert drain._cancel_effects_known(_Proc(None), _Ident(running=False)) is True
+    assert drain._cancel_effects_known(_Proc(None), _Ident(running=True)) is False
+    assert drain._cancel_effects_known(_Proc(None), None) is False
+    assert drain._cancel_effects_known(_Proc(None), _Ident(raises=True)) is False
 
 
 def test_w7_c05_projection_vocabulary() -> None:
