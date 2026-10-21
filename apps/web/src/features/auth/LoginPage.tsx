@@ -109,7 +109,14 @@ export function LoginPage() {
             />
           </label>
           <label className="block text-sm font-medium">
-            密码
+            <span className="flex items-baseline justify-between">
+              密码
+              {capabilities.data?.password_reset === true ? (
+                <Link className="text-xs font-normal text-muted underline" to="/forgot">
+                  忘记密码？
+                </Link>
+              ) : null}
+            </span>
             <input
               className={inputClass}
               type="password"

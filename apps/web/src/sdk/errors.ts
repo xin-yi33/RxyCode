@@ -20,6 +20,7 @@ const CODE_TEXT: Record<string, string> = {
   RUN_TERMINAL: "任务已结束",
   AUTH_PROVIDER_NOT_CONFIGURED: "该登录方式暂未配置",
   CURSOR_EXPIRED: "事件游标已过期，请刷新",
+  RESET_INVALID: "重置链接无效或已过期，请重新发起",
   UNAVAILABLE: "服务暂不可用",
 }
 

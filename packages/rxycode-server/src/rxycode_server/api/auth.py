@@ -34,6 +34,7 @@ from rxycode_server.persistence.models import (
     Membership,
     OAuthState,
     Organization,
+    PasswordReset,
     Project,
     User,
 )
@@ -43,6 +44,7 @@ _SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 _SESSION_TTL = timedelta(days=7)
 _SESSION_RENEW_AFTER = timedelta(days=1)
 _STATE_TTL = timedelta(minutes=10)
+_RESET_TTL = timedelta(minutes=30)
 _REGISTRATION_MODES = ("invite", "open", "closed")
 _DEFAULT_PROJECT_NAME = "默认项目"
 _DUMMY_HASH = (
@@ -348,6 +350,10 @@ def _capabilities(request: Request) -> dict[str, object]:
             and getattr(state, "github_redirect_uri", "")
         ),
         "local": state.mode == "local",
+        # A reset link is deliverable over SMTP, or handed back inline in
+        # local dev mode. Cloud without SMTP cannot deliver — hide the flow.
+        "password_reset": bool(getattr(state, "smtp_url", ""))
+        or state.mode == "local",
     }
 
 
@@ -519,6 +525,108 @@ def password_login(
     tenant_id = _tenant_for(db, user.id)
     _set_session(response, _issue(request, db, user.id, tenant_id), secure=_secure(request))
     return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
+
+
+@router.post("/api/v1/auth/forgot")
+def forgot_password(
+    request: Request,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    """Issue a reset token. Always 200 — the shape never reveals whether the
+    email exists. Delivery: SMTP when configured; in local dev mode without
+    SMTP the link is returned inline (loopback-only gateway, single user)."""
+    require_write(request)
+    email = _normalize_email(str(payload.get("email") or ""))
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check("forgot", request.client.host if request.client else "-", email)
+    user = db.scalars(
+        select(User).where(User.email == email).limit(1)
+    ).first()
+    token = secrets.token_urlsafe(32)
+    reset_url = f"{request.headers.get('origin', '')}/reset?token={token}"
+    body: dict[str, object] = {"ok": True}
+    if (
+        user is None
+        or user.kind != "email"
+        or user.disabled_at is not None
+        or not user.password_hash
+    ):
+        return body
+    now = datetime.now(timezone.utc)
+    # Only the newest link works: outstanding tokens for this user are spent.
+    db.execute(
+        update(PasswordReset)
+        .where(PasswordReset.user_id == user.id, PasswordReset.used_at.is_(None))
+        .values(used_at=now)
+    )
+    db.add(
+        PasswordReset(
+            token_hash=_hash_token(request.app.state.secret, token),
+            user_id=user.id,
+            created_at=now,
+            expires_at=now + _RESET_TTL,
+        )
+    )
+    db.flush()
+    smtp_url = str(getattr(request.app.state, "smtp_url", "") or "")
+    if smtp_url:
+        from rxycode_server.mailer import send_mail
+
+        send_mail(
+            smtp_url,
+            to=email,
+            subject="RxyCode 密码重置",
+            sender=str(getattr(request.app.state, "smtp_from", "") or ""),
+            body=(
+                "30 分钟内打开此链接重置密码（一次性，过期失效）：\n\n"
+                f"{reset_url}\n\n如果不是你本人操作，忽略本邮件即可。"
+            ),
+        )
+    elif request.app.state.mode == "local":
+        body["reset_url"] = reset_url
+    return body
+
+
+@router.post("/api/v1/auth/reset")
+def reset_password(
+    request: Request,
+    payload: dict,
+    db: Session = Depends(db_session),
+) -> dict[str, object]:
+    """Redeem a reset token: sets the password and revokes every session."""
+    require_write(request)
+    token = str(payload.get("token") or "")
+    password = str(payload.get("password") or "")
+    limiter = getattr(request.app.state, "auth_rate", None)
+    if limiter is not None:
+        limiter.check(
+            "reset",
+            request.client.host if request.client else "-",
+            f"tk:{token[:12]}",
+        )
+    if not 8 <= len(password) <= 128:
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    now = datetime.now(timezone.utc)
+    row = db.get(PasswordReset, _hash_token(request.app.state.secret, token))
+    user = db.get(User, row.user_id) if row is not None else None
+    if (
+        row is None
+        or row.used_at is not None
+        or _aware(row.expires_at) <= now
+        or user is None
+        or user.disabled_at is not None
+    ):
+        raise HTTPException(status_code=400, detail="RESET_INVALID")
+    user.password_hash = hash_password(password)
+    row.used_at = now
+    db.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    return {"ok": True}
 
 
 @router.post("/api/v1/auth/logout", status_code=204)

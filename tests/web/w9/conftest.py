@@ -94,6 +94,8 @@ def postgres_url(_postgres_server: str, monkeypatch: pytest.MonkeyPatch) -> str:
         "RXYCODE_QUOTA_TASKS_PER_DAY",
         "RXYCODE_QUOTA_TOKENS_PER_DAY",
         "RXYCODE_QUEUE_MAX",
+        "RXYCODE_SMTP_URL",
+        "RXYCODE_SMTP_FROM",
     ):
         monkeypatch.delenv(name, raising=False)
     from rxycode_server.quotas.service import install_gate

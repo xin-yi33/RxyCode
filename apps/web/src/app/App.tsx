@@ -9,7 +9,9 @@ import {
 import { createBrowserRouter, Navigate, RouterProvider, useParams } from "react-router"
 
 import { AuthGate, loginPathFor } from "./AuthGate"
+import { ForgotPasswordPage } from "../features/auth/ForgotPasswordPage"
 import { LoginPage } from "../features/auth/LoginPage"
+import { ResetPasswordPage } from "../features/auth/ResetPasswordPage"
 import { OAuthCallbackPage } from "../features/auth/OAuthCallbackPage"
 import { RegisterPage } from "../features/auth/RegisterPage"
 import { BrowserHandoff, handoffPageUrl } from "../features/browser/BrowserHandoff"
@@ -152,6 +154,8 @@ const router = createBrowserRouter([
   { path: "/", element: <RootRedirect /> },
   { path: "/login", element: <LoginPage /> },
   { path: "/register", element: <RegisterPage /> },
+  { path: "/forgot", element: <ForgotPasswordPage /> },
+  { path: "/reset", element: <ResetPasswordPage /> },
   { path: "/oauth/callback", element: <OAuthCallbackPage /> },
   // Compatibility redirects — the console replaces these flows.
   { path: "/onboarding", element: <Navigate to="/app" replace /> },

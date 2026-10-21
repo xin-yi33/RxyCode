@@ -95,6 +95,14 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | when set, worker writes a real model entry (openai-compatible) into its config and executes turns against this endpoint |
 | `RXYCODE_API_KEY` | no | empty | credential for the deployed endpoint; referenced via `api_key_env`, never written into config.yaml |
 | `RXYCODE_PG_PORT` / `RXYCODE_HTTP_PORT` / `RXYCODE_HTTPS_PORT` | no | `54433` / `8080` / `8443` | loopback-published ports |
+| `RXYCODE_SMTP_URL` | no | empty | password-reset delivery — `smtps://user:pass@host:465` (implicit TLS) or `smtp://…:587` (STARTTLS). Without it `/forgot` stays hidden in cloud mode |
+| `RXYCODE_SMTP_FROM` | no | SMTP user | sender header on reset mail |
+
+Password reset: `/forgot` always answers 200 with the same body (no account
+enumeration). The link is a single-use HMAC-digested row valid 30 minutes;
+redeeming it rewrites the password and revokes every session of that user.
+With no SMTP configured the flow is only reachable in `local` dev mode,
+which returns the link inline in the response.
 
 Example:
 

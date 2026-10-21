@@ -102,6 +102,9 @@ services:
       RXYCODE_WEB_ORIGINS: ${RXYCODE_WEB_ORIGINS:?set RXYCODE_WEB_ORIGINS to the https://<machine>.<tailnet>.ts.net origin}
       RXYCODE_WEB_REGISTRATION: ${RXYCODE_WEB_REGISTRATION:-invite}
       RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-120}
+      # Password-reset delivery (optional — forgot-password hides without it).
+      RXYCODE_SMTP_URL: ${RXYCODE_SMTP_URL:-}
+      RXYCODE_SMTP_FROM: ${RXYCODE_SMTP_FROM:-}
     depends_on:
       postgres:
         condition: service_healthy

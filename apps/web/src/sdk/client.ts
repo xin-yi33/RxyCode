@@ -4,6 +4,7 @@ export type Capabilities = {
   registration: "invite" | "open" | "closed"
   github: boolean
   local: boolean
+  password_reset?: boolean
 }
 
 export type Me = {
@@ -204,6 +205,17 @@ export function createClient() {
       return writeJson("/api/v1/auth/local/login", {}, {
         "x-local-secret": secret,
       }) as Promise<Me>
+    },
+    forgotPassword(email: string): Promise<{ ok: boolean; reset_url?: string }> {
+      return writeJson("/api/v1/auth/forgot", { email }) as Promise<{
+        ok: boolean
+        reset_url?: string
+      }>
+    },
+    resetPassword(token: string, password: string): Promise<{ ok: boolean }> {
+      return writeJson("/api/v1/auth/reset", { token, password }) as Promise<{
+        ok: boolean
+      }>
     },
     listProjects(signal?: AbortSignal): Promise<Project[]> {
       return readJson("/api/v1/projects", signal).then((body) => {

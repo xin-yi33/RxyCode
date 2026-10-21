@@ -66,6 +66,20 @@ class OAuthState(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class PasswordReset(Base):
+    """One-time password-reset token — only the HMAC digest is ever stored."""
+
+    __tablename__ = "password_resets"
+    __table_args__ = (Index("ix_password_resets_user", "user_id"),)
+
+    token_hash: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship()
+
+
 class Invite(Base):
     __tablename__ = "invites"
 
