@@ -14,6 +14,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -40,6 +41,7 @@ class User(Base):
         DateTime(timezone=True), server_default=text("now()")
     )
     default_project_id: Mapped[str | None] = mapped_column(String(64))
+    default_model_ref: Mapped[str | None] = mapped_column(String(64))
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -220,6 +222,16 @@ class Run(Base):
     event_seq: Mapped[int] = mapped_column(Integer, default=0)
     # cloud:{tenant_id}:{project_id} — 71 chars with hex uuids; needs >64.
     target_id: Mapped[str] = mapped_column(String(128), default="")
+    # BYOK run snapshot — the model this run was submitted with. Immutable
+    # after creation; survives connection deletion (no FK on purpose).
+    # Never carries key material.
+    model_ref: Mapped[str | None] = mapped_column(String(64))
+    model_id: Mapped[str | None] = mapped_column(String(256))
+    provider_id: Mapped[str | None] = mapped_column(String(64))
+    provider_name: Mapped[str | None] = mapped_column(String(128))
+    credential_source: Mapped[str | None] = mapped_column(String(16))
+    connection_id: Mapped[str | None] = mapped_column(String(64))
+    credential_version: Mapped[int | None] = mapped_column(Integer)
     organization: Mapped[Organization] = relationship(
         primaryjoin="Run.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -230,6 +242,76 @@ class Run(Base):
         foreign_keys=[session_id, tenant_id],
         overlaps="organization",
     )
+
+
+class ModelConnection(Base):
+    """A user's BYOK provider connection — encrypted credential holder.
+
+    ``ciphertext``/``nonce``/``key_id`` are AES-256-GCM sealed under the
+    deployment keyring with AAD binding (tenant, owner, connection,
+    credential_version); the plaintext key never touches the database,
+    events, logs, or any response.
+    """
+
+    __tablename__ = "model_connections"
+    __table_args__ = (
+        Index("ix_model_connections_tenant_owner", "tenant_id", "owner_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    provider_id: Mapped[str] = mapped_column(String(64), default="")
+    provider_name: Mapped[str] = mapped_column(String(128), default="")
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    base_url: Mapped[str] = mapped_column(String(512), default="")
+    api_transport: Mapped[str | None] = mapped_column(String(32))
+    ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    key_id: Mapped[str | None] = mapped_column(String(32))
+    encryption_version: Mapped[int] = mapped_column(Integer, default=1)
+    credential_version: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(16), default="active")
+    test_status: Mapped[str] = mapped_column(String(16), default="untested")
+    test_error: Mapped[str | None] = mapped_column(String(256))
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    organization: Mapped[Organization] = relationship(
+        primaryjoin="ModelConnection.tenant_id == Organization.tenant_id",
+        foreign_keys=[tenant_id],
+    )
+    owner: Mapped[User] = relationship()
+
+
+class UserModel(Base):
+    """One catalogued model on a user's connection. ``id`` is the
+    ``model_ref`` clients submit runs with."""
+
+    __tablename__ = "user_models"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "model_id", name="uq_user_models_connection_model"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("model_connections.id", ondelete="CASCADE")
+    )
+    model_id: Mapped[str] = mapped_column(String(256))
+    display_name: Mapped[str] = mapped_column(String(256), default="")
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    connection: Mapped[ModelConnection] = relationship()
 
 
 class RunEvent(Base):
@@ -404,6 +486,10 @@ WEB_TABLES = (
     "auth_sessions",
     "oauth_states",
     "invites",
+    "password_resets",
+    "email_codes",
+    "model_connections",
+    "user_models",
 )
 
 

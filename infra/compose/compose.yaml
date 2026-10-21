@@ -163,6 +163,12 @@ services:
       RXYCODE_QUOTA_TASKS_PER_DAY: ${RXYCODE_QUOTA_TASKS_PER_DAY:-30}
       RXYCODE_QUOTA_TOKENS_PER_DAY: ${RXYCODE_QUOTA_TOKENS_PER_DAY:-2000000}
       RXYCODE_QUEUE_MAX: ${RXYCODE_QUEUE_MAX:-10}
+      # BYOK (W10): dev stack stays on the env-gateway path by default;
+      # BYOK_ENFORCE=1 + a mounted keyring opts in to per-user credentials.
+      RXYCODE_BYOK_ENFORCE: ${RXYCODE_BYOK_ENFORCE:-0}
+      RXYCODE_BYOK_KEYRING_FILE: ${RXYCODE_BYOK_KEYRING_FILE:-}
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
       PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     healthcheck:
       test: ["CMD-SHELL", "python /opt/probe_api.py"]
@@ -292,6 +298,13 @@ services:
       RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
       RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
       RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
+      # BYOK (W10): the worker defaults to enforcing per-run credentials —
+      # the dev stack keeps the env-gateway path unless you opt in and mount
+      # a keyring (see infra/compose/.env.prod.example for the variables).
+      RXYCODE_BYOK_ENFORCE: ${RXYCODE_BYOK_ENFORCE:-0}
+      RXYCODE_BYOK_KEYRING_FILE: ${RXYCODE_BYOK_KEYRING_FILE:-}
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
       RXYCODE_DATA_DIR: /work/data
       RXYCODE_UVLOOP: "0"
       PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}

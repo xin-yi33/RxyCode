@@ -92,8 +92,12 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_QUEUE_MAX` | no | `10` | global pending-run cap; extra submissions refuse with `QUOTA_EXCEEDED`/`queue` |
 | `RXYCODE_WORKER_ID` / `_POLL_SECONDS` / `_LEASE_TTL` / `_MODEL` | no | hostname / `2` / `120` / active | drain worker tuning |
 | `RXYCODE_WORKER_EXECUTION` | no | `cloud-only` | placement gate: `cloud-only` accepts only tenant-bound `cloud:*` targets (the shipped public mode); `sandboxed-local` is the dev opt-in that also accepts `local:*` — still confined |
-| `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | when set, worker writes a real model entry (openai-compatible) into its config and executes turns against this endpoint |
-| `RXYCODE_API_KEY` | no | empty | credential for the deployed endpoint; referenced via `api_key_env`, never written into config.yaml |
+| `RXYCODE_LLM_BASE_URL` / `RXYCODE_LLM_MODEL` | no | empty | the PLATFORM model endpoint (openai-compatible). Under BYOK only runs by `RXYCODE_PLATFORM_MODEL_USERS` consume it — ordinary users run on their own sealed keys. `RXYCODE_LLM_MODEL` is also the display name the API reports for the platform model (never the key) |
+| `RXYCODE_API_KEY` | no | empty | credential for the platform endpoint above; optional under BYOK. Parent-side only — injected by the egress gateway, never written into config.yaml or the sandbox |
+| `RXYCODE_BYOK_KEYRING_FILE` | yes (api+worker, cloud) | — | path to the BYOK keyring JSON (`{"active","keys"}` of base64 32-byte AES keys). Generate once on the host: `python -m rxycode_server.byok.keyring generate /opt/rxycode/secrets/byok-keyring.json` (creates mode 0600, refuses overwrite). Missing/unreadable → 503 `BYOK_UNAVAILABLE`, never a plaintext fallback. Both api and worker containers run as uid 0 → host file `root:root 0600` suffices |
+| `RXYCODE_BYOK_ENFORCE` | no | api: on in `cloud` mode / worker: on | `0` restores legacy behavior (no model → env/platform gateway) |
+| `RXYCODE_PLATFORM_MODEL_USERS` | no | empty | comma-separated immutable user ids allowed to submit `model_ref: "platform"`; re-checked by the worker at execution time. Empty = nobody can spend the platform key |
+| `RXYCODE_BYOK_ALLOW_PRIVATE` | no | off | dev/test only — permits `http://` and private/loopback BYOK base URLs. Never set in prod |
 | `RXYCODE_PG_PORT` / `RXYCODE_HTTP_PORT` / `RXYCODE_HTTPS_PORT` | no | `54433` / `8080` / `8443` | loopback-published ports |
 | `RXYCODE_SMTP_URL` | no | empty | password-reset delivery — `smtps://user:pass@host:465` (implicit TLS) or `smtp://…:587` (STARTTLS). Without it `/forgot` stays hidden in cloud mode |
 | `RXYCODE_SMTP_FROM` | no | SMTP user | sender header on reset mail |

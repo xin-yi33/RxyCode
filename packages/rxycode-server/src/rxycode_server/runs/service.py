@@ -39,15 +39,22 @@ def _digest(
     permission_profile: str,
     request_id: str,
     session_id: str,
+    model_ref: str | None = None,
 ) -> str:
+    body = {
+        "message": message,
+        "permission_profile": permission_profile,
+        "request_id": request_id,
+        "session_id": session_id,
+        "target_id": target_id,
+    }
+    if model_ref is not None:
+        # Only the REQUESTED ref joins the digest — a defaulted/absent ref
+        # keeps legacy digests identical; same request_id + different
+        # model_ref is a REQUEST_CONFLICT, not a silent replay.
+        body["model_ref"] = model_ref
     payload = json.dumps(
-        {
-            "message": message,
-            "permission_profile": permission_profile,
-            "request_id": request_id,
-            "session_id": session_id,
-            "target_id": target_id,
-        },
+        body,
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -159,6 +166,8 @@ def create_run(
     credentials: str | None = None,
     budget: int | None = None,
     model: object | None = None,
+    model_snapshot: dict[str, object] | None = None,
+    request_model_ref: str | None = None,
     quota: object | None = None,
 ) -> RunAccepted:
     """Insert run + event + outbox. The caller's tenant wins over any body claim."""
@@ -178,7 +187,14 @@ def create_run(
     )
     if isinstance(early, QuotaDecision):
         raise QuotaRefused(early)
-    digest = _digest(message, target_id, permission_profile, request_id, session_id)
+    digest = _digest(
+        message,
+        target_id,
+        permission_profile,
+        request_id,
+        session_id,
+        model_ref=request_model_ref,
+    )
     tracer, span = _trace_run_create_start(database_url, tenant_id, request_id)
     engine = create_engine(database_url, poolclass=NullPool)
     held_worker = ""
@@ -203,6 +219,28 @@ def create_run(
             try:
                 if model is not None:
                     model(message)
+                run_kwargs: dict[str, object] = {}
+                if model_snapshot is not None:
+                    # Immutable submission-time model binding — worker-side
+                    # credential resolution keys off these columns. Never
+                    # key material: the snapshot carries ids + version only.
+                    run_kwargs = {
+                        "model_ref": str(model_snapshot.get("model_ref") or "") or None,
+                        "model_id": str(model_snapshot.get("model_id") or "") or None,
+                        "provider_id": str(model_snapshot.get("provider_id") or "") or None,
+                        "provider_name": str(model_snapshot.get("provider_name") or "") or None,
+                        "credential_source": str(
+                            model_snapshot.get("credential_source") or ""
+                        ) or None,
+                        "connection_id": str(
+                            model_snapshot.get("connection_id") or ""
+                        ) or None,
+                        "credential_version": (
+                            int(model_snapshot["credential_version"])
+                            if model_snapshot.get("credential_version") is not None
+                            else None
+                        ),
+                    }
                 db.add(
                     Run(
                         id=run_id,
@@ -215,6 +253,7 @@ def create_run(
                         input_digest=digest,
                         target_id=target_id,
                         event_seq=1,
+                        **run_kwargs,
                     )
                 )
                 db.flush()
@@ -243,6 +282,9 @@ def create_run(
                                 "user_id": user,
                                 "worker_id": decision.worker_id,
                             },
+                            # Non-secret model echo — the same snapshot the
+                            # run row stores. Never contains a key.
+                            "model": model_snapshot,
                         },
                         at=datetime.now(timezone.utc),
                     )

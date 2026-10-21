@@ -20,6 +20,7 @@ from rxycode_server.api.auth import (
     db_session,
     require_write,
 )
+from rxycode_server.byok.resolver import resolve_run_model
 from rxycode_server.persistence.models import (
     Outbox,
     Project,
@@ -48,12 +49,14 @@ class _TaskIn(BaseModel):
     request_id: str
     permission_profile: str
     project_id: str | None = None
+    model_ref: str | None = None
 
 
 class _RunIn(BaseModel):
     message: str
     request_id: str
     permission_profile: str
+    model_ref: str | None = None
 
 
 def _check_run_input(message: str, request_id: str, permission_profile: str) -> None:
@@ -106,6 +109,8 @@ def _submit(
     request_id: str,
     permission_profile: str,
     fresh_session: SessionRow | None = None,
+    model_snapshot: dict | None = None,
+    request_model_ref: str | None = None,
 ):
     """create_run + contract error mapping. fresh_session is deleted on error."""
     target_id = f"cloud:{record.tenant_id}:{project_id}"
@@ -119,6 +124,8 @@ def _submit(
             permission_profile=permission_profile,
             request_id=request_id,
             user_id=record.user_id,
+            model_snapshot=model_snapshot,
+            request_model_ref=request_model_ref,
         )
     except RunAlreadyActive:
         _discard(db, fresh_session)
@@ -210,6 +217,19 @@ def _decode_cursor(raw: str) -> tuple[datetime, str] | None:
         return None
 
 
+def _run_model_json(row: Run) -> dict | None:
+    """The submission-time model echo — null for pre-BYOK legacy rows."""
+    if not row.model_ref:
+        return None
+    return {
+        "model_ref": row.model_ref,
+        "model_id": row.model_id,
+        "provider_id": row.provider_id,
+        "provider_name": row.provider_name,
+        "credential_source": row.credential_source,
+    }
+
+
 def _session_item(db: Session, row: SessionRow, last_run: dict[str, str] | None) -> dict:
     stamp = _aware(row.updated_at)
     return {
@@ -271,6 +291,7 @@ def create_task(
             payload.permission_profile,
             payload.request_id,
             existing.session_id,
+            model_ref=payload.model_ref,
         )
         if existing.input_digest != digest:
             raise HTTPException(status_code=409, detail="REQUEST_CONFLICT")
@@ -283,6 +304,14 @@ def create_task(
                 "events_url": f"/api/v1/runs/{existing.id}/events",
             },
         )
+    # BYOK resolves BEFORE the session row exists — a refused submission
+    # leaves neither a run nor an orphan session behind.
+    model_snapshot = resolve_run_model(
+        db,
+        record,
+        payload.model_ref,
+        mode=getattr(request.app.state, "mode", None),
+    )
     title = " ".join(payload.message.splitlines()).strip()[:40]
     session = SessionRow(
         id=uuid.uuid4().hex,
@@ -302,6 +331,8 @@ def create_task(
         request_id=payload.request_id,
         permission_profile=payload.permission_profile,
         fresh_session=session,
+        model_snapshot=model_snapshot,
+        request_model_ref=payload.model_ref,
     )
 
 
@@ -316,6 +347,12 @@ def create_session_run(
     record = current_record(request)
     _check_run_input(payload.message, payload.request_id, payload.permission_profile)
     session = _session_row(db, record, session_id)
+    model_snapshot = resolve_run_model(
+        db,
+        record,
+        payload.model_ref,
+        mode=getattr(request.app.state, "mode", None),
+    )
     return _submit(
         request,
         db,
@@ -325,6 +362,8 @@ def create_session_run(
         message=payload.message,
         request_id=payload.request_id,
         permission_profile=payload.permission_profile,
+        model_snapshot=model_snapshot,
+        request_model_ref=payload.model_ref,
     )
 
 
@@ -373,6 +412,7 @@ def list_session_runs(
                 "message": str(created.get("message") or ""),
                 "permission_profile": str(created.get("permission_profile") or ""),
                 "final_preview": previews.get(row.id, ""),
+                "model": _run_model_json(row),
             }
         )
     return {"runs": items, "next_cursor": next_cursor or None}
@@ -415,6 +455,7 @@ def get_run(run_id: str, request: Request) -> dict[str, object]:
                 "created_at": stamp.isoformat() if stamp is not None else None,
                 "message": str(created.get("message") or ""),
                 "permission_profile": str(created.get("permission_profile") or ""),
+                "model": _run_model_json(row),
             }
     finally:
         engine.dispose()

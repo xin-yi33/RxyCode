@@ -249,6 +249,15 @@ class TurnChannel:
         result = self._call("emit", type=str(event_type), payload=dict(payload))
         return int((result or {}).get("seq") or 0)
 
+    def phase(self, name: str) -> None:
+        """Report a startup boundary to the parent's phase clock.
+
+        A confined turn can never mint ``run.*`` rows (reserved namespace),
+        so this rides a dedicated op: the parent allowlists the name and
+        stamps ``elapsed_ms`` on its own claim-anchored monotonic clock.
+        Instrumentation only — payload is the phase name alone."""
+        self._call("phase", phase=str(name)[:40])
+
     def load_run(self) -> dict[str, Any]:
         """The run row fields the turn needs (message/session binding)."""
         return dict(self._call("load_run") or {})

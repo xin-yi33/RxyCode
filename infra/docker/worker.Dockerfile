@@ -82,6 +82,16 @@ RUN chmod 0755 /opt/worker-entry.sh \
     && ln -sfn /repo /opt/pkg/RxyCode/RxyCode1_1_0 \
     && printf '"""Bridge package for the seeded checkout."""\n' > /opt/pkg/RxyCode/__init__.py
 
+# Ship warm bytecode. PYTHONDONTWRITEBYTECODE=1 (ENV above) means no process
+# can ever write .pyc at runtime — every confined turn is a FRESH
+# `python -m rxycode_worker.drain` spawned under bwrap, so without baked
+# bytecode each run re-parses the whole import surface (measured ~2.9s cold
+# vs ~1.06s warm). compileall writes pyc regardless of that env flag, and
+# timestamp-invalidation .pyc files stay valid because image layers keep
+# COPY mtimes. `|| true`: one unparseable vendored file must not fail the
+# image — it just stays uncompiled.
+RUN python -m compileall -q /repo /opt /usr/local/lib/python3.12/site-packages || true
+
 # worker-entry.sh writes the deployed model config when RXYCODE_LLM_BASE_URL
 # is set (the bootstrap compose used to run inline), then execs the drain as
 # PID 1 so probe_worker.py's /proc/1 check keeps working.

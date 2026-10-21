@@ -96,6 +96,12 @@ def postgres_url(_postgres_server: str, monkeypatch: pytest.MonkeyPatch) -> str:
         "RXYCODE_QUEUE_MAX",
         "RXYCODE_SMTP_URL",
         "RXYCODE_SMTP_FROM",
+        # BYOK: BYOK tests opt in via their own fixtures; an operator-set
+        # env must never flip the rest of the suite into enforcement.
+        "RXYCODE_BYOK_ENFORCE",
+        "RXYCODE_BYOK_KEYRING_FILE",
+        "RXYCODE_BYOK_ALLOW_PRIVATE",
+        "RXYCODE_PLATFORM_MODEL_USERS",
     ):
         monkeypatch.delenv(name, raising=False)
     from rxycode_server.quotas.service import install_gate

@@ -17,6 +17,7 @@ from sqlalchemy.pool import NullPool
 from rxycode_server.api.approvals import router as approvals_router
 from rxycode_server.api.artifacts import router as artifacts_router
 from rxycode_server.api.auth import AuthRateLimit, router as auth_router
+from rxycode_server.api.models import router as models_router
 from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.runs import router as runs_router
 from rxycode_server.api.sse import router as sse_router
@@ -134,6 +135,7 @@ def create_app(
     app.state.s3_access_key = s3_access_key or None
     app.state.s3_secret_key = s3_secret_key or None
     app.include_router(auth_router)
+    app.include_router(models_router)
     app.include_router(projects_router)
     app.include_router(runs_router)
     app.include_router(workspace_router)

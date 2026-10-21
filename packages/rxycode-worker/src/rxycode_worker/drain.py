@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 from rxycode_worker.ctl import pack_checkpoint, unpack_checkpoint
 
@@ -257,11 +258,13 @@ def run_status(database_url: str, run_id: str) -> str:
     return str(value or "")
 
 
-def _run_identity(database_url: str, run_id: str) -> dict[str, str]:
-    """tenant + project + actor + traceparent for the claimed run.
+def _run_identity(database_url: str, run_id: str) -> dict[str, Any]:
+    """tenant + project + actor + traceparent + model snapshot for the run.
 
     The RunContext inside the turn is built from these persisted fields —
-    never minted fresh and never taken from client claims.
+    never minted fresh and never taken from client claims. ``model`` is the
+    immutable submission-time snapshot (BYOK §13.7); it carries ids and the
+    credential version only — never key material.
     """
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
@@ -271,7 +274,9 @@ def _run_identity(database_url: str, run_id: str) -> dict[str, str]:
         with engine.connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT r.tenant_id, COALESCE(s.project_id, '') "
+                    "SELECT r.tenant_id, COALESCE(s.project_id, ''), "
+                    "r.model_ref, r.model_id, r.provider_id, r.provider_name, "
+                    "r.credential_source, r.connection_id, r.credential_version "
                     "FROM runs r LEFT JOIN sessions s "
                     "ON s.tenant_id = r.tenant_id AND s.id = r.session_id "
                     "WHERE r.id = :id"
@@ -290,12 +295,240 @@ def _run_identity(database_url: str, run_id: str) -> dict[str, str]:
         engine.dispose()
     payload = payload if isinstance(payload, dict) else {}
     quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
+    model = None
+    if row[2]:
+        model = {
+            "model_ref": str(row[2]),
+            "model_id": str(row[3] or ""),
+            "provider_id": str(row[4] or ""),
+            "provider_name": str(row[5] or ""),
+            "credential_source": str(row[6] or ""),
+            "connection_id": str(row[7] or ""),
+            "credential_version": int(row[8] or 0),
+        }
     return {
         "tenant_id": str(row[0]),
         "project_id": str(row[1] or ""),
         "actor_id": str(quota.get("user_id") or ""),
         "traceparent": str(payload.get("traceparent") or ""),
+        "model": model,
     }
+
+
+class _CredentialRefused(Exception):
+    """A pre-turn credential/BYOK refusal carrying a stable machine code.
+
+    Raised by ``_resolve_run_gateway``; lands in the shared finalizer as a
+    failed run whose ``run.error`` payload exposes ``code``. No retry, no
+    fallback to the platform key.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+
+
+def _byok_enforced() -> bool:
+    raw = os.environ.get("RXYCODE_BYOK_ENFORCE", "").strip().lower()
+    if not raw:
+        return True  # worker default: enforce
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _platform_users() -> frozenset[str]:
+    return frozenset(
+        part.strip()
+        for part in os.environ.get("RXYCODE_PLATFORM_MODEL_USERS", "").split(",")
+        if part.strip()
+    )
+
+
+def _resolve_run_gateway(
+    database_url: str,
+    run_id: str,
+    identity: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+):
+    """Parent-side per-run model gateway (BYOK §13.7).
+
+    Returns the ``ModelGateway`` for the egress proxy — never reads the
+    environment gateway for a BYOK snapshotted run, and never hands the
+    child a credential. Raises ``_CredentialRefused`` on refusal.
+    """
+    from rxycode_worker.egress import ModelGateway, model_gateway_from_env
+
+    snap = snapshot if isinstance(snapshot, dict) else None
+    source = str((snap or {}).get("credential_source") or "")
+    actor = str(identity.get("actor_id") or "")
+    tenant_id = str(identity.get("tenant_id") or "")
+
+    if source == "platform":
+        # Re-checked at execution time — submission-time approval is not a
+        # durable licence to spend the platform key.
+        if actor not in _platform_users():
+            raise _CredentialRefused(
+                "PLATFORM_NOT_ALLOWED",
+                "run snapshot requests the platform credential but the "
+                "actor is not allowlisted",
+            )
+        return model_gateway_from_env()
+
+    if source == "byok":
+        connection_id = str(snap.get("connection_id") or "")
+        expected_version = int(snap.get("credential_version") or 0)
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT base_url, ciphertext, nonce, key_id, "
+                        "credential_version, state FROM model_connections "
+                        "WHERE id = :cid AND tenant_id = :t AND owner_user_id = :o"
+                    ),
+                    {"cid": connection_id, "t": tenant_id, "o": actor},
+                ).one_or_none()
+        finally:
+            engine.dispose()
+        if row is None:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "run credential no longer exists"
+            )
+        if str(row[5] or "") != "active" or not row[1]:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "run credential was revoked or cleared"
+            )
+        if int(row[4] or 0) != expected_version:
+            # The run is pinned to the exact credential version submitted
+            # with it — a rotated key means a NEW submission, not a
+            # silent upgrade mid-run.
+            raise _CredentialRefused(
+                "CREDENTIAL_CHANGED",
+                "run credential was rotated after submission",
+            )
+        from rxycode_server.byok.crypto import (
+            BYOKDecryptError,
+            BYOKUnavailable,
+            connection_aad,
+            decrypt,
+        )
+
+        try:
+            api_key = decrypt(
+                row[1],
+                row[2],
+                str(row[3] or ""),
+                aad=connection_aad(
+                    tenant_id=tenant_id,
+                    owner_user_id=actor,
+                    connection_id=connection_id,
+                    credential_version=expected_version,
+                ),
+            )
+        except BYOKUnavailable as exc:
+            raise _CredentialRefused(
+                "BYOK_UNAVAILABLE", f"keyring unavailable: {exc}"
+            ) from exc
+        except BYOKDecryptError as exc:
+            raise _CredentialRefused(
+                "BYOK_UNAVAILABLE", "stored credential failed to decrypt"
+            ) from exc
+        base = str(row[0] or "").strip()
+        split = urlsplit(base if "://" in base else f"https://{base}")
+        scheme = (split.scheme or "https").lower()
+        if scheme not in {"http", "https"}:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "stored base_url scheme is not http/https"
+            )
+        host = _normalize_gateway_host(split.hostname or "")
+        if not host:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "stored base_url has no host"
+            )
+        try:
+            port = int(split.port or (443 if scheme == "https" else 80))
+        except ValueError:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "stored base_url port is invalid"
+            ) from None
+        return ModelGateway(
+            scheme=scheme,
+            host=host,
+            port=port,
+            base_path=(split.path or "").rstrip("/"),
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "x-api-key": api_key,
+                "api-key": api_key,
+            },
+            vet=True,
+        )
+
+    if snap is None or not source:
+        if _byok_enforced():
+            raise _CredentialRefused(
+                "BYOK_REQUIRED",
+                "run has no model snapshot and BYOK enforcement is on",
+            )
+        return model_gateway_from_env()
+    raise _CredentialRefused(
+        "MODEL_UNAVAILABLE", f"unknown credential_source {source!r}"
+    )
+
+
+def _normalize_gateway_host(host: str) -> str:
+    host = str(host or "").strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host
+
+
+def _run_model_override(
+    database_url: str, identity: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The child-config model entry data for a snapshotted run.
+
+    Carries only non-secret fields; ``max_tokens``/``api_transport`` are
+    best-effort reads of the catalogue row (tolerates a deleted
+    connection — the run snapshot is authoritative).
+    """
+    snap = identity.get("model")
+    if not isinstance(snap, dict) or not snap.get("model_ref"):
+        return None
+    override: dict[str, Any] = {
+        "model_id": str(snap.get("model_id") or ""),
+        "provider_id": str(snap.get("provider_id") or ""),
+        "provider_name": str(snap.get("provider_name") or ""),
+        "api_transport": "",
+        "max_tokens": 0,
+    }
+    try:
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(database_url, poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT um.max_tokens, mc.api_transport "
+                        "FROM user_models um "
+                        "LEFT JOIN model_connections mc "
+                        "ON mc.id = um.connection_id "
+                        "WHERE um.id = :ref"
+                    ),
+                    {"ref": str(snap.get("model_ref") or "")},
+                ).one_or_none()
+        finally:
+            engine.dispose()
+        if row is not None:
+            override["max_tokens"] = int(row[0] or 0)
+            override["api_transport"] = str(row[1] or "")
+    except Exception:
+        _LOG.warning("run model override extras unreadable", exc_info=True)
+    return override
 
 
 def _agent_done_row(database_url: str, run_id: str) -> tuple[str, int]:
@@ -3340,7 +3573,12 @@ def _strip_credential_fields(node: Any) -> Any:
 
 
 def _build_child_config(
-    source: dict[str, Any], *, workdir: Path, egress_port: int, env_model: str
+    source: dict[str, Any],
+    *,
+    workdir: Path,
+    egress_port: int,
+    env_model: str,
+    model_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The confined turn's config, constructed field by field.
 
@@ -3349,26 +3587,52 @@ def _build_child_config(
     domain and workspace are this sandbox's own paths. No free-form shell
     string or URL from the host config reaches the child, so no value-level
     sanitizer runs on the data path (audit W8 r25 scope).
+
+    ``model_override`` (a BYOK run snapshot) replaces the host config's
+    model entirely: the child sees exactly the model pinned at submission
+    time, pointed at the loopback gateway with the "confined" placeholder.
     """
     child: dict[str, Any] = {
         key: _strip_credential_fields(source[key])
         for key in _child_config_sections()
         if key in source
     }
-    models = source.get("models") if isinstance(source.get("models"), dict) else {}
-    wanted = str(env_model or "")
-    if wanted not in models:
-        wanted = str(source.get("active_model") or "")
-    entry = models.get(wanted) if isinstance(models.get(wanted), dict) else {}
-    model = _strip_credential_fields(entry)
-    # The schema expects an api_key field: a placeholder, never a secret. The
-    # real credential is injected by the parent on the loopback gateway hop.
-    model["api_key"] = "confined"
-    if egress_port:
-        model["base_url"] = f"http://127.0.0.1:{egress_port}"
-    if wanted:
-        child["models"] = {wanted: model}
-        child["active_model"] = wanted
+    if model_override is not None:
+        model_id = str(model_override.get("model_id") or "")
+        provider_id = str(model_override.get("provider_id") or "")
+        wanted = f"{provider_id}/{model_id}" if provider_id else model_id
+        model = {
+            "provider_id": provider_id,
+            "provider_name": str(model_override.get("provider_name") or ""),
+            "model_name": model_id,
+            "api_key": "confined",
+            "max_tokens": int(model_override.get("max_tokens") or 8192),
+            "temperature": 0.7,
+        }
+        transport = str(model_override.get("api_transport") or "")
+        if transport:
+            model["api_transport"] = transport
+        if egress_port:
+            model["base_url"] = f"http://127.0.0.1:{egress_port}"
+        child["models"] = {wanted or "model": model}
+        child["active_model"] = wanted or "model"
+    else:
+        models = (
+            source.get("models") if isinstance(source.get("models"), dict) else {}
+        )
+        wanted = str(env_model or "")
+        if wanted not in models:
+            wanted = str(source.get("active_model") or "")
+        entry = models.get(wanted) if isinstance(models.get(wanted), dict) else {}
+        model = _strip_credential_fields(entry)
+        # The schema expects an api_key field: a placeholder, never a secret.
+        # The real credential is injected by the parent on the gateway hop.
+        model["api_key"] = "confined"
+        if egress_port:
+            model["base_url"] = f"http://127.0.0.1:{egress_port}"
+        if wanted:
+            child["models"] = {wanted: model}
+            child["active_model"] = wanted
     safety = child.setdefault("safety", {})
     if isinstance(safety, dict):
         safety["enabled"] = True
@@ -3382,37 +3646,48 @@ def _build_child_config(
     return child
 
 
-def _prepare_child_data_dir(conf_dir: Path, *, workdir: Path) -> Path:
+def _prepare_child_data_dir(
+    conf_dir: Path,
+    *,
+    workdir: Path,
+    model_override: dict[str, Any] | None = None,
+) -> Path:
     """Per-run config home under the drain-controlled state root: the
     turn's config as BUILT by ``_build_child_config`` from the worker's
     config.yaml. It is ro-bound into the sandbox; the confined turn can
     never write it (and can never leave a destination symlink for the
     parent to follow). A config the builder cannot parse is dropped
-    entirely rather than mounted raw."""
-    conf_dir.mkdir(parents=True, exist_ok=True)
-    source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
-    if not source_root:
-        return conf_dir
-    source = Path(source_root) / "config.yaml"
-    if not source.is_file():
-        return conf_dir
-    try:
-        import yaml
+    entirely rather than mounted raw.
 
-        data = yaml.safe_load(source.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
+    A BYOK run (``model_override`` set) always gets a config written even
+    when the host has no RXYCODE_DATA_DIR config.yaml — the child's model
+    comes from the run snapshot, not the host."""
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    import yaml
+
+    source_root = os.environ.get("RXYCODE_DATA_DIR", "").strip()
+    source = Path(source_root) / "config.yaml" if source_root else None
+    if source is None or not source.is_file():
+        if model_override is None:
+            return conf_dir
+        data: dict[str, Any] = {}
+    else:
+        try:
+            loaded = yaml.safe_load(source.read_text(encoding="utf-8"))
+            data = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            _LOG.warning(
+                "turn config source unreadable; mounting an empty config",
+                exc_info=True,
+            )
             data = {}
-    except Exception:
-        _LOG.warning(
-            "turn config source unreadable; mounting an empty config", exc_info=True
-        )
-        data = {}
     try:
         data = _build_child_config(
             data,
             workdir=workdir,
             egress_port=_EGRESS_PORT,
             env_model=os.environ.get("RXYCODE_WORKER_MODEL", ""),
+            model_override=model_override,
         )
     except RecursionError:
         # A pathologically deep alias DAG cannot be copied: fail closed (no
@@ -3700,6 +3975,68 @@ _CHILD_EMIT_RESERVED_PREFIXES = ("turn.", "run.", "approval.", "worker.")
 _CHILD_EMIT_RESERVED_EXACT = frozenset(
     {"usage.attribution", "steer.accepted", "child.cancel"}
 )
+
+#: ``run.phase`` rows land on the same durable log as ``run.created`` —
+#: ``{phase, elapsed_ms}`` measured on the drain's monotonic clock anchored
+#: at claim time. Payloads are phase names + milliseconds ONLY: no base
+#: URLs, no env, no key material (the BYOK path is timed too). Parent
+#: phases are emitted inline in ``execute_run``; the confined child
+#: reports its boundaries through the dedicated ``phase`` ctl op below
+#: (``run.*`` stays a reserved namespace — the parent stamps the row and
+#: the elapsed time itself, so a turn can never mint a ``run.*`` event or
+#: forge a timestamp).
+_RUN_PHASE_EVENT = "run.phase"
+
+#: Child-authored phase names the parent's ``phase`` op will stamp — a
+#: bounded vocabulary, never free text.
+_CHILD_PHASE_NAMES = frozenset(
+    {"child_started", "imports_ready", "agent_assembled", "prompt_dispatched"}
+)
+
+
+def _phase_emitter(
+    database_url: str,
+    tenant_id: str,
+    run_id: str,
+    claimed_at: float,
+) -> Any:
+    """Return ``mark(phase)``: one durable ``run.phase`` row per name.
+
+    A name fires at most once per claim — the first emission is the
+    boundary that happened, and a retry would only lie about elapsed_ms.
+    Best-effort: a failed append logs and moves on; instrumentation never
+    breaks the run.
+    """
+    emitted: set[str] = set()
+
+    def _mark(phase: str) -> None:
+        if phase in emitted:
+            return
+        emitted.add(phase)
+        try:
+            from rxycode_server.events.store import append_event
+
+            append_event(
+                database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                event_type=_RUN_PHASE_EVENT,
+                payload={
+                    "phase": str(phase),
+                    "elapsed_ms": max(
+                        0, int((time.monotonic() - claimed_at) * 1000)
+                    ),
+                },
+            )
+        except Exception:
+            _LOG.warning(
+                "run %s: run.phase emit failed (%s)",
+                run_id,
+                phase,
+                exc_info=True,
+            )
+
+    return _mark
 
 
 def _task_turn_env(workdir: Path) -> dict[str, str]:
@@ -4110,6 +4447,7 @@ def _ctl_handlers(
     paused: Any,
     paused_info: dict[str, Any],
     sandbox_id: str = "",
+    phase_mark: Any | None = None,
 ) -> dict[str, Any]:
     """Parent-side ops for one run's control socket.
 
@@ -4136,7 +4474,25 @@ def _ctl_handlers(
             event_type=event_type,
             payload=dict(args.get("payload") or {}),
         )
+        if phase_mark is not None:
+            # First durable child-authored row — stamps the moment the
+            # confined turn's stream first lands on the log (usually the
+            # journaled ``event/agent_started``). Deduped inside the mark.
+            phase_mark("first_event")
         return {"seq": int(seq or 0)}
+
+    def _phase(args: dict[str, Any]) -> dict[str, Any]:
+        """Stamp a child-reported startup boundary as a ``run.phase`` row.
+
+        The name is allowlisted (bounded vocabulary — a confined turn
+        names a boundary, it never writes a ``run.*`` row itself) and the
+        elapsed_ms is stamped on the parent's claim-anchored clock, so a
+        turn can neither forge a timestamp nor emit reserved types."""
+        name = str(args.get("phase") or "")[:40]
+        if name in _CHILD_PHASE_NAMES and phase_mark is not None:
+            phase_mark(name)
+            return {"emitted": True}
+        return {"emitted": False}
 
     def _load_run(args: dict[str, Any]) -> dict[str, Any]:
         from rxycode_server.runs.service import load_run
@@ -4389,6 +4745,7 @@ def _ctl_handlers(
 
     return {
         "emit": _emit,
+        "phase": _phase,
         "load_run": _load_run,
         "commands": _commands,
         "pause_approval": _pause_approval,
@@ -4850,6 +5207,16 @@ async def run_sandboxed_turn() -> int:
 
     channel = TurnChannel(ctl_sock)
 
+    async def _phase(name: str) -> None:
+        """Report one startup boundary to the parent's phase clock —
+        instrumentation only, never stalls or breaks the turn."""
+        try:
+            await asyncio.to_thread(channel.phase, name)
+        except Exception:
+            pass
+
+    await _phase("child_started")
+
     # Private net namespace bring-up: lo down by default; the only door out
     # is the parent's filtered egress socket via a loopback relay.
     egress_relay = None
@@ -4957,6 +5324,8 @@ async def run_sandboxed_turn() -> int:
         from appserver.agent_task import LifecycleState
         from appserver.eventbus import AppendOnlyLog, EventBus
 
+        await _phase("imports_ready")
+
         token0 = (
             int(token_stats.input_tokens),
             int(token_stats.output_tokens),
@@ -5034,6 +5403,7 @@ async def run_sandboxed_turn() -> int:
             approval=_CtlApproval(channel, run_id=run_id, workdir=workdir).broker(),
             question=_make_ctl_question(),
         )
+        await _phase("agent_assembled")
         session = Session(
             session_id=session_id,
             workspace_root=workdir,
@@ -5088,6 +5458,7 @@ async def run_sandboxed_turn() -> int:
         bind_run(run_id, worker=shim, tree_root=session_id)
 
         agent_task = await runtime.spawn(AgentConfig(agent_id=agent_id, model=model or "active"))
+        await _phase("prompt_dispatched")
         main_task = agent_task._main_task
         assert main_task is not None
         shim._turn = main_task
@@ -5371,6 +5742,16 @@ async def execute_run(
 
     identity = await asyncio.to_thread(_run_identity, cfg.database_url, run_id)
     tenant_id = identity["tenant_id"]
+    # Durable phase clock — one ``run.phase`` row per boundary, elapsed_ms
+    # on the claim-anchored monotonic clock. Best-effort: never raises.
+    phase_mark = _phase_emitter(
+        cfg.database_url, tenant_id, run_id, claimed_at
+    )
+    phase_mark("claimed")
+    # Ledger model = the run's submission snapshot when present (BYOK),
+    # else the worker's configured model — never a guessed "active" alias.
+    snapshot_model = str((identity.get("model") or {}).get("model_id") or "")
+    ledger_model = snapshot_model or _ledger_model(cfg.model)
 
     # A run cancel_requested at claim time never executes ON THIS worker —
     # but a prior attempt may have run and died: its spend and in-flight
@@ -5400,7 +5781,7 @@ async def execute_run(
                             cfg.database_url,
                             tenant_id=tenant_id,
                             run_id=run_id,
-                            model_id=_ledger_model(cfg.model),
+                            model_id=ledger_model,
                             price_version=_PRICE_VERSION,
                             tokens=total0,
                             event_id=uuid.uuid4().hex,
@@ -5433,7 +5814,7 @@ async def execute_run(
                                 input_tokens=0,
                                 output_tokens=0,
                                 journaled=True,
-                                model_id=_ledger_model(cfg.model),
+                                model_id=ledger_model,
                                 price_version=_PRICE_VERSION,
                             ),
                             timeout=_LEASE_IO_BUDGET,
@@ -5476,6 +5857,7 @@ async def execute_run(
                 _LOG.warning(
                     "run %s: effects-settled check failed", run_id, exc_info=True
                 )
+        phase_mark("final")
         confirm_cancel(
             cfg.database_url,
             run_id,
@@ -5485,8 +5867,8 @@ async def execute_run(
         )
         return True
 
-    ledger_model = _ledger_model(cfg.model)
     turn_error = ""
+    refusal_code = ""
     cancelled_by_request = False
     lost_lease = False
     paused_run = False
@@ -5562,7 +5944,11 @@ async def execute_run(
         # turn could otherwise plant a symlinked config.yaml for the
         # unsandboxed parent to overwrite on the next run — audit r4).
         data_dir = _prepare_child_data_dir(
-            provider.state_root / f"{sandbox_id}-conf", workdir=workdir
+            provider.state_root / f"{sandbox_id}-conf",
+            workdir=workdir,
+            model_override=await asyncio.to_thread(
+                _run_model_override, cfg.database_url, identity
+            ),
         )
         claim_dirs.append(data_dir)
         # A stale result file from an earlier run in this workspace must
@@ -5707,7 +6093,6 @@ async def execute_run(
         from rxycode_worker.egress import (
             EgressProxy,
             egress_allowlist_from_env,
-            model_gateway_from_env,
         )
 
         ctl_server = CtlServer(
@@ -5722,16 +6107,27 @@ async def execute_run(
                 paused=paused_evt,
                 paused_info=paused_info,
                 sandbox_id=sandbox_id,
+                phase_mark=phase_mark,
             ),
         )
         await ctl_server.start()
-        # The gateway holds the platform model key PARENT-SIDE: the child's
-        # model entry is rewritten to 127.0.0.1:<port> by _merge_turn_config
-        # and this proxy injects the real auth on the upstream hop.
+        # The gateway holds the model key PARENT-SIDE: the child's model
+        # entry is rewritten to 127.0.0.1:<port> and this proxy injects the
+        # real auth on the upstream hop. For a snapshotted run the credential
+        # is THAT run's BYOK/platform binding — never the shared env key
+        # unless the actor is allowlisted (re-checked inside the resolver).
+        run_gateway = await asyncio.to_thread(
+            _resolve_run_gateway,
+            cfg.database_url,
+            run_id,
+            identity,
+            identity.get("model"),
+        )
+        phase_mark("gateway_resolved")
         egress = EgressProxy(
             net_sock,
             egress_allowlist_from_env(),
-            gateway=model_gateway_from_env(),
+            gateway=run_gateway,
         )
         await egress.start()
 
@@ -5783,6 +6179,7 @@ async def execute_run(
                 resume_record.get("approval_id") or ""
             )
         child_env = _child_env(turn_env)
+        phase_mark("env_ready")
         # The same module re-entered in turn mode — the sandbox sees the
         # system paths plus every code path this host actually uses
         # (container /repo, dev-host PYTHONPATH entries) read-only, and the
@@ -5824,6 +6221,7 @@ async def execute_run(
                     )
                 lower = str(seed)
             overlays.append((str(upper), str(work), root, lower))
+        phase_mark("sandbox_probed")
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
@@ -5847,6 +6245,7 @@ async def execute_run(
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
+        phase_mark("child_spawned")
         record = provider._load(sandbox_id, tenant_id)
         record["pid"] = proc.pid
         record["status"] = "running"
@@ -5994,6 +6393,11 @@ async def execute_run(
         recovery = settled.status == "recovery_required"
     except LeaseRejected:
         lost_lease = True
+    except _CredentialRefused as exc:
+        # BYOK/platform refusal: honest terminal failure, stable code in the
+        # run.error payload. No retry, no platform-key fallback.
+        turn_error = exc.args[0] if exc.args else exc.code
+        refusal_code = exc.code
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -6350,6 +6754,7 @@ async def execute_run(
                     run_id,
                     exc_info=True,
                 )
+        phase_mark("final")
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
@@ -6379,6 +6784,12 @@ async def execute_run(
         else "failed"
     )
     if turn_error:
+        error_payload = {
+            "detail": turn_error[:1500],
+            "worker_id": cfg.worker_id,
+        }
+        if refusal_code:
+            error_payload["code"] = refusal_code
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
@@ -6387,15 +6798,13 @@ async def execute_run(
                     tenant_id=tenant_id,
                     run_id=run_id,
                     event_type="run.error",
-                    payload={
-                        "detail": turn_error[:1500],
-                        "worker_id": cfg.worker_id,
-                    },
+                    payload=error_payload,
                 ),
                 timeout=_LEASE_IO_BUDGET,
             )
         except Exception:
             _LOG.warning("run %s: run.error event failed", run_id, exc_info=True)
+    phase_mark("final")
     try:
         await asyncio.wait_for(
             asyncio.to_thread(

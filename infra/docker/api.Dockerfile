@@ -76,5 +76,12 @@ RUN mkdir -p /opt/pkg/RxyCode \
     && ln -sfn /repo /opt/pkg/RxyCode/RxyCode1_1_0 \
     && printf '"""Bridge package for the seeded checkout."""\n' > /opt/pkg/RxyCode/__init__.py
 
+# Ship warm bytecode: PYTHONDONTWRITEBYTECODE=1 (ENV above) means .pyc can
+# never be written at runtime, so without baked bytecode every cold start
+# re-parses the whole import surface. compileall writes pyc regardless of
+# that env flag; `|| true` keeps one unparseable vendored file from failing
+# the image — it just stays uncompiled.
+RUN python -m compileall -q /repo /opt /usr/local/lib/python3.12/site-packages || true
+
 EXPOSE 8000
 CMD ["python", "/opt/serve_web.py"]

@@ -57,10 +57,42 @@ RUNTIME = "userns-bwrap"
 _DEFAULT_RO_BINDS = ("/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt")
 
 #: Probe result cache — a real unshare probe costs ~50ms once per process.
+#: ``False`` verdicts carry a TTL: a pinned negative would hide isolation
+#: that became available mid-process (kernel flag flipped, bwrap added)
+#: until the next worker restart; the TTL re-probes so a repaired host
+#: recovers on its own. A ``True`` verdict is process-lifetime — kernel
+#: capability never widens mid-process in the supported direction that
+#: matters (a broken -> working transition), and the honest-degradation
+#: contract is unchanged: an expired negative still re-probes with the
+#: REAL argv and a fresh failure still returns False, never sandbox-less.
 _AVAILABLE: bool | None = None
+_AVAILABLE_FAILED_AT: float = 0.0
 #: Per-state_root cache of overlay-probe verdicts — ``state_root ->
-#: {dest: "direct"|"seed"}``.
+#: {dest: "direct"|"seed"}``. A FAILED verdict (empty map) is memoized
+#: under the same TTL so a known-bad environment does not re-pay the
+#: multi-second probe on every run — but it still expires, so a repaired
+#: kernel picks overlayfs up without a restart.
 _OVERLAY_DESTS: dict[str, dict[str, str]] = {}
+_OVERLAY_DESTS_FAILED_AT: dict[str, float] = {}
+
+
+def _probe_failure_ttl() -> float:
+    """Negative-verdict cache lifetime in seconds — how long a failed
+    probe stays memoized before a fresh re-probe gives a repaired host
+    its chance back. ``RXYCODE_SANDBOX_PROBE_TTL_SECONDS`` overrides;
+    unparseable/zero values fall back to the default."""
+    raw = os.environ.get("RXYCODE_SANDBOX_PROBE_TTL_SECONDS", "").strip()
+    if not raw:
+        return 300.0
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 300.0
+
+
+def _probe_negative_live(failed_at: float) -> bool:
+    """A negative verdict is still fresh inside its TTL window."""
+    return time.monotonic() - failed_at < _probe_failure_ttl()
 
 #: System roots that MAY get a task-private persistent overlay (when the
 #: kernel permits userns overlayfs): apt/dpkg/pip installs then land on a
@@ -112,8 +144,18 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
     writes fail read-only, honest and never widened."""
     global _OVERLAY_DESTS
     key = str(state_root)
-    if not force and key in _OVERLAY_DESTS:
-        return dict(_OVERLAY_DESTS[key])
+    cached = _OVERLAY_DESTS.get(key)
+    if not force and cached is not None:
+        if cached:
+            # Positive verdicts are process-lifetime: what the kernel let
+            # us mount once it lets us mount again.
+            return dict(cached)
+        # Negative verdicts are TTL-bounded: inside the window the failed
+        # probe stays memoized (no re-paying the multi-second probe per
+        # run); past it, re-probe so a repaired host picks overlays up
+        # without a worker restart.
+        if _probe_negative_live(_OVERLAY_DESTS_FAILED_AT.get(key, 0.0)):
+            return {}
     ok: dict[str, str] = {}
     bwrap = shutil.which("bwrap")
     if bwrap:
@@ -121,7 +163,7 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
         try:
             probe_root.mkdir(parents=True, exist_ok=True)
         except OSError:
-            _OVERLAY_DESTS[key] = {}
+            _cache_overlay_verdict(key, {})
             return {}
         try:
             for dest in _OVERLAY_CANDIDATES:
@@ -163,8 +205,19 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
                     shutil.rmtree(seed, ignore_errors=True)
         finally:
             shutil.rmtree(probe_root, ignore_errors=True)
-    _OVERLAY_DESTS[key] = dict(ok)
+    _cache_overlay_verdict(key, ok)
     return dict(ok)
+
+
+def _cache_overlay_verdict(key: str, ok: Mapping[str, str]) -> None:
+    """Store one probe verdict; failures carry their timestamp so the TTL
+    in :func:`overlay_dests` can expire them — a memoized failure is the
+    re-pay guard, not a permanent verdict."""
+    _OVERLAY_DESTS[key] = dict(ok)
+    if ok:
+        _OVERLAY_DESTS_FAILED_AT.pop(key, None)
+    else:
+        _OVERLAY_DESTS_FAILED_AT[key] = time.monotonic()
 
 
 def overlay_available(state_root: Path | None = None, *, force: bool = False) -> bool:
@@ -182,13 +235,26 @@ def overlay_available(state_root: Path | None = None, *, force: bool = False) ->
 
 def userns_available(*, force: bool = False) -> bool:
     """Real probe: spawn a confined ``true``. False is fail-closed — callers
-    must raise ``IsolationUnavailable``, never fall back to host execution."""
-    global _AVAILABLE
-    if _AVAILABLE is not None and not force:
-        return _AVAILABLE
+    must raise ``IsolationUnavailable``, never fall back to host execution.
+
+    A ``False`` verdict is memoized only for ``_probe_failure_ttl()``
+    seconds: a host that gains userns mid-flight (sysctl flipped, bwrap
+    installed) recovers on the next window — without the TTL the negative
+    probe would be pinned for the process lifetime. A ``True`` verdict is
+    process-lifetime as before."""
+    global _AVAILABLE, _AVAILABLE_FAILED_AT
+    if _AVAILABLE is True and not force:
+        return True
+    if (
+        _AVAILABLE is False
+        and not force
+        and _probe_negative_live(_AVAILABLE_FAILED_AT)
+    ):
+        return False
     bwrap = shutil.which("bwrap")
     if not bwrap:
         _AVAILABLE = False
+        _AVAILABLE_FAILED_AT = time.monotonic()
         return False
     argv = [bwrap, "--unshare-user", "--uid", "0", "--gid", "0", "--unshare-pid"]
     # A dynamically linked binary needs its loader: bind the same system
@@ -212,6 +278,7 @@ def userns_available(*, force: bool = False) -> bool:
         _AVAILABLE = done.returncode == 0
     except Exception:
         _AVAILABLE = False
+    _AVAILABLE_FAILED_AT = time.monotonic() if not _AVAILABLE else 0.0
     return _AVAILABLE
 
 

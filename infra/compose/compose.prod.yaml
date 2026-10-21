@@ -108,6 +108,18 @@ services:
       # Operator outbox for self-hosted single-admin deploys without SMTP:
       # =1 makes forgot-password log the reset link to the api log.
       RXYCODE_RESET_OPERATOR_LOG: ${RXYCODE_RESET_OPERATOR_LOG:-}
+      # BYOK (W10): users' model keys are AES-256-GCM sealed under this
+      # keyring; enforcement is on in cloud mode. The keyring file is a
+      # read-only host bind mount — it never lives in the image or the DB.
+      RXYCODE_BYOK_ENFORCE: "1"
+      RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      # Display name only for the platform model entry — never the key.
+      RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
+      # Dev/test only: permits http:// + private BYOK base URLs. Leave unset.
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+    volumes:
+      - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,14 +135,22 @@ services:
     # dev-seed mechanics and nothing in prod may reference /repo-src.
     volumes: !override
       - worker-data:/work
+      - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
     mem_limit: 2g
     environment:
       RXYCODE_WORKER_EXECUTION: "cloud-only"
-      # Prod requires a real model endpoint — a worker without one claims
-      # runs and fails them, which is worse than refusing to start.
-      RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:?set RXYCODE_LLM_BASE_URL (openai-compatible endpoint)}
+      # Platform model endpoint — OPTIONAL under BYOK (W10): BYOK runs use
+      # the run's own credential; only allowlisted platform runs consume
+      # this. Still recommended so allowlisted operators can run.
+      RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
       RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
-      RXYCODE_API_KEY: ${RXYCODE_API_KEY:?set RXYCODE_API_KEY}
+      RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
+      # BYOK: the worker decrypts each run's credential parent-side from
+      # this keyring and vets the user-supplied upstream before connecting.
+      RXYCODE_BYOK_ENFORCE: "1"
+      RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
     depends_on:
       postgres:
         condition: service_healthy

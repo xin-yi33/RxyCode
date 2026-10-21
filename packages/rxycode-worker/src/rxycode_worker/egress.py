@@ -115,7 +115,7 @@ class ModelGateway:
     all: not in env, not in the copied config, not in mounts.
     """
 
-    __slots__ = ("scheme", "host", "port", "base_path", "headers")
+    __slots__ = ("scheme", "host", "port", "base_path", "headers", "vet")
 
     def __init__(
         self,
@@ -125,12 +125,17 @@ class ModelGateway:
         port: int,
         base_path: str,
         headers: dict[str, str],
+        vet: bool = False,
     ) -> None:
         self.scheme = scheme
         self.host = host
         self.port = port
         self.base_path = base_path
         self.headers = headers
+        # vet=True (BYOK upstreams): the gateway runs the egress filter on
+        # the destination before connecting — user-supplied endpoints can
+        # never carry a real credential to a private/loopback address.
+        self.vet = vet
 
 
 def model_gateway_from_env(env: dict[str, str] | None = None) -> ModelGateway | None:
@@ -413,9 +418,37 @@ class EgressProxy:
             import ssl as _ssl
 
             ssl_ctx = _ssl.create_default_context()
+        address = gateway.host
+        if gateway.vet:
+            # BYOK upstreams are user-supplied: run the same egress verdict
+            # the CONNECT path uses, then connect to the vetted resolved
+            # address — no re-resolution between check and connect. The
+            # RXYCODE_BYOK_ALLOW_PRIVATE=1 test/dev override allowlists the
+            # exact host:port so a local mock upstream can be exercised.
+            allowlist = set()
+            if os.environ.get("RXYCODE_BYOK_ALLOW_PRIVATE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                allowlist = {(_normalize_host(gateway.host), int(gateway.port))}
+            verdict = await evaluate(gateway.host, int(gateway.port), allowlist)
+            if not verdict.allowed:
+                _LOG.info(
+                    "gateway upstream refused %s:%s (%s)",
+                    gateway.host,
+                    gateway.port,
+                    verdict.reason,
+                )
+                self._refuse(writer, 403, f"Forbidden_{verdict.reason}")
+                await writer.drain()
+                return
+            if verdict.addresses:
+                address = verdict.addresses[0]
         try:
             upstream_r, upstream_w = await asyncio.open_connection(
-                gateway.host,
+                address,
                 gateway.port,
                 ssl=ssl_ctx,
                 server_hostname=gateway.host if ssl_ctx else None,

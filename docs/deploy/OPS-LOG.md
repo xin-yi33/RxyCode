@@ -127,3 +127,24 @@
 - **前端**（`apps/web`）：`altcha@3.4.1` npm 包；新组件 `AltchaWidget.tsx`（auto=onload 静默解题，提交后 remount 刷新挑战）；RegisterPage 加验证码发送/输入；LoginPage 加「密码/验证码」分段切换；ForgotPasswordPage 加 captcha；手机版细节（min-w-0、p-6 sm:p-8）。
 - **测试**：w9 helpers 全接真 PoW 求解；新增 `test_email_codes.py` 4 条。**w9 全量 69 passed**、`tsc --noEmit` 干净。
 - 待办：commit → git bundle 同步 VM → 重建三镜像 → 推 VM → rxyprod 升级 → 公网冒烟（注册要验证码+ALTCHA，登录可密码可验证码）。
+
+### ~16:40 🐧 b42b937f 上线 + VM 源码 git 化 + 本机 Docker 事故
+- **VM 源码 git 化**：`git bundle`（v2，兼容 VM 的 git 1.8）→ SFTP → `git clone /tmp/rxycode.bundle /opt/rxycode/src`（2925 tracked 文件，gitignore 内容未上去），HEAD=`b42b937f`，分支 feat/rxycode-web。
+- **本机 Docker Desktop 瘫痪**：构建 web 镜像中途 Linux VM 挂起——`DockerDesktopVM PausedCritical`：**E: 盘 0 字节可用**（VHDX 在 E:\DockerDesktopData 29.8GB，盘被游戏塞满）。重启无效，VM 处于 IO 饿死暂停。**需要用户在 E: 盘腾空间**（至少几 GB）或把 DockerDesktopData 迁到 D:（24GB 空闲，略小于现用量，得先瘦身）。
+- **部署改道：直接在 VM 上 docker build**（`/opt/rxycode/src` 已 git 化正好用上）——`--pull=false` + 先 `docker pull` 基座（buildkit 解析不走 daemon 代理，`docker pull` 走）。web/api 正常构建；worker 的 pip 步骤卡死 → 改用 overlay 方式：`FROM rxycode-worker:bda9a055` + COPY 变更的 rxycode-server 源码（requirements 未变，依赖层等价）。
+- **VM 磁盘清理**：删掉 4 代旧 rxycode 镜像 + dangling + build cache，/dev/sda3 从 493MB 空闲回到 4.1GB。
+- **公网冒烟**：`GET /auth/altcha` + 本地 PoW 求解×3 全部通过；`POST /auth/register/code` 200——首试走 operator-log（HK02 又抖），重试 `delivery:"smtp"` 真实投递成功。已向 xinyiruan293@gmail.com 发注册码，等用户回填完成 register→login 全链。
+- 生产现状：`rxyprod` 全栈 `b42b937f`，capabilities 含 `code_delivery:"smtp"`、`captcha:"altcha"`。
+
+### ~17:10 📧 验证码登录端到端验证通过（生产）
+- 发现 `xinyiruan293@gmail.com` 已于 04:23 UTC 注册成功——`register/code` 对已存在邮箱按设计只回 200 不发信（防账号探测），改发 **登录码**。
+- `POST /auth/login/code` → delivery=smtp 真实投递（`_deliver_code` 仅 `send_mail` 成功才返回 smtp，无 outbox 告警），用户收到邮件回填 6 位码。
+- 端到端：`GET /auth/altcha` → 本地解 PoW（n=5810）→ `POST /auth/login {email,code}` → **200** + session cookie → `GET /me` → **200**（owner 角色、默认项目齐全）。
+- 结论：验证码发码（SMTP）→ ALTCHA 门 → code 登录 → session，公网全链路实测通过。至此 v1.4.4 的认证功能（注册验证码/双模式登录/忘记密码/人机校验）全部有生产证据。
+
+### ~21:00 🔐 BYOK 后端落地（PRD-WEB-ENTRY-UI-BYOK-PERFORMANCE）+ VM 前置条件
+- **新代码（未提交）**：`rxycode_server/byok/`（AES-256-GCM 信封 + AAD 绑定 tenant/owner/conn/version + keyring 文件 mtime 缓存 + `netguard.vet_base_url` SSRF 防护）；alembic `009_byok`（`model_connections`/`user_models`/`users.default_model_ref`/`runs` 7 个快照列）；`api/models.py` 12 端点全 tenant+owner 隔离、密钥永不回显；`runs` 接受 `model_ref`，提交前解析快照（拒绝→403/404/409/503，不留孤儿 session）；`drain.py` `_resolve_run_gateway` 按快照在**认领时**重查白名单+凭据版本（轮换→CREDENTIAL_CHANGED、删除→MODEL_UNAVAILABLE），密钥只在父进程解密、经 loopback egress 注入上游（connect 时再 vet，防 DNS rebinding TOCTOU）；幂等 digest 绑定 model_ref。
+- **compose.prod.yaml**：`RXYCODE_BYOK_ENFORCE=1`、keyring 只读挂进 api+worker、平台 key 变可选（仅 `RXYCODE_PLATFORM_MODEL_USERS` 白名单可花）。
+- **VM 前置（已就位）**：`/opt/rxycode/secrets/byok-keyring.json` 0600 root:root（k1 活动 key）；`.env` 追加 `RXYCODE_PLATFORM_MODEL_USERS=3d0a1018fa93413f94ebe167cf4e4fa7`（用户本人账号保留平台额度，其余账号 enforce 后须自带 key——符合 PRD 设计）。
+- **测试缺口**：本机 Docker Desktop 彻底死透（Electron 前端反复崩，backend 随之退出；E: 已腾出 14GB 仍无法恢复）→ pg 测试改在 VM 跑：`rxy-w9-pg` 容器 + api 镜像挂 /opt/rxycode/src 为 /repo + docker sock 透传，脚本 `vm_w9_tests.sh` 备好。
+- **PRD 性能验收线**：worker.lease→agent_started 暖态 ≤3s（基线 13.068s）；暖态"你好"→首段可见 ≤8s；SSE→绘制 <250ms。
