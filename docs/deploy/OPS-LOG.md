@@ -148,3 +148,17 @@
 - **VM 前置（已就位）**：`/opt/rxycode/secrets/byok-keyring.json` 0600 root:root（k1 活动 key）；`.env` 追加 `RXYCODE_PLATFORM_MODEL_USERS=3d0a1018fa93413f94ebe167cf4e4fa7`（用户本人账号保留平台额度，其余账号 enforce 后须自带 key——符合 PRD 设计）。
 - **测试缺口**：本机 Docker Desktop 彻底死透（Electron 前端反复崩，backend 随之退出；E: 已腾出 14GB 仍无法恢复）→ pg 测试改在 VM 跑：`rxy-w9-pg` 容器 + api 镜像挂 /opt/rxycode/src 为 /repo + docker sock 透传，脚本 `vm_w9_tests.sh` 备好。
 - **PRD 性能验收线**：worker.lease→agent_started 暖态 ≤3s（基线 13.068s）；暖态"你好"→首段可见 ≤8s；SSE→绘制 <250ms。
+
+### ~22:00 ✅ w9/w7/w8 套件在 VM 真 Postgres 上跑通（本机 Docker 已死，迁 VM 跑测）
+- **方法**：`/tmp/vm_w9_tests.sh`——VM 上起 `rxy-w9-pg`（127.0.0.1:55439）+ api 镜像挂 `/opt/rxycode/src` 为 `/repo`（测的是新代码非烘焙层）+ 容器内装 docker 静态 CLI 和 pytest。
+- **w9 全量**：**105 passed**（migration 009 升级、BYOK 加密/隔离/快照/worker gateway 全绿；修了 2 个测试自身缺陷：`client.delete(json=)` httpx 不支持、重复 model_id 断言被 dict 折叠）。仅剩 `test_e2e.py` 10 条 playwright 用例因容器无浏览器 ERROR（环境性，留浏览器验收环节）。
+- **w7+w8**：223 passed / 13 failed+error——A/B 对照旧提交 `b42b937f` **同子集同样失败**（ctl_roundtrip 事件循环内同步 recv 先天死锁、容器无 git 二进制、docker-in-container 限制），**BYOK/计时改动零回归**。
+
+### ~21:40 🚀 W10 全量上线 e0124b8（BYOK+访客入口+模型选择器）+ 两个事故
+- **前端落地提交** `68023e9`（27 文件，2771 行）：`/app` 访客壳（AuthGate 改私有子路由）、useAuth 三态、LoginPrompt 模态+pendingIntent 横幅（绝不自动重发）、Composer model_ref+幂等范围重置 requestId、ModelPicker 分组/搜索/键盘导航、设置页 BYOK 分区（连接 CRUD+发现面板+默认模型+access 横幅）、run 卡片模型快照回显、Esc 分层、登出清草稿。
+- **构建/部署**：api.Dockerfile 完整重建 + worker overlay（FROM 68023e9 + COPY /repo）+ web.Dockerfile；构建期代理 `--build-arg http(s)_proxy=http://192.168.88.128:7890`（容器内 127.0.0.1≠宿主）；`npm ci` 一次 npm 自身崩溃重试即过。迁移 `009_byok` 应用，alembic_version=009_byok，两表+7 快照列在库。
+- **事故1（真 bug，E2E 抓到）**：首个 run `ValueError: base_url must use https://` —— `config/model_endpoint.py` 的 loopback 豁免**只在本地未提交工作区**，VM 上是旧版。修复提交 `e0124b8` 重部署。教训：审计工作区未提交改动与部署清单的交叉。
+- **事故2（环境）**：VM `net.ipv4.ip_forward=0` → 容器外网全断（BYOK 发现失败报 `host does not resolve` 是 netguard 正确 fail-closed）。sysctl 恢复 + `/etc/sysctl.d/99-docker-forward.conf` 持久化。
+- **E2E 实测（生产，agent-browser）**：访客壳 ✅、发送→登录模态→`?next=/app` ✅、BYOK 连接 CRUD+发现/测试失败路径（401→`认证失败（auth）`）✅、模型快照回显 ✅、运行中模型锁 ✅、停止"取消中…"→cancelled ✅、`run.phase` 全链 ✅（warm 4.0s 组装、final 6.4s）。
+- **加固**：`/opt/rxycode/.env` 664→600 root:root；gateway 仅绑 127.0.0.1:8080；响应头 nosniff+frame-DENY+no-referrer 实测在。
+- **遗留**：warm lease→agent_assembled 4.0s vs 目标 3s（残差=子进程 spawn/import/assemble，需 warm 池）；final_answer 证据门误报（agent-runtime 后续）；version endpoint commit=unknown（镜像未注入构建标签，cosmetic）。

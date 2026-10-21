@@ -283,7 +283,19 @@
 - **分段计时**（`drain.py`）：每条 run 落一组耐久 `run.phase` 事件（与 `run.created` 同一事件日志，含 `elapsed_ms` 相对基准）——`child_started`/`imports_ready`/`agent_assembled`/`prompt_dispatched`/`first_event`/`terminal`。子进程侧的边界（imports_ready、agent_assembled）经 ctl 通道白名单 `phase` op 上报，父进程盖章入库——拆分 `worker.lease → agent_started` 的 13s 黑盒为 import/sandbox/assemble/dispatch 实测段，不再靠猜。`tests/web/w9/test_phase_timing.py`（215 行）覆盖事件序列与 elapsed 语义。
 - **启动优化**：worker 镜像层 `compileall` 预编译字节码（子进程不再现编译 .pyc）；`userns.py` 探测负缓存加 TTL（此前一次失败后每次 run 重探测）；bwrap/overlay 探测结果进程内缓存。
 
+### W10 生产部署与端到端验收（2026-10-21，镜像 `e0124b8`）
+
+- **部署**：VM `/opt/rxycode/src` git checkout → `68023e9`，迁移 `009_byok` 应用（`model_connections`/`user_models`/runs 快照列落库），keyring `/opt/rxycode/secrets/byok-keyring.json`（root:root 0600、只读挂入 api/worker），`RXYCODE_BYOK_ENFORCE=1`、`RXYCODE_PLATFORM_MODEL_USERS` 白名单生效。
+- **关键修复**（`e0124b8`）：`config/model_endpoint.py` 的 `require_https` 校验补 loopback 豁免（`_is_loopback_host`：localhost/127.x/::1）——此前该豁免只存在于本地未提交的工作区，VM 部署后子进程模型 `http://127.0.0.1:18881`（egress 回环）+ 占位凭据被误拒，首个 run 在 AgentV2 构造处 `ValueError`。教训：BYOK 依赖散落在未提交工作区的改动必须随迁移一起提交，已修复并同步。
+- **基础设施事故**：VM `net.ipv4.ip_forward` 被重置为 0 → 容器外网全断（netguard 如实拒 `base_url host does not resolve`）。已 `sysctl -w` 恢复并落 `/etc/sysctl.d/99-docker-forward.conf` 持久化；dockerd 代理改指 VM 本地 mihomo（127.0.0.1:7890→构建期用 LAN IP 192.168.88.128:7890 作 build-arg）。
+- **实测分段**（warm，worker 进程已暖）：claimed 69ms → gateway_resolved 222ms → env_ready 255ms → sandbox_probed 289ms（TTL 缓存命中，冷启动为 9.7s）→ child_spawned 325ms → child_started 1155ms → imports_ready 2386ms → agent_assembled 4080ms → prompt_dispatched 4342ms → final 6449ms。**lease→agent 组装 ≈4.0s**（基线 13.068s，×3.2）；距离 ≤3s 目标差约 1s，残余在子进程 spawn+import+assemble，需 warm 池才能再压，记为后续项。"你好"→final ≈6.4s（≤8s 达标）；SSE 增量实时推送可见。
+- **E2E 证据**（生产 `https://rxycode.xyz`，浏览器实测）：访客 `/app` 壳可见（侧栏"登录后查看历史会话"+输入框+模型选择器）；发送→"发送任务需要登录"模态→"去登录"SPA 跳 `/login?next=/app`；登录态模型弹层显示平台模型+搜索+管理入口；设置 `?section=models` 深链到 BYOK 分区；连接创建/拉取模型/测试连接/清除/删除全链路（假 key 下发现失败显示 `认证失败（auth）`、目录保留）；run 卡片回显模型快照（deepseek-flash · 平台额度 · 平台）；运行中模型选择器禁用；停止按钮"取消中…"→DB `cancelled`；`tool_begin→tool.completed→final_answer→succeeded` 全事件链。
+
 ### 已知限制（明示，非遗漏）
+
+- **终局应答证据门误报**（本轮实测发现）：`final_answer` 工具把"仅 pwd 只读调用"的应答判为"声称副作用无 WRITE/DANGER 证据"，最终文本被替换成 `[evidence failed: ...]`——Harness 条款校验器的误报（run 仍 succeeded、工具确实执行）。与 BYOK 无关，归 agent-runtime 后续修。
+- **warm lease→agent_assembled ≈4.0s** vs PRD ≤3s 目标：残余瓶颈为子进程 fork/入口（~0.8s）+ Python import（~1.2s，compileall 后）+ AgentV2 组装（~1.7s），需子进程 warm 池继续压缩；分段计时已就位可复核。
+- 本地 Docker Desktop 引擎仍不稳定（此前 E: 盘满导致），pg 依赖测试均在 VM 执行。
 
 - **Provider 错误被记为 `succeeded`**（W9 验收发现，未修）：模型上游 402/5xx 时 agent 把 `to_user_facing_error` 的错误文案当正常 final answer 走完回合，run 终态 `succeeded`——E-2/E-3 在欠费期间的表现（零工具行、零审批、"succeeded"）。正确语义应为 `failed`（可重试）或至少带错误标记，涉及 Harness 终态映射，留待额度恢复后一并处理。
 - **`/repo` Harness 源码在沙箱内可读**（W9 验收发现）：被拦的 agent 会 grep `/repo` 找绕过（`direct_python_c_argv`、sys.path 注入 import core）。bwrap 仍强制写边界所以只是"难看"不是逃逸，但建议后续把 Harness 源码移出 agent 可见挂载。
