@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
@@ -44,6 +44,12 @@ _PAGE_LIMIT = 100
 router = APIRouter()
 
 
+def _strip_unstorable(text: str) -> str:
+    # Postgres text/jsonb cannot store NUL or other C0 controls; a pasted log
+    # line carrying them must not 500 the insert (audit: tasks submit 500).
+    return "".join(c for c in text if c == "\n" or c == "\t" or c == "\r" or ord(c) >= 32)
+
+
 class _TaskIn(BaseModel):
     message: str
     request_id: str
@@ -51,12 +57,16 @@ class _TaskIn(BaseModel):
     project_id: str | None = None
     model_ref: str | None = None
 
+    _clean_message = field_validator("message")(_strip_unstorable)
+
 
 class _RunIn(BaseModel):
     message: str
     request_id: str
     permission_profile: str
     model_ref: str | None = None
+
+    _clean_message = field_validator("message")(_strip_unstorable)
 
 
 def _check_run_input(message: str, request_id: str, permission_profile: str) -> None:
