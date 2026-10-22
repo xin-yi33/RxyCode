@@ -10,11 +10,14 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 _SECRET = "local-web-secret-value-32bytes!!"
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 for entry in (
     REPO,
     REPO / "packages" / "rxycode-runner" / "src",
@@ -43,8 +46,10 @@ def _render(view: dict[str, object]) -> str:
         ),
         encoding="utf-8",
     )
+    if BUN is None:
+        pytest.skip("bun is not installed")
     ran = subprocess.run(
-        [str(BUN), str(script)],
+        [BUN, str(script)],
         cwd=WEB,
         capture_output=True,
         text=True,

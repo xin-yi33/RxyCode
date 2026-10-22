@@ -14,7 +14,9 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 SECRET = "local-web-secret-value-32bytes!!"
 MODULES = REPO / "apps" / "web" / "node_modules"
 for _entry in (
@@ -125,6 +127,10 @@ def _session_app(proxy, user_id: str, tenant_id: str, database: Path):
     # Test-injected session store: create_app keeps browser sessions in the
     # database now; this sqlite-backed app has no auth tables, so the legacy
     # per-process dict carries the fixture session (WEB-W9-B1 fallback).
+    # With no engine bound the auth/device gate stays dict-only — a bare
+    # sqlite engine would trip the W11 device-lock lookup on a missing
+    # device_locks table.
+    app.state.engine = None
     app.state.sessions = {}
     app.state.sessions[_hash_token(app.state.secret, token)] = AuthRecord(
         user_id=user_id,
@@ -144,8 +150,10 @@ def _render(proxy_path: str, unavailable: bool) -> str:
         "  unavailable: process.env.PREVIEW_DOWN === '1',\n"
         "})));\n"
     )
+    if BUN is None:
+        pytest.skip("bun is not installed")
     done = subprocess.run(
-        [str(BUN), "-e", script],
+        [BUN, "-e", script],
         cwd=REPO / "apps" / "web",
         capture_output=True,
         text=True,

@@ -20,7 +20,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 for _entry in (REPO, _RUNNER, REPO / "tests" / "web" / "w6"):
     if str(_entry) not in sys.path:
         sys.path.insert(0, str(_entry))
@@ -276,7 +278,7 @@ def _user_clicks_handoff(session_id: str, source: str, action: object) -> dict[s
     server: ThreadingHTTPServer | None = None
     try:
         built = subprocess.run(
-            [str(BUN), "build", str(entry), "--outfile", str(bundle), "--target", "browser"],
+            [BUN, "build", str(entry), "--outfile", str(bundle), "--target", "browser"],
             cwd=REPO / "apps" / "web",
             text=True,
             capture_output=True,
@@ -326,8 +328,8 @@ def _click_same_origin_handoff(session_id: str) -> dict[str, object]:
 
 
 def _render(*, session_id: str, authorized: bool) -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     env = os.environ.copy()
     env["RXY_SESSION"] = session_id
     env["RXY_AUTHORIZED"] = "true" if authorized else "false"
@@ -350,7 +352,7 @@ process.stdout.write(html)
     program.write_text(script, encoding="utf-8")
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,

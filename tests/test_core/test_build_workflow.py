@@ -1070,14 +1070,22 @@ def test_double_quoted_substitution_deletes_source_and_closes_the_gate(tmp_path,
     host._workspace_root = str(repo)
     host._build_workflow = _pkg_decision()
     command = "python -m pytest tests/test_parser.py -q"
-    deletion = 'Write-Output "$(Remove-Item mod.py)" > README.md'
     AgentV2._record_workflow_receipt(
         host, "bash", {"command": command, "workdir": "pkg"}, "1 passed", False, call_id="bash-before-delete"
     )
     assert source.is_file()
     assert AgentV2._workflow_completion_feedback(host) is None
+    import os
+    import shutil
+
+    if os.name == "nt":
+        deletion = 'Write-Output "$(Remove-Item mod.py)" > README.md'
+        shell = ["powershell", "-NoProfile", "-Command", deletion]
+    else:
+        deletion = 'echo "$(rm mod.py)" > README.md'
+        shell = [shutil.which("bash") or "/bin/bash", "-c", deletion]
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", deletion],
+        shell,
         cwd=pkg,
         capture_output=True,
         text=True,

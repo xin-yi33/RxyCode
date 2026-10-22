@@ -97,7 +97,9 @@ def test_w2_c03_integration(postgres_url: str, tmp_path: Path):
         pending, attempts, runs = conn.execute(
             text(
                 "SELECT o.dispatch_status, o.attempts, "
-                "(SELECT count(*) FROM runs) FROM outbox o"
+                "(SELECT count(*) FROM runs) FROM outbox o "
+                "JOIN run_events e ON e.event_id = o.event_id "
+                "WHERE e.type = 'run.created'"
             )
         ).one()
     engine.dispose()
@@ -108,10 +110,12 @@ def test_w2_c03_integration(postgres_url: str, tmp_path: Path):
     import redis
 
     client = redis.Redis.from_url(redis_url, decode_responses=True)
-    assert dispatch_pending(postgres_url, client, stream="rxycode:runs") == 1
+    # create_run lands two durable rows once the worker package is importable:
+    # run.created plus the telemetry.span envelope (W7-C04 contract).
+    assert dispatch_pending(postgres_url, client, stream="rxycode:runs") == 2
     assert dispatch_pending(postgres_url, client, stream="rxycode:runs") == 0
     entries = client.xrange("rxycode:runs")
-    assert len(entries) == 1
+    assert len(entries) == 2
     assert entries[0][1]["run_id"] == created.run_id
 
     barrier = threading.Barrier(2)

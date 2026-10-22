@@ -16,13 +16,19 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 _W6 = REPO / "tests" / "web" / "w6"
 for _entry in (str(_SERVER), str(_WORKER), str(_W6)):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
 
-DATABASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+from tests.support.pgurl import ensure_container, worker_url
+
+_PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+ensure_container("rxy-w2c01-pg", 55432)
+DATABASE = worker_url(_PG_BASE)
 
 
 def test_w6_c05_integration(tmp_path: Path) -> None:
@@ -132,8 +138,8 @@ def _wipe_run(run_id: str) -> None:
 
 
 def _render_pages(tokens: int, amount: str) -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     usage = REPO / "apps" / "web" / "src" / "features" / "usage" / "UsagePage.tsx"
     memory = REPO / "apps" / "web" / "src" / "features" / "memory" / "MemoryPage.tsx"
     schedule = REPO / "apps" / "web" / "src" / "features" / "schedule" / "SchedulePage.tsx"
@@ -164,7 +170,7 @@ process.stdout.write(html)
     program.write_text(script, encoding="utf-8")
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,

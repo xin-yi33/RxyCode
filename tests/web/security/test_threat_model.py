@@ -343,12 +343,15 @@ def test_threat_sandbox_fail_closed() -> None:
     """ATTACK: a workdir outside workspace_root must fail, never fall back to host."""
     from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
 
-    marker = Path(r"C:\Windows\Temp\rxy_w7_sandbox.txt")
+    import tempfile
+
+    outside = Path(tempfile.gettempdir()).resolve()
+    marker = outside / "rxy_w7_sandbox.txt"
     marker.unlink(missing_ok=True)
     result = bash_tool.invoke(
         {
-            "command": 'cmd /c "echo x > C:\\Windows\\Temp\\rxy_w7_sandbox.txt"',
-            "workdir": r"C:\Windows\Temp",
+            "command": "echo x > rxy_w7_sandbox.txt",
+            "workdir": str(outside),
             "timeout": 10,
         }
     )

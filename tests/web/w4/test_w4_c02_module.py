@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.name != "nt", reason="Windows desktop adapter (notepad/user32)"
+)
 
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"

@@ -12,6 +12,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[3]
 _RUNNER = REPO / "packages" / "rxycode-runner" / "src"
 for _entry in (REPO, _RUNNER):
@@ -124,6 +126,9 @@ def test_w6_c03_contract() -> None:
         _remove(profile)
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows junction + Chrome profile paths"
+)
 def test_w6_c03_negative() -> None:
     """Unauthorized cookie handoff must not read or copy the user's Chrome data."""
     from rxycode_runner.browser.session_manager import (

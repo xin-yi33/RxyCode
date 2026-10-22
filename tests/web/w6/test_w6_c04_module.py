@@ -15,7 +15,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 _WORKER = REPO / "packages" / "rxycode-worker" / "src"
 _SERVER = REPO / "packages" / "rxycode-server" / "src"
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 for _entry in (str(_WORKER), str(_SERVER), str(REPO / "tests" / "web" / "w6")):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
@@ -103,7 +105,11 @@ async def _web_commands() -> list[dict[str, object]]:
     from RxyCode.RxyCode1_1_0.core.subagents.modes import SubagentConfig, SubagentFeatureFlags
     from RxyCode.RxyCode1_1_0.core.subagents.sessions import create_child_session
 
-    database_url = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+    from tests.support.pgurl import ensure_container, worker_url
+
+    _pg_base = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+    ensure_container("rxy-w2c01-pg", 55432)
+    database_url = worker_url(_pg_base)
     secret = "local-web-secret-value-32bytes!!"
     origin = "http://test.example"
     tenant = "ten-w6c04-" + uuid.uuid4().hex[:8]
@@ -120,6 +126,9 @@ async def _web_commands() -> list[dict[str, object]]:
     app.state.sessions = {}
     token = "c04-session"
     app.state.sessions[_hash_token(secret, token)] = AuthRecord("user-w6c04", tenant, time.monotonic())
+    from rxycode_server.persistence.migrate import upgrade_head
+
+    upgrade_head(database_url)
     engine = create_engine(database_url, poolclass=NullPool)
     ids = {"org": "org-" + tenant, "project": "prj-" + tenant, "session": "ses-" + tenant}
     try:
@@ -305,8 +314,8 @@ def _command(app: object, token: str, body: dict[str, object]):
 
 
 def _reduce_agents(events: list[dict[str, object]]) -> list[dict[str, object]]:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     component = REPO / "apps" / "web" / "src" / "features" / "runs" / "eventReducer.ts"
     env = os.environ.copy()
     env["RXY_EVENTS"] = json.dumps(events)
@@ -321,7 +330,7 @@ process.stdout.write(JSON.stringify(projection.agents))
     program.write_text(script, encoding="utf-8")
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,
@@ -365,8 +374,8 @@ def _round_trip(span: object) -> object:
 
 
 def _render(nodes: list[dict[str, object]], final_text: str) -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     env = os.environ.copy()
     env["RXY_NODES"] = json.dumps(nodes)
     env["RXY_FINAL"] = final_text
@@ -389,7 +398,7 @@ process.stdout.write(html)
     program.write_text(script, encoding="utf-8")
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,
@@ -404,8 +413,8 @@ process.stdout.write(html)
 
 
 def _render_legacy() -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     component = REPO / "apps" / "web" / "src" / "features" / "agents" / "AgentTree.tsx"
     script = r"""
 import { createRequire } from "module"
@@ -425,7 +434,7 @@ process.stdout.write(html)
     env["RXY_COMPONENT"] = str(component)
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,

@@ -14,7 +14,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 _CORE = REPO / "packages" / "rxycode-core" / "src"
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 for _entry in (REPO, _CORE):
     if str(_entry) not in sys.path:
         sys.path.insert(0, str(_entry))
@@ -100,8 +102,8 @@ def test_w6_c02_negative() -> None:
 
 
 def _render(report: dict[str, object]) -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     env = os.environ.copy()
     env["RXY_EXIT"] = str(report["exit_code"])
     env["RXY_FRAMEWORK"] = str(report["framework"])
@@ -125,7 +127,7 @@ process.stdout.write(html)
     program = Path(tempfile.mkdtemp(prefix="rxy-w6c02-ui-")) / "render.ts"
     program.write_text(script, encoding="utf-8")
     rendered = subprocess.run(
-        [str(BUN), str(program)],
+        [BUN, str(program)],
         cwd=REPO,
         env=env,
         text=True,

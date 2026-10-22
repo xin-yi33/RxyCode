@@ -132,6 +132,9 @@ jobs:
       RXYCODE_STRICT_TOOLING: "1"
       RXYCODE_TEST_ROOT: ${{ github.workspace }}/artifacts/runtime
       RXYCODE_KEEP_TEST_ARTIFACTS: "1"
+      # xdist workers get isolated HOME dirs; pin the browser cache outside
+      # HOME so install and launch resolve the same path.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw-browsers
     steps:
       - uses: actions/checkout@v4
 
@@ -170,6 +173,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install -e . --no-deps
+
+      - name: Install Playwright Chromium (web browser tests)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install web app dependencies (bun workspaces)
+        run: |
+          (cd apps/web && bun install --frozen-lockfile || bun install)
+          (cd frontend/protocol-client && bun install --frozen-lockfile || bun install)
+
+      - name: Pull postgres image for web test fixtures
+        run: docker pull postgres:16
 
       - name: Install uv (required by distribution gate)
         run: python -m pip install uv

@@ -13,7 +13,11 @@ _SERVER = REPO / "packages" / "rxycode-server" / "src"
 if str(_SERVER) not in sys.path:
     sys.path.insert(0, str(_SERVER))
 
-DATABASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+from tests.support.pgurl import ensure_container, worker_url
+
+_PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+ensure_container("rxy-w2c01-pg", 55432)
+DATABASE = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 ORIGIN = "http://test.example"
 
@@ -141,6 +145,9 @@ def _seed(tenant: str) -> dict[str, str]:
 
     from rxycode_server.persistence.models import Organization, Project, Run, SessionRow
 
+    from rxycode_server.persistence.migrate import upgrade_head
+
+    upgrade_head(DATABASE)
     suffix = uuid.uuid4().hex[:8]
     ids = {
         "org": "org-" + suffix,

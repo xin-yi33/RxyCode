@@ -19,6 +19,11 @@ for _rel in (
         sys.path.insert(0, str(_src))
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "nt", reason="Windows session/process primitives (ctypes.windll)"
+)
+
+
 def _alive(pid: int) -> bool:
     handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
     if not handle:

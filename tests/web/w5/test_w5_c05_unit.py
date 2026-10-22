@@ -15,7 +15,9 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 for _entry in (
     REPO / "packages" / "rxycode-runner" / "src",
     REPO / "packages" / "rxycode-server" / "src",
@@ -203,8 +205,10 @@ def _render(url: str, state: str, error: str) -> str:
         "  error: process.env.PR_ERROR,\n"
         "})));\n"
     )
+    if BUN is None:
+        pytest.skip("bun is not installed")
     done = subprocess.run(
-        [str(BUN), "-e", script],
+        [BUN, "-e", script],
         cwd=REPO / "apps" / "web",
         capture_output=True,
         text=True,

@@ -12,12 +12,11 @@ CLIENT = REPO / "frontend" / "protocol-client"
 
 
 def _bun() -> str:
-    exe = shutil.which("bun")
+    from tests.support.pgurl import bun_path
+
+    exe = bun_path()
     if exe:
         return exe
-    fallback = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
-    if fallback.is_file():
-        return str(fallback)
     raise FileNotFoundError("bun")
 
 

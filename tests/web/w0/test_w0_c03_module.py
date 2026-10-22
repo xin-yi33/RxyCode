@@ -56,10 +56,9 @@ for (const line of text.split(String.fromCharCode(10)).filter((item) => item.len
 }
 console.log(JSON.stringify(seen));
 """
-    bun = shutil.which("bun.exe")
-    if bun is None:
-        fallback = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
-        bun = str(fallback) if fallback.is_file() else shutil.which("bun")
+    from tests.support.pgurl import bun_path
+
+    bun = bun_path()
     assert bun, "BLOCKED: bun is not installed"
     proc = subprocess.run(
         [bun, "-e", script],

@@ -31,7 +31,11 @@ assert _spec is not None and _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
-URL = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+from tests.support.pgurl import ensure_container, worker_url  # noqa: E402
+
+_PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+ensure_container("rxy-w2c01-pg", 55432)
+URL = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 
 

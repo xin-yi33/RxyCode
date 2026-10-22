@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
+
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -24,6 +27,9 @@ def _alive(pid: int) -> bool:
     return int(code.value) == 259
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows process tree semantics (ctypes.windll)"
+)
 def test_w4_c06_integration(tmp_path: Path) -> None:
     """A local stop still kills the tree when the cloud ack fails."""
     import threading

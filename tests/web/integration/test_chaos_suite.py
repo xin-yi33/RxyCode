@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
+from tests.support.pgurl import worker_url
+
 REPO = Path(__file__).resolve().parents[3]
 
 _CONTAINER = "rxy-w2c01-pg"
@@ -28,7 +30,7 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 def _postgres_server() -> str:
     ready = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
     if ready.returncode == 0:
-        return _URL
+        return worker_url(_URL)
     exists = _docker("inspect", _CONTAINER)
     if exists.returncode == 0:
         started = _docker("start", _CONTAINER)
@@ -52,7 +54,7 @@ def _postgres_server() -> str:
     while time.time() < deadline:
         probe = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
         if probe.returncode == 0:
-            return _URL
+            return worker_url(_URL)
         time.sleep(1)
     logs = _docker("logs", _CONTAINER)
     raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")

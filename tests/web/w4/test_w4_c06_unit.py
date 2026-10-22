@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 SRC = REPO / "packages" / "rxycode-runner" / "src"
@@ -24,6 +27,9 @@ def _alive(pid: int) -> bool:
     return int(code.value) == 259
 
 
+@pytest.mark.skipif(
+    os.name != "nt", reason="Windows process tree semantics (ctypes.windll)"
+)
 def test_w4_c06_contract(tmp_path: Path) -> None:
     """Local emergency stop ends the parent, the child, and the next full command."""
     import threading

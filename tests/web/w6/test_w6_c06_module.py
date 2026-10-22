@@ -18,7 +18,9 @@ for _entry in (
 ):
     if str(_entry) not in sys.path:
         sys.path.insert(0, str(_entry))
-BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
+from tests.support.pgurl import bun_path
+
+BUN = bun_path()
 
 
 def test_w6_c06_integration() -> None:
@@ -48,8 +50,8 @@ def test_w6_c06_integration() -> None:
 
 
 def _render_journey(permission: str, target: str) -> str:
-    if not BUN.is_file():
-        pytest.fail("bun is not installed")
+    if BUN is None:
+        pytest.skip("bun is not installed")
     page = REPO / "apps" / "web" / "src" / "features" / "onboarding" / "journey.ts"
     env = os.environ.copy()
     env["RXY_PAGE"] = str(page)
@@ -68,7 +70,7 @@ process.stdout.write(page.journeyMarkup({
     program.write_text(script, encoding="utf-8")
     try:
         rendered = subprocess.run(
-            [str(BUN), str(program)],
+            [BUN, str(program)],
             cwd=REPO,
             env=env,
             text=True,

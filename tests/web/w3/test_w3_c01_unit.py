@@ -16,7 +16,6 @@ from playwright.sync_api import expect, sync_playwright
 
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
-_BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
 _FORBIDDEN = (
     "electron",
     "contextBridge",
@@ -36,11 +35,11 @@ _FORBIDDEN = (
 
 
 def _bun() -> str:
-    found = shutil.which("bun")
+    from tests.support.pgurl import bun_path
+
+    found = bun_path()
     if found:
         return found
-    if _BUN.exists():
-        return str(_BUN)
     raise FileNotFoundError("bun")
 
 

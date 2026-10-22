@@ -14,7 +14,11 @@ for _entry in (
     if str(_entry) not in sys.path:
         sys.path.insert(0, str(_entry))
 
-DATABASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+from tests.support.pgurl import ensure_container, worker_url
+
+_PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
+ensure_container("rxy-w2c01-pg", 55432)
+DATABASE = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 
 
