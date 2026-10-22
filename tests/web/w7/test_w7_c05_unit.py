@@ -404,6 +404,24 @@ def _config_no_interpolate(
 
 
 @pytest.mark.timeout(1800)
+def _alembic_head() -> str:
+    """The chain's tip: the revision nothing points back to."""
+    import re as _re
+
+    versions = REPO / "packages" / "rxycode-server" / "alembic" / "versions"
+    revs: dict[str, str | None] = {}
+    for path in versions.glob("*.py"):
+        text_ = path.read_text(encoding="utf-8")
+        rev = _re.search(r'^revision\s*=\s*"([^"]+)"', text_, _re.M)
+        down = _re.search(r'^down_revision\s*=\s*"([^"]+)"', text_, _re.M)
+        if rev:
+            revs[rev.group(1)] = down.group(1) if down else None
+    children = {v for v in revs.values() if v}
+    heads = [r for r in revs if r not in children]
+    assert len(heads) == 1, f"alembic chain has {len(heads)} heads: {heads}"
+    return heads[0]
+
+
 def test_w7_c05_contract(compose_stack: dict[str, Any]) -> None:
     """Real ``compose up``: deps + migrate + api + worker + HTTPS gateway all pass."""
     stack = compose_stack
@@ -449,7 +467,7 @@ def test_w7_c05_contract(compose_stack: dict[str, Any]) -> None:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "007_password_resets", revision
+            assert revision == _alembic_head(), revision
             for table in ("runs", "run_events", "outbox", "users", "projects", "password_resets"):
                 found = conn.execute(
                     text("SELECT to_regclass(:name)"), {"name": f"public.{table}"}
