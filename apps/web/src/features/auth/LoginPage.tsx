@@ -5,7 +5,7 @@ import { Link, Navigate, useNavigate } from "react-router"
 import { useSafeNext } from "../../app/AuthGate"
 import { Button } from "../../components/ui/button"
 import { createClient, type Me } from "../../sdk/client"
-import { apiErrorText, isNetworkError, isUnauthorized } from "../../sdk/errors"
+import { apiErrorText, isUnauthorized } from "../../sdk/errors"
 import { AltchaWidget } from "./AltchaWidget"
 import { AuthLayout } from "./AuthLayout"
 
@@ -29,6 +29,7 @@ export function LoginPage() {
     queryFn: ({ signal }) => api.getCapabilities(signal),
     staleTime: 60_000,
   })
+  const capabilitiesReady = capabilities.data !== undefined
   const me = useQuery({
     queryKey: ["me"],
     queryFn: ({ signal }) => api.getMe(signal),
@@ -48,6 +49,19 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false)
   const [sending, setSending] = useState(false)
   const [cooldown, setCooldown] = useState(0)
+  const github = capabilities.data?.github === true
+  const local = capabilities.data?.local === true
+  const passwordLogin = capabilities.data?.password !== false
+  const codeLogin = (capabilities.data?.code_delivery ?? "none") !== "none"
+  const wantsCaptcha = capabilities.data?.captcha === "altcha"
+  const emailReady = /.+@.+\..+/.test(email.trim())
+  const canSend =
+    capabilitiesReady && emailReady && (!wantsCaptcha || !!captcha) && cooldown === 0
+  const canSubmit =
+    capabilitiesReady &&
+    !!email.trim() &&
+    (loginMode === "password" ? !!password : code.trim().length === 6) &&
+    (!wantsCaptcha || !!captcha)
 
   const finish = (body: Me) => {
     queryClient.setQueryData(["me"], body)
@@ -61,7 +75,15 @@ export function LoginPage() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
+    if (!capabilitiesReady) {
+      setError(
+        capabilities.isError
+          ? "无法确认验证码配置，请重试后再登录。"
+          : "正在确认验证码配置，请稍候后再试。",
+      )
+      return
+    }
+    if (busy || !canSubmit) return
     setBusy(true)
     setError("")
     api
@@ -79,7 +101,15 @@ export function LoginPage() {
   }
 
   const sendCode = () => {
-    if (sending || cooldown > 0) return
+    if (!capabilitiesReady) {
+      setError(
+        capabilities.isError
+          ? "无法确认验证码配置，请重试后再发送。"
+          : "正在确认验证码配置，请稍候后再试。",
+      )
+      return
+    }
+    if (sending || !canSend) return
     setSending(true)
     setError("")
     api
@@ -134,20 +164,31 @@ export function LoginPage() {
     )
   }
 
-  const github = capabilities.data?.github === true
-  const local = capabilities.data?.local === true
-  const passwordLogin = capabilities.data?.password !== false
-  const codeLogin = (capabilities.data?.code_delivery ?? "none") !== "none"
-  const wantsCaptcha = capabilities.data?.captcha === "altcha"
-  const emailReady = /.+@.+\..+/.test(email.trim())
-  const canSend = emailReady && (!wantsCaptcha || !!captcha) && cooldown === 0
-  const canSubmit =
-    !!email.trim() &&
-    (loginMode === "password" ? !!password : code.trim().length === 6) &&
-    (!wantsCaptcha || !!captcha)
-
   return (
     <AuthLayout>
+      {!capabilitiesReady ? (
+        <div
+          role={capabilities.isError ? "alert" : "status"}
+          className="mb-4 text-center text-sm text-muted"
+        >
+          <p>
+            {capabilities.isError
+              ? "无法确认验证码配置，请检查网络后重试。"
+              : "正在确认验证码配置，请稍候。"}
+          </p>
+          {capabilities.isError ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-2"
+              disabled={capabilities.isFetching}
+              onClick={() => void capabilities.refetch()}
+            >
+              {capabilities.isFetching ? "重试中…" : "重试"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {passwordLogin ? (
         <form onSubmit={submit} className="space-y-4">
           {codeLogin ? (
@@ -245,7 +286,11 @@ export function LoginPage() {
               {error}
             </p>
           ) : null}
-          <Button type="submit" className="w-full" disabled={busy || !canSubmit}>
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={!capabilitiesReady || busy || !canSubmit}
+          >
             {busy ? "正在登录…" : "登录"}
           </Button>
         </form>
@@ -309,11 +354,6 @@ export function LoginPage() {
             </form>
           ) : null}
         </div>
-      ) : null}
-      {capabilities.isError && isNetworkError(capabilities.error) ? (
-        <p className="mt-4 text-center text-sm text-muted">
-          部分登录方式暂不可用（无法连接服务器）
-        </p>
       ) : null}
     </AuthLayout>
   )

@@ -16,6 +16,7 @@
     "altcha": "^3.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "js-sha256": "1.0.0",
     "monaco-editor": "^0.57.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
@@ -26,12 +27,13 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.14",
+    "autoprefixer": "10.6.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "axe-core": "^4.14.0",
-    "tailwindcss": "^4.1.14",
+    "postcss": "8.5.31",
+    "tailwindcss": "3.4.19",
     "typescript": "^5.9.3",
     "vite": "^7.1.10"
   }

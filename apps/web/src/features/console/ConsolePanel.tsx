@@ -288,7 +288,7 @@ export function ConsolePanel() {
     <aside
       aria-label="控制台"
       className={
-        "fixed inset-0 z-50 flex flex-col bg-background " +
+        "rxy-console-panel fixed inset-0 z-50 flex flex-col bg-background " +
         "xl:static xl:z-auto xl:w-[400px] xl:shrink-0 xl:border-l xl:border-border"
       }
     >

@@ -217,7 +217,7 @@ export function ConnectionFormDialog({
           API Key{editing ? "（留空保留现有 Key）" : ""}
           <span className="relative mt-1 block">
             <input
-              className={inputClass + " mt-0 pr-10"}
+              className={inputClass + " mt-0 pr-14"}
               // 密码输入：服务端永不回传明文，眼睛只切当前草稿可见性。
               type={showKey ? "text" : "password"}
               name="api-key"
@@ -230,7 +230,7 @@ export function ConnectionFormDialog({
               type="button"
               aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
               title={showKey ? "隐藏 API Key" : "显示 API Key"}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:bg-sidebar"
+              className="rxy-key-visibility-toggle absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:bg-sidebar"
               onClick={() => setShowKey((v) => !v)}
             >
               {showKey ? <IconEyeOff size={15} /> : <IconEye size={15} />}

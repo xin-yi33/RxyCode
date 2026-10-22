@@ -25,6 +25,7 @@ export function RegisterPage() {
     queryFn: ({ signal }) => api.getCapabilities(signal),
     staleTime: 60_000,
   })
+  const capabilitiesReady = capabilities.data !== undefined
   const me = useQuery({
     queryKey: ["me"],
     queryFn: ({ signal }) => api.getMe(signal),
@@ -46,6 +47,13 @@ export function RegisterPage() {
   const registration = capabilities.data?.registration ?? "invite"
   const needsCode = (capabilities.data?.code_delivery ?? "none") !== "none"
   const wantsCaptcha = capabilities.data?.captcha === "altcha"
+  const emailReady = /.+@.+\..+/.test(email.trim())
+  const canSend =
+    capabilitiesReady && emailReady && (!wantsCaptcha || !!captcha) && cooldown === 0
+  const canSubmit =
+    capabilitiesReady &&
+    !!email.trim() && password.length >= 8 && (!needsCode || code.trim().length === 6) &&
+    (!wantsCaptcha || !!captcha)
 
   const refreshCaptcha = () => {
     setCaptcha("")
@@ -53,7 +61,15 @@ export function RegisterPage() {
   }
 
   const sendCode = () => {
-    if (sending || cooldown > 0) return
+    if (!capabilitiesReady) {
+      setError(
+        capabilities.isError
+          ? "无法确认验证码配置，请重试后再发送。"
+          : "正在确认验证码配置，请稍候后再试。",
+      )
+      return
+    }
+    if (sending || !canSend) return
     setSending(true)
     setError("")
     api
@@ -81,7 +97,15 @@ export function RegisterPage() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
+    if (!capabilitiesReady) {
+      setError(
+        capabilities.isError
+          ? "无法确认验证码配置，请重试后再注册。"
+          : "正在确认验证码配置，请稍候后再试。",
+      )
+      return
+    }
+    if (busy || !canSubmit) return
     setBusy(true)
     setError("")
     api
@@ -135,14 +159,31 @@ export function RegisterPage() {
     )
   }
 
-  const emailReady = /.+@.+\..+/.test(email.trim())
-  const canSend = emailReady && (!wantsCaptcha || !!captcha) && cooldown === 0
-  const canSubmit =
-    !!email.trim() && password.length >= 8 && (!needsCode || code.trim().length === 6) &&
-    (!wantsCaptcha || !!captcha)
-
   return (
     <AuthLayout>
+      {!capabilitiesReady ? (
+        <div
+          role={capabilities.isError ? "alert" : "status"}
+          className="mb-4 text-center text-sm text-muted"
+        >
+          <p>
+            {capabilities.isError
+              ? "无法确认验证码配置，请检查网络后重试。"
+              : "正在确认验证码配置，请稍候。"}
+          </p>
+          {capabilities.isError ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-2"
+              disabled={capabilities.isFetching}
+              onClick={() => void capabilities.refetch()}
+            >
+              {capabilities.isFetching ? "重试中…" : "重试"}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <form onSubmit={submit} className="space-y-4">
         <label className="block text-sm font-medium">
           邮箱
@@ -226,7 +267,11 @@ export function RegisterPage() {
             {error}
           </p>
         ) : null}
-        <Button type="submit" className="w-full" disabled={busy || !canSubmit}>
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={!capabilitiesReady || busy || !canSubmit}
+        >
           {busy ? "正在注册…" : "注册"}
         </Button>
       </form>

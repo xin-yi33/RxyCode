@@ -6,6 +6,7 @@ import { IconClose, IconSend, IconSpinner, IconStop } from "../../components/ico
 import { ApiError, createClient, type RunAccepted, type RunSummary } from "../../sdk/client"
 import { apiErrorText, isUnauthorized } from "../../sdk/errors"
 import { useUi, type PermissionProfile } from "../../state/ui"
+import { createSecureRequestId } from "../../lib/secureRequestId"
 import { LoginPrompt } from "../auth/LoginPrompt"
 import { useAuth } from "../auth/useAuth"
 import { useModelsCatalog } from "../models/queries"
@@ -47,6 +48,12 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const modelRef = draft?.modelRef
   const effectiveModelRef =
     modelRef !== undefined ? modelRef : (catalog.data?.default_model_ref ?? null)
+  const effectiveCatalogModel = catalog.data?.models.find(
+    (model) => model.model_ref === effectiveModelRef,
+  )
+  const modelNeedsReselection =
+    effectiveModelRef != null &&
+    (effectiveCatalogModel?.source === "platform" || !effectiveCatalogModel)
   const [sending, setSending] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [error, setError] = useState("")
@@ -118,7 +125,22 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
       setLoginPrompt("send")
       return
     }
-    const rid = requestId || crypto.randomUUID()
+    if (modelNeedsReselection) {
+      fail("当前模型已停止提供，请配置或重新选择自有模型", {
+        to: "/app/settings?section=models",
+        label: "管理模型",
+      })
+      return
+    }
+    let rid = requestId
+    if (!rid) {
+      try {
+        rid = createSecureRequestId()
+      } catch {
+        fail("无法安全创建请求标识，请更新浏览器后重试")
+        return
+      }
+    }
     patchDraft(draftKey, { text, requestId: rid })
     setSending(true)
     setError("")
@@ -204,7 +226,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   }
 
   return (
-    <div className="px-4 pb-4 pt-1">
+    <div className="rxy-composer-dock px-4 pb-4 pt-1">
       <div className="mx-auto max-w-3xl">
         {showPendingBanner ? (
           <p className="mb-2 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-ink">
@@ -237,7 +259,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             placeholder={active ? "任务运行中…" : "描述要做的任务…"}
             rows={1}
             className={
-              "block max-h-[200px] w-full resize-none bg-transparent px-4 pb-1 " +
+              "rxy-composer-input block max-h-[200px] w-full resize-none bg-transparent px-4 pb-1 " +
               "pt-3 text-sm leading-relaxed outline-none"
             }
             value={text}

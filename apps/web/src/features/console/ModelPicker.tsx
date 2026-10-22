@@ -1,10 +1,13 @@
 // CMP-07 模型选择按钮（PRD §6.1）：Composer 右下角、发送键左侧。
-// 目录来自 GET /models（仅登录态加载），按 provider_name 分组；
+// 目录来自 GET /models（仅登录态加载）；
 // 选中值存进 ComposerDraft.modelRef（幂等范围含模型 → 改选即重置 requestId）。
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react"
@@ -53,46 +56,90 @@ export function ModelPicker({
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState("")
   const [highlight, setHighlight] = useState(0)
+  const [mobileMenuPosition, setMobileMenuPosition] = useState<CSSProperties | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const wrapRef = usePopover<HTMLDivElement>(open, () => setOpen(false))
   const optionId = (ref: string) => `model-opt-${ref}`
 
-  const models = catalog.data?.models ?? []
-  const defaultRef = catalog.data?.default_model_ref ?? null
+  const catalogModels = catalog.data?.models ?? []
+  const models = catalogModels.filter((model) => model.source !== "platform")
+  const catalogDefaultRef = catalog.data?.default_model_ref ?? null
+  const defaultRef = models.some((model) => model.model_ref === catalogDefaultRef)
+    ? catalogDefaultRef
+    : null
   // undefined = 跟随服务端默认；catalog 未加载时按 null 处理。
   const selectedRef = draft?.modelRef !== undefined ? draft.modelRef : defaultRef
   const selectedModel = models.find((m) => m.model_ref === selectedRef) ?? null
+  const selectedPlatformModel =
+    catalogModels.find((m) => m.model_ref === selectedRef && m.source === "platform") ?? null
   const selectedBroken =
     selectedRef != null && (!selectedModel || selectedModel.status !== "available")
 
   const groups = useMemo(() => {
     const f = filter.trim().toLowerCase()
-    const map = new Map<string, ModelItem[]>()
-    for (const m of models) {
-      if (
-        f &&
-        !`${m.display_name} ${m.model_id} ${m.provider_name}`
-          .toLowerCase()
-          .includes(f)
-      ) {
-        continue
-      }
-      const key = m.provider_name || m.connection_name || "其他"
-      const list = map.get(key) ?? []
-      list.push(m)
-      map.set(key, list)
-    }
-    return [...map.entries()]
+    return models.filter(
+      (m) =>
+        !f || `${m.display_name} ${m.model_id} ${m.provider_name}`.toLowerCase().includes(f),
+    )
   }, [models, filter])
 
   const usable = useMemo(
-    () =>
-      groups
-        .flatMap(([, items]) => items)
-        .filter((m) => m.status === "available"),
+    () => groups.filter((m) => m.status === "available"),
     [groups],
   )
 
   useEffect(() => setHighlight(0), [filter, open])
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMobileMenuPosition(null)
+      return
+    }
+
+    const query = window.matchMedia("(max-width: 767px)")
+    let frame = 0
+    const positionMenu = () => {
+      frame = 0
+      if (!query.matches) {
+        setMobileMenuPosition(null)
+        return
+      }
+      const trigger = triggerRef.current
+      if (!trigger) return
+
+      const anchor = trigger.getBoundingClientRect()
+      const viewport = window.visualViewport
+      const visibleTop = viewport?.offsetTop ?? 0
+      const visibleBottom = visibleTop + (viewport?.height ?? window.innerHeight)
+      const gap = 8
+      const above = Math.max(0, anchor.top - visibleTop - gap)
+      const below = Math.max(0, visibleBottom - anchor.bottom - gap)
+      const openAbove = above >= Math.min(176, below) || above >= below
+      const available = openAbove ? above : below
+      const maxHeight = Math.max(0, Math.min(320, Math.floor(available)))
+      const layoutBottom = window.innerHeight - (openAbove ? anchor.top - gap : 0)
+
+      setMobileMenuPosition({
+        top: openAbove ? undefined : Math.round(anchor.bottom + gap),
+        bottom: openAbove ? Math.round(layoutBottom) : undefined,
+        maxHeight,
+      })
+    }
+    const schedule = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(positionMenu)
+    }
+
+    positionMenu()
+    window.addEventListener("resize", schedule, { passive: true })
+    window.visualViewport?.addEventListener("resize", schedule, { passive: true })
+    window.visualViewport?.addEventListener("scroll", schedule, { passive: true })
+    return () => {
+      window.removeEventListener("resize", schedule)
+      window.visualViewport?.removeEventListener("resize", schedule)
+      window.visualViewport?.removeEventListener("scroll", schedule)
+      if (frame !== 0) window.cancelAnimationFrame(frame)
+    }
+  }, [open])
   useEffect(() => {
     if (!open) return
     const target = usable[highlight]
@@ -115,11 +162,12 @@ export function ModelPicker({
       title = "模型目录加载失败，点击可重试"
     } else if (selectedRef != null) {
       if (selectedBroken) {
-        label = "模型不可用"
-        title = "所选模型已失效，请重新选择"
+        label = selectedPlatformModel ? "需重新选择模型" : "模型不可用"
+        title = selectedPlatformModel
+          ? "该模型已停止提供，请重新选择自有模型"
+          : "所选模型已失效，请重新选择"
       } else if (selectedModel) {
-        const provider = selectedModel.provider_name
-        label = `${provider ? `${provider} · ` : ""}${selectedModel.display_name || selectedModel.model_id}`
+        label = selectedModel.display_name || selectedModel.model_id
         title = label
       }
     }
@@ -168,6 +216,7 @@ export function ModelPicker({
   return (
     <div className="relative" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -185,19 +234,15 @@ export function ModelPicker({
           <IconSpinner size={12} />
         ) : null}
         <span className="min-w-0 truncate">{label}</span>
-        {authStatus === "authed" && selectedModel && !selectedBroken ? (
-          <span className="shrink-0 rounded-full bg-border px-1.5 py-0.5 text-[10px] leading-none text-muted-ink">
-            {selectedModel.source === "platform" ? "平台" : "个人"}
-          </span>
-        ) : null}
         <IconChevronDown size={12} className="shrink-0" />
       </button>
       {open ? (
         <div
           role="dialog"
           aria-label="选择模型"
+          style={mobileMenuPosition ?? undefined}
           className={
-            "absolute bottom-full right-0 z-40 mb-2 w-72 " +
+            "rxy-model-menu absolute bottom-full right-0 z-40 mb-2 w-72 " +
             "max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border " +
             "border-border bg-card shadow-lg"
           }
@@ -227,7 +272,11 @@ export function ModelPicker({
             </div>
           ) : models.length === 0 ? (
             <div className="space-y-2 p-3">
-              <p className="text-xs text-muted">尚未添加模型</p>
+              <p className={selectedPlatformModel ? "text-xs text-failure" : "text-xs text-muted"}>
+                {selectedPlatformModel
+                  ? "该模型已停止提供，请配置或重新选择自有模型"
+                  : "尚未添加模型"}
+              </p>
               <Link
                 className="text-xs underline"
                 to="/app/settings?section=models"
@@ -240,7 +289,9 @@ export function ModelPicker({
             <>
               {selectedBroken ? (
                 <p className="border-b border-border px-3 py-2 text-xs text-failure">
-                  当前所选模型不可用，请重新选择
+                  {selectedPlatformModel
+                    ? "该模型已停止提供，请配置或重新选择自有模型"
+                    : "当前所选模型不可用，请重新选择"}
                 </p>
               ) : null}
               <div className="border-b border-border p-2">
@@ -264,12 +315,7 @@ export function ModelPicker({
                 }
                 className="max-h-64 overflow-y-auto py-1"
               >
-                {groups.map(([group, items]) => (
-                  <div key={group}>
-                    <p className="px-3 pb-1 pt-2 text-[11px] font-medium text-muted">
-                      {group}
-                    </p>
-                    {items.map((m) => {
+                {groups.map((m) => {
                       const isUsable = m.status === "available"
                       const isSelected = m.model_ref === selectedRef
                       const isHighlighted =
@@ -283,9 +329,7 @@ export function ModelPicker({
                           aria-selected={isSelected}
                           disabled={!isUsable}
                           title={
-                            isUsable
-                              ? `${m.provider_name} · ${m.display_name || m.model_id}`
-                              : (STATUS_REASON[m.status] ?? "当前不可用")
+                            isUsable ? m.display_name || m.model_id : (STATUS_REASON[m.status] ?? "当前不可用")
                           }
                           onClick={() => choose(m)}
                           className={cn(
@@ -299,13 +343,8 @@ export function ModelPicker({
                           <span className="w-3.5 shrink-0 text-foreground">
                             {isSelected ? <IconCheck size={12} /> : null}
                           </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate">
-                              {m.display_name || m.model_id}
-                            </span>
-                            <span className="block truncate font-mono text-[10px] text-muted">
-                              {m.model_id}
-                            </span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {m.display_name || m.model_id}
                           </span>
                           {m.model_ref === defaultRef ? (
                             <span className="shrink-0 rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] text-success-ink">
@@ -317,16 +356,9 @@ export function ModelPicker({
                               {STATUS_REASON[m.status] ?? "不可用"}
                             </span>
                           ) : null}
-                          {m.source === "platform" ? (
-                            <span className="shrink-0 rounded-full bg-border px-1.5 py-0.5 text-[10px] text-muted-ink">
-                              平台
-                            </span>
-                          ) : null}
                         </button>
                       )
                     })}
-                  </div>
-                ))}
                 {groups.length === 0 ? (
                   <p className="px-3 py-3 text-xs text-muted">
                     没有匹配“{filter}”的模型

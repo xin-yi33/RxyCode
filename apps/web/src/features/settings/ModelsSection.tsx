@@ -112,8 +112,11 @@ export function ModelsSection() {
   const connsQ = useModelConnections()
   const catalog = useModelsCatalog()
   const conns = connsQ.data?.connections ?? []
-  const models = catalog.data?.models ?? []
-  const defaultRef = catalog.data?.default_model_ref ?? null
+  const models = (catalog.data?.models ?? []).filter((model) => model.source !== "platform")
+  const catalogDefaultRef = catalog.data?.default_model_ref ?? null
+  const defaultRef = models.some((model) => model.model_ref === catalogDefaultRef)
+    ? catalogDefaultRef
+    : null
 
   const [formOpen, setFormOpen] = useState<
     { mode: "add" } | { mode: "edit"; connection: ModelConnection } | null
@@ -179,7 +182,7 @@ export function ModelsSection() {
   const confirmLabel = confirm?.kind === "clear-key" ? "清除 Key" : "删除"
 
   // byok_available=false = 服务端密钥环不可用 → BYOK 整体不可用；
-  // require_byok=true 且零连接 → 平台要求自备模型但尚未配置。
+  // require_byok=true 且零连接 → 当前账号尚未配置自有模型。
   const needsConfig =
     access.data?.require_byok === true &&
     access.data.byok_available === true &&
@@ -199,8 +202,7 @@ export function ModelsSection() {
         <div className="rounded-lg border border-border bg-card p-4 text-sm">
           <p className="font-medium">自有模型暂不可用</p>
           <p className="mt-1 text-xs text-muted">
-            服务端密钥环未就绪，暂时无法接入自有 OpenAI 兼容服务
-            {access.data.platform_allowed ? "，可先使用平台模型" : ""}。
+            服务端密钥环未就绪，暂时无法接入自有 OpenAI 兼容服务。
           </p>
         </div>
       ) : null}
@@ -755,9 +757,6 @@ function ModelRow({
                 默认
               </span>
             ) : null}
-            <span className="ml-2 rounded-full bg-border px-1.5 py-0.5 text-[10px] text-muted-ink">
-              {isPlatform ? "平台" : "个人"}
-            </span>
           </span>
           <span className="text-xs text-muted">
             {model.connection_name || model.provider_name}
@@ -781,7 +780,7 @@ function ModelRow({
       </div>
       {!isPlatform ? (
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8">
-          <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-ink">
+          <label className="rxy-billable-confirm flex cursor-pointer items-center gap-1.5 text-xs text-muted-ink">
             <input
               type="checkbox"
               checked={confirmBillable}

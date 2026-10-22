@@ -1,8 +1,14 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 /* W9-F3: neutral console palette (replaces the warm beige theme). */
 :root {
   color-scheme: light;
+  --rxy-viewport-height: 100vh;
+  --rxy-viewport-width: 100vw;
+  --rxy-viewport-offset-top: 0px;
+  --rxy-viewport-offset-left: 0px;
   --rxy-bg: #ffffff;
   --rxy-sidebar: #f9f9f9;
   --rxy-fg: #0d0d0d;
@@ -20,6 +26,23 @@
   --rxy-success-ink: #166534;
   --rxy-failure-ink: #b91c1c;
   --rxy-muted-ink: #525252;
+  /* Comma-separated channels keep Tailwind v3 opacity modifiers on rgba(). */
+  --rxy-bg-rgb: 255, 255, 255;
+  --rxy-sidebar-rgb: 249, 249, 249;
+  --rxy-fg-rgb: 13, 13, 13;
+  --rxy-muted-rgb: 107, 107, 107;
+  --rxy-border-rgb: 229, 229, 229;
+  --rxy-card-rgb: 255, 255, 255;
+  --rxy-bubble-rgb: 243, 243, 243;
+  --rxy-running-rgb: 37, 99, 235;
+  --rxy-waiting-rgb: 217, 119, 6;
+  --rxy-success-rgb: 22, 163, 74;
+  --rxy-failure-rgb: 220, 38, 38;
+  --rxy-running-ink-rgb: 29, 78, 216;
+  --rxy-waiting-ink-rgb: 146, 64, 14;
+  --rxy-success-ink-rgb: 22, 101, 52;
+  --rxy-failure-ink-rgb: 185, 28, 28;
+  --rxy-muted-ink-rgb: 82, 82, 82;
 }
 
 .dark {
@@ -40,25 +63,22 @@
   --rxy-success-ink: #4ade80;
   --rxy-failure-ink: #f87171;
   --rxy-muted-ink: #a3a3a3;
-}
-
-@theme inline {
-  --color-background: var(--rxy-bg);
-  --color-sidebar: var(--rxy-sidebar);
-  --color-foreground: var(--rxy-fg);
-  --color-muted: var(--rxy-muted);
-  --color-border: var(--rxy-border);
-  --color-card: var(--rxy-card);
-  --color-bubble: var(--rxy-bubble);
-  --color-running: var(--rxy-running);
-  --color-waiting: var(--rxy-waiting);
-  --color-success: var(--rxy-success);
-  --color-failure: var(--rxy-failure);
-  --color-running-ink: var(--rxy-running-ink);
-  --color-waiting-ink: var(--rxy-waiting-ink);
-  --color-success-ink: var(--rxy-success-ink);
-  --color-failure-ink: var(--rxy-failure-ink);
-  --color-muted-ink: var(--rxy-muted-ink);
+  --rxy-bg-rgb: 33, 33, 33;
+  --rxy-sidebar-rgb: 23, 23, 23;
+  --rxy-fg-rgb: 236, 236, 236;
+  --rxy-muted-rgb: 163, 163, 163;
+  --rxy-border-rgb: 51, 51, 51;
+  --rxy-card-rgb: 33, 33, 33;
+  --rxy-bubble-rgb: 47, 47, 47;
+  --rxy-running-rgb: 96, 165, 250;
+  --rxy-waiting-rgb: 251, 191, 36;
+  --rxy-success-rgb: 74, 222, 128;
+  --rxy-failure-rgb: 248, 113, 113;
+  --rxy-running-ink-rgb: 96, 165, 250;
+  --rxy-waiting-ink-rgb: 251, 191, 36;
+  --rxy-success-ink-rgb: 74, 222, 128;
+  --rxy-failure-ink-rgb: 248, 113, 113;
+  --rxy-muted-ink-rgb: 163, 163, 163;
 }
 
 html,
@@ -94,6 +114,168 @@ body {
   border-radius: 0;
   font-size: inherit;
 }
+
+@supports (height: 100dvh) {
+  :root {
+    --rxy-viewport-height: 100dvh;
+  }
+}
+
+.rxy-app-shell {
+  height: var(--rxy-viewport-height, 100vh);
+  min-height: 0;
+}
+
+.rxy-auth-layout {
+  min-height: var(--rxy-viewport-height, 100vh);
+  box-sizing: border-box;
+}
+
+.rxy-modal {
+  max-height: calc(
+    var(--rxy-viewport-height, 100vh) - max(1rem, env(safe-area-inset-top)) -
+      max(1rem, env(safe-area-inset-bottom))
+  );
+}
+
+@media (max-width: 767px) {
+  .rxy-app-shell {
+    position: fixed;
+    top: var(--rxy-viewport-offset-top, 0px);
+    right: 0;
+    left: 0;
+    width: 100%;
+  }
+
+  .rxy-app-topbar {
+    height: calc(3rem + env(safe-area-inset-top));
+    padding-top: env(safe-area-inset-top);
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .rxy-sidebar-drawer {
+    top: var(--rxy-viewport-offset-top, 0px);
+    bottom: auto;
+    height: var(--rxy-viewport-height, 100vh);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .rxy-console-panel {
+    top: var(--rxy-viewport-offset-top, 0px);
+    bottom: auto;
+    height: var(--rxy-viewport-height, 100vh);
+  }
+
+  .rxy-console-panel > div:first-child {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+  }
+
+  .rxy-composer-dock {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .rxy-auth-layout {
+    align-items: flex-start;
+    overflow-y: auto;
+    padding-top: max(1rem, env(safe-area-inset-top));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  .rxy-auth-layout > section {
+    margin-block: auto;
+  }
+
+  .rxy-settings-page {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .rxy-modal {
+    position: fixed;
+    top: calc(
+      var(--rxy-viewport-offset-top, 0px) + max(0.5rem, env(safe-area-inset-top))
+    );
+    bottom: auto;
+    margin: 0 auto;
+    max-height: calc(
+      var(--rxy-viewport-height, 100vh) - max(1rem, env(safe-area-inset-top)) -
+        max(1rem, env(safe-area-inset-bottom))
+    );
+    width: calc(
+      var(--rxy-viewport-width, 100vw) - max(1rem, env(safe-area-inset-left)) -
+        max(1rem, env(safe-area-inset-right))
+    );
+  }
+
+  .rxy-model-menu {
+    position: fixed;
+    right: max(0.5rem, env(safe-area-inset-right));
+    left: max(0.5rem, env(safe-area-inset-left));
+    width: auto;
+    margin: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .rxy-app-shell button,
+  .rxy-app-shell select,
+  .rxy-app-shell [role="menuitem"],
+  .rxy-auth-layout button {
+    min-height: 44px;
+  }
+
+  .rxy-app-shell button[aria-label],
+  .rxy-app-shell select,
+  .rxy-auth-layout button {
+    min-width: 44px;
+  }
+
+  .rxy-app-shell input:not([type="checkbox"]):not([type="radio"]),
+  .rxy-app-shell textarea,
+  .rxy-app-shell select,
+  .rxy-auth-layout input:not([type="checkbox"]):not([type="radio"]),
+  .rxy-auth-layout textarea,
+  .rxy-auth-layout select {
+    min-height: 44px;
+    font-size: max(16px, 1em);
+  }
+
+  /* Native checkbox stays compact; the enclosing label supplies the 44px hit target. */
+  .rxy-app-shell input[type="checkbox"],
+  .rxy-app-shell input[type="radio"],
+  .rxy-auth-layout input[type="checkbox"],
+  .rxy-auth-layout input[type="radio"] {
+    width: 20px;
+    min-width: 20px;
+    height: 20px;
+    min-height: 20px;
+    flex: 0 0 20px;
+  }
+
+  .rxy-billable-confirm {
+    min-height: 44px;
+    padding-block: 0.25rem;
+  }
+
+  .rxy-key-visibility-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .rxy-sidebar-drawer nav a,
+  .rxy-sidebar-drawer [role="menuitem"],
+  .rxy-sidebar-drawer > div:nth-child(2) > a {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+}
+
 /* ---- 外观引擎钩子（UI-2026-10-22 §04） ------------------------------------
    applyAppearance() 在 <html> 上设置 data-theme-id / data-contrast /
    data-diff-markers / reduced-motion 类与 --rxy-* 变量。 */

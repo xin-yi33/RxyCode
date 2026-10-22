@@ -20,6 +20,7 @@ export function ForgotPasswordPage() {
     queryFn: ({ signal }) => api.getCapabilities(signal),
     staleTime: 60_000,
   })
+  const capabilitiesReady = capabilities.data !== undefined
   const [email, setEmail] = useState("")
   const [code, setCode] = useState("")
   const [password, setPassword] = useState("")
@@ -34,10 +35,19 @@ export function ForgotPasswordPage() {
   const [delivery, setDelivery] = useState("")
 
   const wantsCaptcha = capabilities.data?.captcha === "altcha"
+  const canSubmit = capabilitiesReady && (!wantsCaptcha || !!captcha)
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
+    if (!capabilitiesReady) {
+      setError(
+        capabilities.isError
+          ? "无法确认验证码配置，请重试后再发送。"
+          : "正在确认验证码配置，请稍候后再试。",
+      )
+      return
+    }
+    if (busy || !canSubmit) return
     setBusy(true)
     setError("")
     api
@@ -179,6 +189,29 @@ export function ForgotPasswordPage() {
       ) : (
         <form onSubmit={submit} className="space-y-4">
           <p className="text-sm text-muted">输入注册邮箱，我们会发送密码重置验证信息。</p>
+          {!capabilitiesReady ? (
+            <div
+              role={capabilities.isError ? "alert" : "status"}
+              className="text-center text-sm text-muted"
+            >
+              <p>
+                {capabilities.isError
+                  ? "无法确认验证码配置，请检查网络后重试。"
+                  : "正在确认验证码配置，请稍候。"}
+              </p>
+              {capabilities.isError ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-2"
+                  disabled={capabilities.isFetching}
+                  onClick={() => void capabilities.refetch()}
+                >
+                  {capabilities.isFetching ? "重试中…" : "重试"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           <label className="block text-sm font-medium">
             邮箱
             <input
@@ -202,7 +235,11 @@ export function ForgotPasswordPage() {
               {error}
             </p>
           ) : null}
-          <Button type="submit" className="w-full" disabled={busy || (wantsCaptcha && !captcha)}>
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={busy || !canSubmit}
+          >
             {busy ? "正在发送…" : "发送重置验证信息"}
           </Button>
           <p className="text-center text-sm text-muted">

@@ -33,12 +33,45 @@ export function Modal({
     }
   }, [])
 
+  useEffect(() => {
+    const el = ref.current
+    const viewport = window.visualViewport
+    if (!el || !viewport) return
+
+    let frame = 0
+    const keepFocusedControlVisible = () => {
+      if (frame !== 0) return
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        const active = document.activeElement
+        if (!(active instanceof HTMLElement) || !el.contains(active)) return
+
+        const dialogRect = el.getBoundingClientRect()
+        const controlRect = active.getBoundingClientRect()
+        const visibleTop = Math.max(viewport.offsetTop, dialogRect.top) + 2
+        const visibleBottom =
+          Math.min(viewport.offsetTop + viewport.height, dialogRect.bottom) - 2
+        if (controlRect.top < visibleTop || controlRect.bottom > visibleBottom) {
+          active.scrollIntoView({ block: "nearest", inline: "nearest" })
+        }
+      })
+    }
+
+    viewport.addEventListener("resize", keepFocusedControlVisible, { passive: true })
+    viewport.addEventListener("scroll", keepFocusedControlVisible, { passive: true })
+    return () => {
+      viewport.removeEventListener("resize", keepFocusedControlVisible)
+      viewport.removeEventListener("scroll", keepFocusedControlVisible)
+      if (frame !== 0) window.cancelAnimationFrame(frame)
+    }
+  }, [])
+
   return (
     <dialog
       ref={ref}
       aria-label={label}
       className={cn(
-        "m-auto max-h-[85vh] w-[calc(100vw-2rem)] max-w-md overflow-y-auto " +
+        "rxy-modal m-auto max-h-[85vh] w-[calc(100vw-2rem)] max-w-md overflow-y-auto " +
           "rounded-xl border border-border bg-card p-0 text-foreground " +
           "shadow-xl backdrop:bg-black/50",
         className,
