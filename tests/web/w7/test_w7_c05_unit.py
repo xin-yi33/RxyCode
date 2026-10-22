@@ -879,8 +879,8 @@ def test_w7_c05_projection_terminal_survives_cap() -> None:
     captured: list[tuple[str, dict[str, Any]]] = []
     original = store.append_event
     try:
-        store.append_event = (
-            lambda _url, **kw: captured.append(  # type: ignore[assignment]
+        store.append_event = lambda _url, **kw: (
+            captured.append(  # type: ignore[assignment]
                 (str(kw.get("event_type")), dict(kw.get("payload") or {}))
             )
             or 0
@@ -1348,16 +1348,9 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn,
-        *,
-        tenant_id,
-        run_id,
-        model_id,
-        price_version,
-        tokens,
-        event_id,
-        attribution=None,
-        recompute=None: adjusted.append((tenant_id, run_id, tokens)) or {"tokens": tokens},
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens, event_id, attribution=None, recompute=None: (
+            adjusted.append((tenant_id, run_id, tokens)) or {"tokens": tokens}
+        ),
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert not files[0].exists()
@@ -1908,14 +1901,9 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
     seen = []
     monkeypatch.setattr(
         "rxycode_server.usage.service.adjust_terminal_usage",
-        lambda _d,
-        *,
-        tenant_id,
-        run_id,
-        tokens,
-        event_id,
-        attribution=None,
-        recompute=None: seen.append(tokens) or {"tokens": tokens},
+        lambda _d, *, tenant_id, run_id, tokens, event_id, attribution=None, recompute=None: (
+            seen.append(tokens) or {"tokens": tokens}
+        ),
     )
     drain._reconcile_lost_lease_ledger("db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5})
     assert seen == [105]
@@ -1961,16 +1949,9 @@ def test_w7_c05_spool_replay_inserts_missing_ledger(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn,
-        *,
-        tenant_id,
-        run_id,
-        model_id,
-        price_version,
-        tokens,
-        event_id,
-        attribution=None,
-        recompute=None: seen.append((run_id, model_id, tokens)) or {"tokens": tokens},
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens, event_id, attribution=None, recompute=None: (
+            seen.append((run_id, model_id, tokens)) or {"tokens": tokens}
+        ),
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert not files[0].exists()
@@ -2005,10 +1986,9 @@ def test_w7_c05_pending_spool_unjournaled_journals_first(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         store,
         "append_event",
-        lambda _dsn, *, tenant_id, run_id, event_type, payload: written.append(
-            (event_type, dict(payload))
-        )
-        or 1,
+        lambda _dsn, *, tenant_id, run_id, event_type, payload: (
+            written.append((event_type, dict(payload))) or 1
+        ),
     )
     monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"4": 73})
     monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
@@ -2016,16 +1996,9 @@ def test_w7_c05_pending_spool_unjournaled_journals_first(tmp_path, monkeypatch) 
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn,
-        *,
-        tenant_id,
-        run_id,
-        model_id,
-        price_version,
-        tokens,
-        event_id,
-        attribution=None,
-        recompute=None: upserts.append((run_id, tokens)) or {"tokens": tokens},
+        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens, event_id, attribution=None, recompute=None: (
+            upserts.append((run_id, tokens)) or {"tokens": tokens}
+        ),
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert written and written[0][0] == "usage.delta"
