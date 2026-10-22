@@ -161,4 +161,5 @@
 
 - `tsc --noEmit` 全绿；`vite build` 通过；`ruff check`（全部改动后端文件）全绿；后端模块 `import` 校验通过。
 - `memory/` 与 `tools/memory_tool.py` 行尾已归一为原样 LF，diff 仅语义改动。
-- 待执行（上线前门禁）：Docker 起来后 `pytest tests/web/w10/`、浏览器页面元素逐项核对（webapp-testing/Playwright）。**未部署到生产。**
+- 浏览器元素核对（Playwright + 路由级 API mock，1400px 与 390px 移动视口）：31/31 通过——外观分区全部控件（模式缩略图/主题下拉≥4项/强调色/双色盘/分模式开关/高级折叠/0–100 对比度/字号 stepper/减少动态/差异标记/恢复默认）、通知 10 行胶囊下拉与禁用行、/scheduled 标题+筛选+输入栏+行渲染、归档页搜索/筛选/分组、移动端抽屉开合与无横向溢出、无 pageerror。
+- 待执行（上线前门禁）：Docker 起来后 `pytest tests/web/w10/`（postgres 契约）、真实后端联调冒烟。**未部署到生产。**
