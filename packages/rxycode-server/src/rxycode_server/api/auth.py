@@ -515,7 +515,20 @@ def _local_account(db: Session) -> tuple[User, Organization]:
     if user is not None:
         tenant_id = db.scalars(
             select(Membership.tenant_id).where(Membership.user_id == user.id)
-        ).one()
+        ).one_or_none()
+        if tenant_id is None:
+            org = Organization(id=uuid.uuid4().hex, tenant_id=uuid.uuid4().hex)
+            db.add(org)
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=org.tenant_id,
+                    user_id=user.id,
+                    role="owner",
+                )
+            )
+            db.flush()
+            return user, org
         org = db.scalars(select(Organization).where(Organization.tenant_id == tenant_id)).one()
         return user, org
     user = User(id=uuid.uuid4().hex, github_id=None, kind="local")

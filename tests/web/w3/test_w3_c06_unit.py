@@ -26,7 +26,14 @@ _c02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_c02)
 
 from rxycode_server.approvals.service import request_approval  # noqa: E402
-from rxycode_server.persistence.models import Approval, Membership, Project, SessionRow, User  # noqa: E402
+from rxycode_server.persistence.models import (  # noqa: E402
+    Approval,
+    Membership,
+    Organization,
+    Project,
+    SessionRow,
+    User,
+)
 from rxycode_server.runs.service import create_run  # noqa: E402
 from rxycode_worker.supervisor import claim  # noqa: E402
 
@@ -34,10 +41,25 @@ from rxycode_worker.supervisor import claim  # noqa: E402
 def _seed(deadline: datetime) -> tuple[str, str]:
     engine = create_engine(_c02.URL)
     with Session(engine) as db:
-        user = db.scalars(select(User).where(User.kind == "local")).one()
+        user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
+        if user is None:
+            user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
+            db.add(user)
+            db.flush()
         tenant_id = db.scalars(
             select(Membership.tenant_id).where(Membership.user_id == user.id)
-        ).one()
+        ).one_or_none()
+        if tenant_id is None:
+            tenant_id = uuid.uuid4().hex
+            db.add(Organization(id=uuid.uuid4().hex, tenant_id=tenant_id))
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=tenant_id,
+                    user_id=user.id,
+                    role="owner",
+                )
+            )
         project_id = uuid.uuid4().hex
         session_id = uuid.uuid4().hex
         db.add(

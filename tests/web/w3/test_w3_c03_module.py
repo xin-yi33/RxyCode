@@ -19,6 +19,7 @@ if str(_SERVER) not in sys.path:
 from rxycode_server.events.store import append_event, prune_through  # noqa: E402
 from rxycode_server.persistence.models import (  # noqa: E402
     Membership,
+    Organization,
     Project,
     SessionRow,
     User,
@@ -35,10 +36,25 @@ _spec.loader.exec_module(_c02)
 def _seed() -> tuple[str, str, str]:
     engine = create_engine(_c02.URL)
     with Session(engine) as db:
-        user = db.scalars(select(User).where(User.kind == "local")).one()
+        user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
+        if user is None:
+            user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
+            db.add(user)
+            db.flush()
         tenant_id = db.scalars(
             select(Membership.tenant_id).where(Membership.user_id == user.id)
-        ).one()
+        ).one_or_none()
+        if tenant_id is None:
+            tenant_id = uuid.uuid4().hex
+            db.add(Organization(id=uuid.uuid4().hex, tenant_id=tenant_id))
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=tenant_id,
+                    user_id=user.id,
+                    role="owner",
+                )
+            )
         project_id = uuid.uuid4().hex
         session_id = uuid.uuid4().hex
         db.add(Project(id=project_id, tenant_id=tenant_id, name="chat", repo_config={}))

@@ -21,7 +21,7 @@ assert _spec is not None and _spec.loader is not None
 _c02 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_c02)
 
-from rxycode_server.persistence.models import Membership, Project, User  # noqa: E402
+from rxycode_server.persistence.models import Membership, Organization, Project, User  # noqa: E402
 
 
 def _git(root: Path, *args: str) -> str:
@@ -54,10 +54,25 @@ def _git_init(root: Path) -> None:
 def _project(root: Path, target: str) -> str:
     engine = create_engine(_c02.URL)
     with Session(engine) as db:
-        user = db.scalars(select(User).where(User.kind == "local")).one()
+        user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
+        if user is None:
+            user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
+            db.add(user)
+            db.flush()
         tenant_id = db.scalars(
             select(Membership.tenant_id).where(Membership.user_id == user.id)
-        ).one()
+        ).one_or_none()
+        if tenant_id is None:
+            tenant_id = uuid.uuid4().hex
+            db.add(Organization(id=uuid.uuid4().hex, tenant_id=tenant_id))
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=tenant_id,
+                    user_id=user.id,
+                    role="owner",
+                )
+            )
         project_id = uuid.uuid4().hex
         db.add(
             Project(
