@@ -156,6 +156,16 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
         user_message="Produce the verified calculator artifact",
     )
     monkeypatch.setattr(agent_v2_module, "get_tui", lambda: recording_tui)
+    captured_records: list[dict] = []
+    original_record = agent_v2_module.ToolOrchestrator._record_evidence
+
+    def _capture(evidence):
+        captured_records.append(evidence.model_dump())
+        return original_record(evidence)
+
+    monkeypatch.setattr(
+        agent_v2_module.ToolOrchestrator, "_record_evidence", staticmethod(_capture)
+    )
     agent = AgentV2()
     # The build-workflow gate issues a real ``llm.ainvoke`` through
     # ``_workflow_model_text`` before the graph runs.  Under the scripted
@@ -221,6 +231,15 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
             }
             for task_id, task in (tree.nodes.items() if tree else [])
         },
+        "errors": {
+            task_id: list(task.error_history or [])
+            for task_id, task in (tree.nodes.items() if tree else [])
+        },
+        "reflections": {
+            task_id: list(task.reflections or [])
+            for task_id, task in (tree.nodes.items() if tree else [])
+        },
+        "tool_records": captured_records,
     }
     assert result == expected_final, repr(diagnostics)
     assert artifact.read_text(encoding="utf-8") == expected
