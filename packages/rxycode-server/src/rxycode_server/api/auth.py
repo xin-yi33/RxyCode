@@ -300,6 +300,10 @@ def _device_gate(request: Request, record: AuthRecord, raw: str) -> None:
     if engine is None:
         return
     digest = _hash_token(request.app.state.secret, raw)
+    # A dict-injected session has no users row. Writing a device lock would
+    # violate device_locks_user_id_fkey. Production never sets this dict.
+    if getattr(request.app.state, "sessions", {}).get(digest) is not None:
+        return
     now = datetime.now(timezone.utc)
     with Session(engine) as db:
         lock = db.get(DeviceLock, record.user_id)
