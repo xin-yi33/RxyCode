@@ -31,3 +31,6 @@ redis>=5,<7
 langgraph-checkpoint-postgres>=3,<4
 boto3>=1.34,<2
 pywinpty>=2,<3; platform_system == 'Windows'
+# Security surface (UI-2026-10-22): TOTP enrolment + WebAuthn passkeys.
+pyotp>=2.9,<3
+webauthn>=2.0,<3

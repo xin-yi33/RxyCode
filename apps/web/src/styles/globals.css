@@ -94,3 +94,61 @@ body {
   border-radius: 0;
   font-size: inherit;
 }
+/* ---- 外观引擎钩子（UI-2026-10-22 §04） ------------------------------------
+   applyAppearance() 在 <html> 上设置 data-theme-id / data-contrast /
+   data-diff-markers / reduced-motion 类与 --rxy-* 变量。 */
+
+:root {
+  --rxy-ui-font: 14px;
+  --rxy-code-font: 13px;
+  --rxy-accent: #0f62fe;
+  --rxy-bg: transparent;
+  --rxy-fg: inherit;
+}
+
+.rxy-app-shell {
+  font-size: var(--rxy-ui-font);
+}
+
+.rxy-app-shell code,
+.rxy-app-shell pre,
+.rxy-app-shell kbd {
+  font-size: var(--rxy-code-font);
+}
+
+/* 高对比：加深文本与边框的分离度。 */
+:root[data-contrast="high"] .rxy-app-shell {
+  --border: #6b7280;
+}
+:root[data-contrast="high"].dark .rxy-app-shell,
+:root[data-contrast="high"] .dark .rxy-app-shell {
+  --border: #9ca3af;
+}
+:root[data-contrast="high"] .rxy-app-shell .text-muted,
+:root[data-contrast="high"] .rxy-app-shell .text-muted-ink {
+  opacity: 1;
+  filter: contrast(1.2);
+}
+
+/* 减弱动画（reduced_motion=on 或系统偏好且非 off）。 */
+.reduced-motion .rxy-app-shell *,
+.reduced-motion .rxy-app-shell *::before,
+.reduced-motion .rxy-app-shell *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* 差异标记 = symbols：不依赖颜色区分 diff 状态（色盲友好）。 */
+:root[data-diff-markers="symbols"] .rxy-diff-add::before {
+  content: "+ ";
+}
+:root[data-diff-markers="symbols"] .rxy-diff-del::before {
+  content: "− ";
+}
+:root[data-diff-markers="symbols"] .rxy-diff-add,
+:root[data-diff-markers="symbols"] .rxy-diff-del {
+  background: transparent;
+  text-decoration: underline dotted;
+}

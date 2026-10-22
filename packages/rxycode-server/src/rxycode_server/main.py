@@ -147,6 +147,19 @@ def create_app(
     app.include_router(files_router)
     app.include_router(version_router)
     app.include_router(product_router)
+    from rxycode_server.api.notifications import router as notify_router
+    from rxycode_server.api.preferences import router as preferences_router
+    from rxycode_server.api.schedules import router as schedules_router
+    from rxycode_server.api.search import router as search_router
+    from rxycode_server.api.security import router as security_router
+    from rxycode_server.api.sessions import router as sessions_router
+
+    app.include_router(sessions_router)
+    app.include_router(schedules_router)
+    app.include_router(notify_router)
+    app.include_router(preferences_router)
+    app.include_router(search_router)
+    app.include_router(security_router)
     app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
     app.include_router(build_router())
     app.state.preview_proxy = PreviewProxy()

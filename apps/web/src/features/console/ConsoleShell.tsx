@@ -2,7 +2,9 @@ import { useEffect } from "react"
 import { Outlet } from "react-router"
 
 import { useUi } from "../../state/ui"
+import { useMobileViewport } from "../../lib/useMobileViewport"
 import { DeviceConflictModal } from "../devices/DeviceConflictModal"
+import { SearchModal } from "../search/SearchModal"
 import { ConsolePanel } from "./ConsolePanel"
 import { Sidebar } from "./Sidebar"
 import { Topbar } from "./Topbar"
@@ -11,6 +13,7 @@ import { Topbar } from "./Topbar"
 // bottom console panel. Theme/offline side effects live here so they apply to
 // every /app page.
 export function ConsoleShell() {
+  useMobileViewport()
   const consoleOpen = useUi((state) => state.consoleOpen)
   const setOffline = useUi((state) => state.setOffline)
   const setSidebarOpen = useUi((state) => state.setSidebarOpen)
@@ -36,7 +39,7 @@ export function ConsoleShell() {
   }, [setSidebarOpen])
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+    <div className="rxy-app-shell flex h-screen min-h-0 overflow-hidden bg-background text-foreground">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
@@ -50,6 +53,8 @@ export function ConsoleShell() {
       </div>
       {/* 409 DEVICE_IN_USE 全局模态（queryClient.onError 置位后渲染）。 */}
       <DeviceConflictModal />
+      {/* Ctrl+K 全局搜索（UI-2026-10-22 §02）。 */}
+      <SearchModal />
     </div>
   )
 }

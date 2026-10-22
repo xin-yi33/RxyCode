@@ -19,6 +19,7 @@ type UiState = {
   offline: boolean
   sidebarOpen: boolean
   consoleOpen: boolean
+  searchOpen: boolean
   drafts: Record<string, ComposerDraft>
   // 访客登录跳转前置位：登录返回后 Composer 显示“草稿已保留”横幅，
   // 绝不自动重新发送（PRD §3.3 禁止自动提交）。
@@ -33,6 +34,7 @@ type UiState = {
   toggleSidebar: () => void
   setConsoleOpen: (open: boolean) => void
   toggleConsole: () => void
+  setSearchOpen: (open: boolean) => void
   setPendingIntent: (value: boolean) => void
   setDeviceConflict: (value: boolean) => void
   draftFor: (sessionId: string) => ComposerDraft
@@ -79,6 +81,7 @@ export const useUi = create<UiState>()((set, get) => ({
   offline: false,
   sidebarOpen: true,
   consoleOpen: false,
+  searchOpen: false,
   drafts: {},
   pendingIntent: false,
   deviceConflict: false,
@@ -96,6 +99,7 @@ export const useUi = create<UiState>()((set, get) => ({
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
   setConsoleOpen: (consoleOpen) => set({ consoleOpen }),
   toggleConsole: () => set({ consoleOpen: !get().consoleOpen }),
+  setSearchOpen: (searchOpen) => set({ searchOpen }),
   setPendingIntent: (pendingIntent) => set({ pendingIntent }),
   setDeviceConflict: (deviceConflict) => set({ deviceConflict }),
   draftFor: (sessionId) => get().drafts[sessionId] ?? EMPTY_DRAFT,

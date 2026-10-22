@@ -92,9 +92,16 @@ def _session_row(db: Session, record, session_id: str) -> SessionRow:
             SessionRow.tenant_id == record.tenant_id,
         )
     ).one_or_none()
-    if row is None:
+    # A tombstoned session is gone for every reader — detail, history, runs.
+    if row is None or row.deleted_at is not None:
         raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
     return row
+
+
+def _require_executable(row: SessionRow) -> None:
+    """archived = server-side execution freeze (submit/steer/schedule)."""
+    if row.archived_at is not None:
+        raise HTTPException(status_code=409, detail="SESSION_ARCHIVED")
 
 
 def _default_project(db: Session, record) -> str:
@@ -158,9 +165,7 @@ def _submit(
         _discard(db, fresh_session)
         session_id = run.session_id
     now = datetime.now(timezone.utc)
-    db.execute(
-        update(SessionRow).where(SessionRow.id == session_id).values(updated_at=now)
-    )
+    db.execute(update(SessionRow).where(SessionRow.id == session_id).values(updated_at=now))
     db.commit()
     return JSONResponse(
         status_code=202,
@@ -198,7 +203,11 @@ def _final_previews(db: Session, tenant_id: str, run_ids: list[str]) -> dict[str
         return {}
     rows = db.scalars(
         select(RunEvent)
-        .where(RunEvent.tenant_id == tenant_id, RunEvent.run_id.in_(run_ids), RunEvent.type == "assistant.final")
+        .where(
+            RunEvent.tenant_id == tenant_id,
+            RunEvent.run_id.in_(run_ids),
+            RunEvent.type == "assistant.final",
+        )
         .order_by(RunEvent.seq)
     ).all()
     previews: dict[str, str] = {}
@@ -290,9 +299,7 @@ def create_task(
         project_id = _default_project(db, record)
         db.flush()
     existing = db.scalars(
-        select(Run).where(
-            Run.tenant_id == record.tenant_id, Run.request_id == payload.request_id
-        )
+        select(Run).where(Run.tenant_id == record.tenant_id, Run.request_id == payload.request_id)
     ).one_or_none()
     if existing is not None:
         digest = _digest(
@@ -357,6 +364,7 @@ def create_session_run(
     record = current_record(request)
     _check_run_input(payload.message, payload.request_id, payload.permission_profile)
     session = _session_row(db, record, session_id)
+    _require_executable(session)
     model_snapshot = resolve_run_model(
         db,
         record,
@@ -399,8 +407,7 @@ def list_session_runs(
     if cursor is not None:
         moment, run_id = cursor
         query = query.where(
-            (Run.created_at < moment)
-            | ((Run.created_at == moment) & (Run.id < run_id))
+            (Run.created_at < moment) | ((Run.created_at == moment) & (Run.id < run_id))
         )
     runs = db.scalars(query.limit(limit + 1)).all()
     next_cursor = ""
@@ -431,19 +438,32 @@ def list_session_runs(
 @router.get("/api/v1/sessions")
 def list_tenant_sessions(
     request: Request,
+    archived: str = "false",
+    pinned: str | None = None,
+    project_id: str | None = None,
+    origin: str = "all",
+    source: str = "all",
+    sort: str = "updated_at",
+    q: str = "",
+    cursor: str = "",
+    limit: int = 30,
     db: Session = Depends(db_session),
 ) -> dict[str, object]:
-    record = current_record(request)
-    rows = db.scalars(
-        select(SessionRow)
-        .where(SessionRow.tenant_id == record.tenant_id)
-        .order_by(SessionRow.updated_at.desc())
-        .limit(50)
-    ).all()
-    latest = _last_runs(db, record.tenant_id, [row.id for row in rows])
-    return {
-        "sessions": [_session_item(db, row, latest.get(row.id)) for row in rows]
-    }
+    from rxycode_server.api.sessions import list_sessions_filtered
+
+    return list_sessions_filtered(
+        request,
+        db,
+        archived=archived,
+        pinned=pinned,
+        project_id=project_id,
+        origin=origin,
+        source=source,
+        sort=sort,
+        q=q,
+        cursor=cursor,
+        limit=limit,
+    )
 
 
 @router.get("/api/v1/runs/{run_id}")
@@ -480,7 +500,9 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     try:
         with Session(engine) as db:
             row = db.execute(
-                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+                select(Run)
+                .where(Run.id == run_id, Run.tenant_id == record.tenant_id)
+                .with_for_update()
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
@@ -496,7 +518,9 @@ def cancel_run(run_id: str, request: Request) -> dict[str, str]:
             if row.status != next_status:
                 row.status = next_status
                 row.revision = int(row.revision or 0) + 1
-                retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
+                retained = db.scalar(
+                    select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id)
+                )
                 seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
                 row.event_seq = seq
                 event_id = uuid.uuid4().hex
@@ -546,12 +570,15 @@ async def steer_run(run_id: str, request: Request) -> dict[str, object]:
     try:
         with Session(engine) as db:
             row = db.execute(
-                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+                select(Run)
+                .where(Run.id == run_id, Run.tenant_id == record.tenant_id)
+                .with_for_update()
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
             if row.status in _DONE:
                 raise HTTPException(status_code=409, detail="RUN_TERMINAL")
+            _require_executable(_session_row(db, record, row.session_id))
             retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == row.id))
             seq = max(int(row.event_seq or 0), int(retained or 0)) + 1
             row.event_seq = seq
@@ -583,7 +610,12 @@ async def steer_run(run_id: str, request: Request) -> dict[str, object]:
     from rxycode_worker.agent_events import deliver_persisted_command
 
     delivered = await deliver_persisted_command(run_id, "steer.accepted", {"text": text})
-    return {"run_id": run_id, "status": "accepted", "text": text, "delivered": bool(delivered.get("delivered") or delivered.get("accepted"))}
+    return {
+        "run_id": run_id,
+        "status": "accepted",
+        "text": text,
+        "delivered": bool(delivered.get("delivered") or delivered.get("accepted")),
+    }
 
 
 @router.post("/api/v1/runs/{run_id}/children/{session_id}/cancel")
@@ -595,7 +627,9 @@ async def cancel_child_run(run_id: str, session_id: str, request: Request) -> di
     try:
         with Session(engine) as db:
             row = db.execute(
-                select(Run).where(Run.id == run_id, Run.tenant_id == record.tenant_id).with_for_update()
+                select(Run)
+                .where(Run.id == run_id, Run.tenant_id == record.tenant_id)
+                .with_for_update()
             ).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")

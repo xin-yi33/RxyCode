@@ -23,7 +23,7 @@ export type Me = {
   default_project_id: string | null
 }
 
-export type Project = { id: string; name: string }
+export type Project = { id: string; name: string } & Partial<ProjectItem>
 
 export type RunAccepted = {
   run_id: string
@@ -148,8 +148,210 @@ export type SessionListItem = {
   id: string
   title: string
   project_id: string
+  project_name?: string | null
+  is_default_project?: boolean
+  created_at?: string | null
   updated_at: string | null
+  archived_at?: string | null
+  archived?: boolean
+  origin?: "local" | "cloud" | string
+  source?: "chat" | "scheduled" | string
+  pinned?: boolean
+  pin_order?: number | null
+  revision?: number
   last_run: { run_id: string; status: string } | null
+  can_execute?: boolean
+  blocked_reason?: string
+}
+
+export type SessionListResponse = {
+  sessions: SessionListItem[]
+  next_cursor: string | null
+}
+
+export type SessionListQuery = {
+  archived?: "false" | "true" | "all"
+  pinned?: "true" | "false"
+  project_id?: string
+  origin?: "all" | "local" | "cloud"
+  source?: "all" | "chat" | "scheduled"
+  sort?: "updated_at" | "created_at" | "title" | "manual"
+  q?: string
+  cursor?: string
+  limit?: number
+}
+
+export type ProjectItem = {
+  id: string
+  name: string
+  tenant_id: string
+  memory_mode?: string
+  is_default?: boolean
+  pinned?: boolean
+  pin_order?: number | null
+  revision?: number
+  created_at?: string | null
+  instructions?: string
+}
+
+export type SearchHit = {
+  id: string
+  type: "chat" | "image" | "document" | "project"
+  title: string
+  snippet: string
+  highlights: number[][]
+  updated_at: string | null
+  session_id: string | null
+  project_id: string | null
+  archived: boolean
+  href: string
+  preview: { content_type?: string; size?: number } | null
+}
+
+export type SearchResponse = {
+  query: string
+  type: string
+  hits: SearchHit[]
+  next_cursor: string | null
+}
+
+export type AppearanceProfile = {
+  theme_id?: string
+  accent?: string
+  background?: string
+  foreground?: string
+  ui_font_px?: number
+  code_font_px?: number
+  contrast?: "normal" | "high"
+}
+
+export type Preferences = {
+  revision: number
+  locale: "auto" | "zh-CN" | "en" | string
+  sidebar: {
+    grouping: "project" | "merged"
+    sort: "updated_at" | "manual"
+    show_projects: boolean
+  }
+  appearance: {
+    mode: "system" | "light" | "dark"
+    separate_modes: boolean
+    shared: AppearanceProfile
+    light: AppearanceProfile | null
+    dark: AppearanceProfile | null
+    reduced_motion: "system" | "on" | "off"
+    diff_markers: "color" | "symbols"
+  }
+}
+
+export type ScheduleRule =
+  | { kind: "interval"; every: number; unit: "minutes" | "hours" | "days" }
+  | { kind: "at"; time: string; once?: boolean }
+  | { kind: "weekly"; weekdays: number[]; time: string }
+
+export type Schedule = {
+  id: string
+  name: string
+  project_id: string
+  session_id: string
+  message: string
+  rule: ScheduleRule
+  timezone: string
+  model_ref: string | null
+  permission_profile: string
+  enabled: boolean
+  notify: boolean
+  next_fire: string | null
+  next_occurrences: string[]
+  last_execution: {
+    id: string
+    scheduled_for: string | null
+    status: string
+    reason: string
+    run_id: string | null
+  } | null
+  revision: number
+  blocked_reason: string
+  created_at: string | null
+}
+
+export type ScheduleExecution = {
+  id: string
+  schedule_id: string
+  scheduled_for: string | null
+  schedule_revision: number
+  run_id: string | null
+  status: string
+  reason: string
+  notification_status: string
+}
+
+export type NotificationCategory = {
+  id: string
+  label: string
+  available: boolean
+  reason: string
+  allowed_channels: string[]
+  selected_channels: string[]
+}
+
+export type NotificationPreferences = {
+  revision: number
+  categories: NotificationCategory[]
+  email_delivery: string
+  push_capability: { available: boolean; reason: string }
+}
+
+export type NotificationItem = {
+  id: string
+  run_id: string
+  kind: string
+  status: string
+  body: string
+  title: string
+  category: string
+  delivery: string
+  read: boolean
+  created_at: string | null
+  tenant_id: string
+}
+
+export type SecurityOverview = {
+  password_present: boolean
+  passkeys_count: number
+  totp_enabled: boolean
+  sms_enabled: boolean
+  active_sessions_count: number
+  authorized_apps_count: number
+  capabilities: Record<string, { available: boolean; reason: string }>
+}
+
+export type AuthSessionItem = {
+  id: string
+  created_at: string | null
+  last_seen_at: string | null
+  expires_at: string | null
+  device_label: string
+  ip_hint: string
+  current: boolean
+  revoked: boolean
+}
+
+export type SecurityEventItem = {
+  id: string
+  type: string
+  at: string | null
+  result: string
+  device_label: string
+  ip_hint: string
+}
+
+export type PasskeyItem = {
+  id: string
+  name: string
+  created_at: string | null
+  last_used_at: string | null
+  transports: string[]
 }
 
 // 单设备契约（后端冻结）：GET /auth/device 返回持有状态；
@@ -387,7 +589,10 @@ export function createClient() {
       })
     },
     createProject(name: string, repoConfig: Record<string, string>): Promise<Project> {
-      return writeJson("/api/v1/projects", { name, repo_config: repoConfig }) as Promise<Project>
+      return writeJson("/api/v1/projects", {
+        name,
+        repo_config: repoConfig,
+      }).then((body) => (body as { project: ProjectItem }).project as Project)
     },
     createSession(projectId: string, title: string): Promise<SessionInfo> {
       const path = `/api/v1/projects/${encodeURIComponent(projectId)}/sessions`
@@ -415,11 +620,327 @@ export function createClient() {
       const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs`
       return writeJson(path, body) as Promise<RunAccepted>
     },
-    listSessions(signal?: AbortSignal): Promise<SessionListItem[]> {
-      return readJson("/api/v1/sessions", signal).then((body) => {
-        const record = body as { sessions?: SessionListItem[] }
-        return record.sessions ?? []
+    listSessions(
+      query: SessionListQuery | AbortSignal = {},
+      signal?: AbortSignal,
+    ): Promise<SessionListResponse> {
+      // Back-compat: a bare AbortSignal means "the plain first page".
+      const params = query instanceof AbortSignal ? {} : query
+      const sig = query instanceof AbortSignal ? query : signal
+      const qs = new URLSearchParams()
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== null && value !== "") {
+          qs.set(key, String(value))
+        }
+      }
+      return readJson(`/api/v1/sessions?${qs}`, sig).then((body) => {
+        const record = body as SessionListResponse
+        return { sessions: record.sessions ?? [], next_cursor: record.next_cursor ?? null }
       })
+    },
+    patchSession(
+      sessionId: string,
+      body: {
+        title?: string
+        pinned?: boolean
+        project_id?: string
+        expected_revision?: number
+      },
+    ): Promise<{ session: SessionListItem }> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}`
+      return writeJson(path, body, {}, "PATCH") as Promise<{ session: SessionListItem }>
+    },
+    archiveSession(
+      sessionId: string,
+      body: { expected_revision?: number },
+    ): Promise<{ session: SessionListItem; paused_schedule_count: number }> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/archive`
+      return writeJson(path, body) as Promise<{
+        session: SessionListItem
+        paused_schedule_count: number
+      }>
+    },
+    unarchiveSession(
+      sessionId: string,
+      body: { expected_revision?: number },
+    ): Promise<{ session: SessionListItem; paused_schedule_count: number }> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/unarchive`
+      return writeJson(path, body) as Promise<{
+        session: SessionListItem
+        paused_schedule_count: number
+      }>
+    },
+    deleteSession(
+      sessionId: string,
+      body: { expected_revision?: number; confirm: boolean },
+    ): Promise<void> {
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}`
+      return writeJson(path, body, {}, "DELETE").then(() => undefined)
+    },
+    patchProject(
+      projectId: string,
+      body: {
+        name?: string
+        pinned?: boolean
+        instructions?: string
+        expected_revision?: number
+      },
+    ): Promise<{ project: ProjectItem }> {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`
+      return writeJson(path, body, {}, "PATCH") as Promise<{ project: ProjectItem }>
+    },
+    deleteProject(
+      projectId: string,
+      body: { expected_revision?: number; keep_sessions?: boolean },
+    ): Promise<void> {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`
+      return writeJson(path, body, {}, "DELETE").then(() => undefined)
+    },
+    getProject(projectId: string, signal?: AbortSignal): Promise<{ project: ProjectItem }> {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`
+      return readJson(path, signal) as Promise<{ project: ProjectItem }>
+    },
+    createProjectEx(body: {
+      name: string
+      memory_mode?: string
+      request_id?: string
+      repo_config?: Record<string, unknown>
+    }): Promise<{ project: ProjectItem }> {
+      return writeJson("/api/v1/projects", body) as Promise<{ project: ProjectItem }>
+    },
+    putSidebarOrder(body: {
+      scope: "pinned_projects" | "pinned_sessions" | "sessions"
+      project_id?: string
+      ordered_ids: string[]
+      expected_revision?: number
+    }): Promise<{ updated: boolean }> {
+      return writeJson("/api/v1/me/sidebar-order", body, {}, "PUT") as Promise<{
+        updated: boolean
+      }>
+    },
+    search(
+      query: { q?: string; type?: string; archived?: string; project_id?: string; cursor?: string; limit?: number },
+      signal?: AbortSignal,
+    ): Promise<SearchResponse> {
+      const qs = new URLSearchParams()
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null && value !== "") {
+          qs.set(key, String(value))
+        }
+      }
+      return readJson(`/api/v1/search?${qs}`, signal) as Promise<SearchResponse>
+    },
+    getPreferences(signal?: AbortSignal): Promise<Preferences> {
+      return readJson("/api/v1/me/preferences", signal) as Promise<Preferences>
+    },
+    patchPreferences(body: {
+      locale?: string
+      sidebar?: Partial<Preferences["sidebar"]>
+      appearance?: Partial<Preferences["appearance"]>
+      expected_revision?: number
+    }): Promise<Preferences> {
+      return writeJson("/api/v1/me/preferences", body, {}, "PATCH") as Promise<Preferences>
+    },
+    listSchedules(
+      query: { filter?: string; project_id?: string; cursor?: string; limit?: number } = {},
+      signal?: AbortSignal,
+    ): Promise<{ schedules: Schedule[]; next_cursor: string | null }> {
+      const qs = new URLSearchParams()
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null && value !== "") qs.set(key, String(value))
+      }
+      return readJson(`/api/v1/schedules?${qs}`, signal) as Promise<{
+        schedules: Schedule[]
+        next_cursor: string | null
+      }>
+    },
+    getSchedule(scheduleId: string, signal?: AbortSignal): Promise<{ schedule: Schedule }> {
+      const path = `/api/v1/schedules/${encodeURIComponent(scheduleId)}`
+      return readJson(path, signal) as Promise<{ schedule: Schedule }>
+    },
+    listScheduleExecutions(
+      scheduleId: string,
+      query: { cursor?: string; limit?: number } = {},
+      signal?: AbortSignal,
+    ): Promise<{ executions: ScheduleExecution[]; next_cursor: string | null }> {
+      const qs = new URLSearchParams()
+      if (query.cursor) qs.set("cursor", query.cursor)
+      if (query.limit) qs.set("limit", String(query.limit))
+      const path = `/api/v1/schedules/${encodeURIComponent(scheduleId)}/executions?${qs}`
+      return readJson(path, signal) as Promise<{
+        executions: ScheduleExecution[]
+        next_cursor: string | null
+      }>
+    },
+    createSchedule(body: {
+      project_id: string
+      session_id: string
+      rule: ScheduleRule
+      name?: string
+      message: string
+      timezone?: string
+      model_ref?: string | null
+      permission_profile?: string
+      notify?: boolean
+      enabled?: boolean
+      request_id?: string
+    }): Promise<{ schedule: Schedule }> {
+      return writeJson("/api/v1/schedules", body) as Promise<{ schedule: Schedule }>
+    },
+    patchSchedule(
+      scheduleId: string,
+      body: Partial<{
+        name: string
+        message: string
+        rule: ScheduleRule
+        timezone: string
+        model_ref: string | null
+        permission_profile: string
+        notify: boolean
+        enabled: boolean
+        expected_revision: number
+      }>,
+    ): Promise<{ schedule: Schedule }> {
+      const path = `/api/v1/schedules/${encodeURIComponent(scheduleId)}`
+      return writeJson(path, body, {}, "PATCH") as Promise<{ schedule: Schedule }>
+    },
+    deleteSchedule(scheduleId: string): Promise<void> {
+      const path = `/api/v1/schedules/${encodeURIComponent(scheduleId)}`
+      return writeJson(path, {}, {}, "DELETE").then(() => undefined)
+    },
+    runScheduleNow(
+      scheduleId: string,
+      body: { request_id?: string; expected_revision?: number; allow_billable: boolean },
+    ): Promise<RunAccepted> {
+      const path = `/api/v1/schedules/${encodeURIComponent(scheduleId)}/run-now`
+      return writeJson(path, body) as Promise<RunAccepted>
+    },
+    getNotificationPreferences(signal?: AbortSignal): Promise<NotificationPreferences> {
+      return readJson("/api/v1/me/notification-preferences", signal) as Promise<NotificationPreferences>
+    },
+    patchNotificationPreferences(body: {
+      category_id: string
+      selected_channels: string[]
+      expected_revision?: number
+    }): Promise<NotificationPreferences> {
+      const path = "/api/v1/me/notification-preferences"
+      return writeJson(path, body, {}, "PATCH") as Promise<NotificationPreferences>
+    },
+    listNotifications(
+      query: { category?: string; unread?: string; cursor?: string; limit?: number } = {},
+      signal?: AbortSignal,
+    ): Promise<{ notifications: NotificationItem[]; next_cursor: string | null }> {
+      const qs = new URLSearchParams()
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null && value !== "") qs.set(key, String(value))
+      }
+      return readJson(`/api/v1/notifications?${qs}`, signal) as Promise<{
+        notifications: NotificationItem[]
+        next_cursor: string | null
+      }>
+    },
+    markNotificationRead(id: string, read = true): Promise<{ id: string; read: boolean }> {
+      const path = `/api/v1/notifications/${encodeURIComponent(id)}/read`
+      return writeJson(path, { read }) as Promise<{ id: string; read: boolean }>
+    },
+    retryNotificationEmail(id: string): Promise<{ delivery_id: string; status: string }> {
+      const path = `/api/v1/notifications/${encodeURIComponent(id)}/retry-email`
+      return writeJson(path, {}) as Promise<{ delivery_id: string; status: string }>
+    },
+    addPushSubscription(subscription: {
+      endpoint: string
+      expirationTime?: number | null
+      keys: { p256dh: string; auth: string }
+    }): Promise<{ subscription_id: string }> {
+      return writeJson("/api/v1/me/push-subscriptions", { subscription }) as Promise<{
+        subscription_id: string
+      }>
+    },
+    deletePushSubscription(subscriptionId: string): Promise<void> {
+      return writeJson(
+        "/api/v1/me/push-subscriptions",
+        { subscription_id: subscriptionId },
+        {},
+        "DELETE",
+      ).then(() => undefined)
+    },
+    getSecurityOverview(signal?: AbortSignal): Promise<SecurityOverview> {
+      return readJson("/api/v1/auth/security", signal) as Promise<SecurityOverview>
+    },
+    reauthenticate(body: {
+      method: string
+      purpose: string
+      password?: string
+    }): Promise<{ reauth_token: string; expires_at: string | null }> {
+      return writeJson("/api/v1/auth/reauthenticate", body) as Promise<{
+        reauth_token: string
+        expires_at: string | null
+      }>
+    },
+    listAuthSessions(
+      signal?: AbortSignal,
+    ): Promise<{ sessions: AuthSessionItem[]; next_cursor: string | null }> {
+      return readJson("/api/v1/auth/sessions", signal) as Promise<{
+        sessions: AuthSessionItem[]
+        next_cursor: string | null
+      }>
+    },
+    revokeAuthSession(id: string, reauthToken: string): Promise<void> {
+      const path = `/api/v1/auth/sessions/${encodeURIComponent(id)}`
+      return writeJson(path, { reauth_token: reauthToken }, {}, "DELETE").then(() => undefined)
+    },
+    revokeAllAuthSessions(body: {
+      reauth_token: string
+      include_current?: boolean
+    }): Promise<{ revoked: number }> {
+      return writeJson("/api/v1/auth/sessions/revoke-all", body) as Promise<{
+        revoked: number
+      }>
+    },
+    listSecurityEvents(
+      signal?: AbortSignal,
+    ): Promise<{ events: SecurityEventItem[]; next_cursor: string | null }> {
+      return readJson("/api/v1/auth/security-events", signal) as Promise<{
+        events: SecurityEventItem[]
+        next_cursor: string | null
+      }>
+    },
+    changePassword(body: { new_password: string; reauth_token: string }): Promise<void> {
+      return writeJson("/api/v1/auth/password", body, {}, "PUT").then(() => undefined)
+    },
+    listPasskeys(
+      signal?: AbortSignal,
+    ): Promise<{ capability: { available: boolean; reason: string }; passkeys: PasskeyItem[] }> {
+      return readJson("/api/v1/auth/passkeys", signal) as Promise<{
+        capability: { available: boolean; reason: string }
+        passkeys: PasskeyItem[]
+      }>
+    },
+    totpSetup(reauthToken: string): Promise<{ setup_id: string; otpauth_uri: string; secret: string }> {
+      return writeJson("/api/v1/auth/mfa/totp/setup", { reauth_token: reauthToken }) as Promise<{
+        setup_id: string
+        otpauth_uri: string
+        secret: string
+      }>
+    },
+    totpConfirm(setupId: string, code: string): Promise<{ enabled: boolean; backup_codes: string[] }> {
+      return writeJson("/api/v1/auth/mfa/totp/confirm", {
+        setup_id: setupId,
+        code,
+      }) as Promise<{ enabled: boolean; backup_codes: string[] }>
+    },
+    totpDelete(reauthToken: string, code: string): Promise<void> {
+      return writeJson(
+        "/api/v1/auth/mfa/totp",
+        { reauth_token: reauthToken, code },
+        {},
+        "DELETE",
+      ).then(() => undefined)
+    },
+    regenRecoveryCodes(reauthToken: string): Promise<{ backup_codes: string[] }> {
+      return writeJson("/api/v1/auth/mfa/recovery-codes", {
+        reauth_token: reauthToken,
+      }) as Promise<{ backup_codes: string[] }>
     },
     // W12: session-workspace files (agent-created artifacts on the shared volume).
     listSessionFiles(sessionId: string, signal?: AbortSignal): Promise<SessionFile[]> {

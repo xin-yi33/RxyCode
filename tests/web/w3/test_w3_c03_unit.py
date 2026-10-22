@@ -39,13 +39,21 @@ def reduce_events(events: list[dict], initial_status: str = "", watermark: int =
         + ")))\n",
         encoding="utf-8",
     )
-    proc = subprocess.run([_bun(), str(driver)], capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        [_bun(), str(driver)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     assert proc.returncode == 0, proc.stderr or proc.stdout
     return json.loads(proc.stdout)
 
 
-def test_w3_c03_thinking_is_the_model_chain() -> None:
-    """Status lines stay out of 思考过程. Reasoning chunks are the thought text."""
+def test_w3_c03_thinking_never_leaks_chain_of_thought() -> None:
+    """v1.4.5 安全契约：思维链文本永不进时间线 —— thinking 项只记步数，
+    activity 只放行已知安全的 CLI 状态行。"""
     done = reduce_events(
         [
             {
@@ -91,12 +99,26 @@ def test_w3_c03_thinking_is_the_model_chain() -> None:
                     "snapshot": False,
                 },
             },
+            {
+                "seq": 6,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "子代理的内部输出不应出现",
+                    "intermediate": True,
+                    "channel": "assistant",
+                },
+            },
         ]
     )
-    thoughts = [
-        item["text"] for item in done["view"]["timeline"] if item["kind"] == "thinking"
-    ]
-    assert thoughts == ["先看文件再改测试"]
+    thoughts = [item for item in done["view"]["timeline"] if item["kind"] == "thinking"]
+    # 原始思维链文本绝不出现：没有 text 字段，只有合并后的步数。
+    assert thoughts == [{"kind": "thinking", "seq": 4, "steps": 2}]
+    timeline_json = json.dumps(done["view"]["timeline"], ensure_ascii=False)
+    assert "先看文件" not in timeline_json
+    assert "再改测试" not in timeline_json
+    assert "子代理的内部输出" not in timeline_json
+    # activity 只保留状态行文案；非状态行的中间态被通用标签替代。
+    assert done["view"]["activity"] == "处理中…"
     assert done["answer"] == ""
 
 

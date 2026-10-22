@@ -143,7 +143,7 @@ export function Timeline({
             case "thinking":
               return (
                 <li key={key}>
-                  <ThinkingBlock text={item.text} active={streaming} />
+                  <ThinkingBlock steps={item.steps} active={streaming} />
                 </li>
               )
             case "tool":

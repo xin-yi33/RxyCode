@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import {
   MutationCache,
   QueryCache,
@@ -21,7 +21,10 @@ import { SessionPage } from "../features/console/SessionPage"
 import { MemoryPage } from "../features/memory/MemoryPage"
 import { RunHistoryRoute } from "../features/runs/RunHistoryRoute"
 import { SchedulePage } from "../features/schedule/SchedulePage"
-import { SettingsPage } from "../features/settings/SettingsPage"
+import { SettingsShell } from "../features/settings/SettingsShell"
+import { SchedulesPage } from "../features/schedule/SchedulesPage"
+import { ProjectPage } from "../features/projects/ProjectPage"
+import { PluginsPage } from "../features/plugins/PluginsPage"
 import { TerminalPane } from "../features/terminal/TerminalPane"
 import { UsagePage } from "../features/usage/UsagePage"
 import { DiffReview } from "../features/workspace/DiffReview"
@@ -29,15 +32,16 @@ import { FileTree } from "../features/workspace/FileTree"
 import { GitPanel } from "../features/workspace/GitPanel"
 import { ApiError } from "../sdk/client"
 import { useUi } from "../state/ui"
+import { I18nProvider } from "../lib/i18n"
+import { localeSettingFromPrefs, useApplyAppearance, usePreferences } from "../state/prefs"
 
-// Applies the persisted theme at the app root so auth pages follow it too.
-function ThemeSync() {
-  const theme = useUi((state) => state.theme)
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark")
-    document.documentElement.dataset.theme = theme
-  }, [theme])
-  return null
+// Applies server-driven appearance (theme/fonts/contrast/motion/diff) at the
+// app root so auth pages follow it too; guests fall back to the rxy_theme
+// cookie. Locale likewise resolves prefs → rxy_locale cookie → navigator.
+function PreferenceSync({ children }: { children: ReactNode }) {
+  const prefs = usePreferences()
+  useApplyAppearance(prefs.data)
+  return <I18nProvider setting={localeSettingFromPrefs(prefs.data)}>{children}</I18nProvider>
 }
 
 // W9-F1 + 访客入口：全局 401 处理改为 SPA 跳转（appNavigate →
@@ -156,6 +160,23 @@ function gated(element: ReactNode) {
   return <AuthGate>{element}</AuthGate>
 }
 
+// /app/settings?section=models 旧深链 → /settings/models；未知 section 落 general。
+const SETTINGS_SECTIONS = new Set([
+  "general",
+  "appearance",
+  "notifications",
+  "security",
+  "archived",
+  "models",
+])
+
+function LegacySettingsRedirect() {
+  const params = new URLSearchParams(window.location.search)
+  const section = params.get("section") ?? "general"
+  const target = SETTINGS_SECTIONS.has(section) ? section : "general"
+  return <Navigate to={`/settings/${target}`} replace />
+}
+
 const router = createBrowserRouter([
   { path: "/", element: <RootRedirect /> },
   { path: "/login", element: <LoginPage /> },
@@ -174,8 +195,31 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <NewSessionPage /> },
       { path: "s/:sessionId", element: gated(<SessionPage />) },
-      { path: "settings", element: gated(<SettingsPage />) },
+      { path: "p/:projectId", element: gated(<ProjectPage />) },
+      { path: "scheduled", element: gated(<SchedulesPage />) },
+      // /app/settings?section=x 深链兼容 → /settings/:section。
+      { path: "settings", element: <LegacySettingsRedirect /> },
+      { path: "settings/:section", element: <LegacySettingsRedirect /> },
     ],
+  },
+  {
+    // 顶层 /settings/:section 走同一控制台壳（规格 UI-2026-10-22 §01）。
+    path: "/settings",
+    element: gated(<ConsoleShell />),
+    children: [
+      { index: true, element: <Navigate to="general" replace /> },
+      { path: ":section", element: <SettingsShell /> },
+    ],
+  },
+  {
+    path: "/scheduled",
+    element: gated(<ConsoleShell />),
+    children: [{ index: true, element: <SchedulesPage /> }],
+  },
+  {
+    path: "/plugins",
+    element: gated(<ConsoleShell />),
+    children: [{ index: true, element: <PluginsPage /> }],
   },
   {
     path: "/runs/:runId",
@@ -199,8 +243,9 @@ registerNavigate((to, opts) => {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeSync />
-      <RouterProvider router={router} />
+      <PreferenceSync>
+        <RouterProvider router={router} />
+      </PreferenceSync>
     </QueryClientProvider>
   )
 }

@@ -17,8 +17,9 @@ export type QuestionOption = { label: string; value: string }
 export type TimelineItem =
   | { kind: "user"; seq: number; text: string }
   | { kind: "text"; seq: number; text: string }
-  // 思考链：intermediate delta 的连续段 —— 一条一块，与事件顺序一致。
-  | { kind: "thinking"; seq: number; text: string }
+  // 处理过程块：只记录推理事件的步数，绝不携带模型思维链文本 ——
+  // 安全契约要求用户可见的只是进度，不是 CoT（v1.4.5 UI 修复）。
+  | { kind: "thinking"; seq: number; steps: number }
   | {
       kind: "tool"
       seq: number
@@ -260,27 +261,20 @@ export function reduceEvents(
         const text = str(payload.text)
         const channel = str(payload.channel)
         if (channel === "reasoning") {
-          // 跟 CLI 一样：思考过程只收模型思维链。子代理的 intermediate
-          // reasoning 不进主时间线。snapshot 是整段替换，否则按片段拼接。
-          if (payload.intermediate === true || !text) return
+          // 模型思维链永不进时间线 —— 只按事件计步，渲染为安全进度块。
+          if (payload.intermediate === true) return
           const last = view.timeline[view.timeline.length - 1]
           if (last && last.kind === "thinking") {
-            last.text = payload.snapshot === true ? text : last.text + text
+            last.steps += 1
           } else {
-            view.timeline.push({ kind: "thinking", seq: event.seq, text })
+            view.timeline.push({ kind: "thinking", seq: event.seq, steps: 1 })
           }
           return
         }
         if (payload.intermediate === true) {
-          view.activity = text
-          // 进度条（Analyzing / Thinking... (round N) / 思考中）不是思维链。
-          if (!text || channel === "status" || isStatusLine(text)) return
-          const last = view.timeline[view.timeline.length - 1]
-          if (last && last.kind === "thinking") {
-            last.text += text
-          } else {
-            view.timeline.push({ kind: "thinking", seq: event.seq, text })
-          }
+          // activity 只放行已知安全的 CLI 状态行；其它中间态文本可能
+          // 含子代理原始输出，统一落到通用进度标签。
+          view.activity = isStatusLine(text) ? text : "处理中…"
           return
         }
         const last = view.timeline[view.timeline.length - 1]

@@ -79,8 +79,31 @@ export function SessionPage() {
   const ordered = [...older, ...(runs.data?.runs ?? [])].reverse()
   const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
+  const archived = session.data?.archived === true || Boolean(session.data?.archived_at)
+
   return (
     <div className="mx-auto flex min-h-full max-w-3xl flex-col px-4 py-4">
+      {archived ? (
+        <div
+          role="status"
+          className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-waiting/40 bg-waiting/10 px-3 py-2 text-sm text-waiting-ink"
+        >
+          <span>此会话已归档，内容只读。取消归档后可继续对话。</span>
+          <button
+            type="button"
+            className="shrink-0 underline"
+            onClick={() => {
+              void api
+                .unarchiveSession(sessionId, {
+                  expected_revision: session.data?.revision,
+                })
+                .then(() => void session.refetch())
+            }}
+          >
+            取消归档
+          </button>
+        </div>
+      ) : null}
       {runs.isPending ? (
         <p className="py-8 text-center text-sm text-muted">正在加载任务…</p>
       ) : null}
@@ -104,8 +127,12 @@ export function SessionPage() {
         ))}
       </ol>
       <div className="sticky bottom-0 -mx-4 space-y-2 bg-background">
-        <SessionFiles sessionId={sessionId} hasActive={active !== null} />
-        <Composer sessionId={sessionId} activeRun={active} />
+        {archived ? null : (
+          <>
+            <SessionFiles sessionId={sessionId} hasActive={active !== null} />
+            <Composer sessionId={sessionId} activeRun={active} />
+          </>
+        )}
       </div>
     </div>
   )

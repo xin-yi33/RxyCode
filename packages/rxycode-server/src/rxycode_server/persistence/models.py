@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -56,6 +58,9 @@ class AuthSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Display-only metadata captured at login — never a credential.
+    device_label: Mapped[str] = mapped_column(String(128), default="")
+    ip_hint: Mapped[str] = mapped_column(String(64), default="")
     user: Mapped[User] = relationship()
 
 
@@ -167,6 +172,17 @@ class Project(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
     name: Mapped[str] = mapped_column(String(200))
     repo_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # default = shared memory scope; project_only = memory stays in-project.
+    memory_mode: Mapped[str] = mapped_column(String(16), default="default")
+    # The tenant's catch-all "无项目" container — never listed as a user
+    # project and never deletable.
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    # Idempotent-create key — partial unique index lives in migration 011.
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
     organization: Mapped[Organization] = relationship(
         primaryjoin="Project.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -191,6 +207,15 @@ class SessionRow(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
+    # Unknown for pre-migration rows — null is honest, never fabricated.
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # archived = server-side execution freeze; deleted_at = sealed tombstone
+    # that every read path must exclude before async content cleanup runs.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    origin: Mapped[str] = mapped_column(String(16), default="cloud")
+    source: Mapped[str] = mapped_column(String(16), default="chat")
+    revision: Mapped[int] = mapped_column(Integer, default=0)
     organization: Mapped[Organization] = relationship(
         primaryjoin="SessionRow.tenant_id == Organization.tenant_id",
         foreign_keys=[tenant_id],
@@ -272,9 +297,7 @@ class ModelConnection(Base):
     """
 
     __tablename__ = "model_connections"
-    __table_args__ = (
-        Index("ix_model_connections_tenant_owner", "tenant_id", "owner_user_id"),
-    )
+    __table_args__ = (Index("ix_model_connections_tenant_owner", "tenant_id", "owner_user_id"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("organizations.tenant_id"))
@@ -312,9 +335,7 @@ class UserModel(Base):
 
     __tablename__ = "user_models"
     __table_args__ = (
-        UniqueConstraint(
-            "connection_id", "model_id", name="uq_user_models_connection_model"
-        ),
+        UniqueConstraint("connection_id", "model_id", name="uq_user_models_connection_model"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -486,6 +507,283 @@ class UsageRecord(Base):
     run: Mapped[Run] = relationship()
 
 
+class UserSessionMeta(Base):
+    """Per-user navigation state for a session — pin is a preference, not a
+    permission. Ordering positions are optional ints; null = unordered."""
+
+    __tablename__ = "user_session_meta"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    pin_order: Mapped[int | None] = mapped_column(Integer)
+    manual_order: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class UserProjectMeta(Base):
+    __tablename__ = "user_project_meta"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    pin_order: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class UserPreference(Base):
+    """Server-authoritative user preferences — whitelist fields only."""
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    locale: Mapped[str] = mapped_column(String(16), default="auto")
+    sidebar: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    appearance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class SidebarOrder(Base):
+    """Manual ordering for one sidebar scope. ``project_id`` is "" unless the
+    scope is per-project session ordering."""
+
+    __tablename__ = "sidebar_orders"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), primary_key=True, default="")
+    ordered_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class ScheduleExecution(Base):
+    """One firing of a web schedule. ``(schedule_id, scheduled_for)`` is the
+    idempotency key — concurrent ticks on different replicas can only ever
+    create one run for one due slot."""
+
+    __tablename__ = "schedule_executions"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "scheduled_for", name="uq_schedule_fire_once"),
+        Index("ix_schedule_executions_schedule", "schedule_id", "scheduled_for"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    schedule_id: Mapped[str] = mapped_column(String(64))
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    schedule_revision: Mapped[int] = mapped_column(Integer, default=0)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    # queued/running/waiting/succeeded/failed/cancelled/skipped_busy/missed
+    status: Mapped[str] = mapped_column(String(24), default="queued")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    notification_status: Mapped[str] = mapped_column(String(16), default="none")
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class NotificationPreference(Base):
+    """Per-category channel choice; empty channel list = the category is off."""
+
+    __tablename__ = "notification_preferences"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    category: Mapped[str] = mapped_column(String(32), primary_key=True)
+    channels: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class PushSubscription(Base):
+    """A registered Web Push endpoint. ``endpoint_hash`` dedupes without
+    indexing the long URL."""
+
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (UniqueConstraint("user_id", "endpoint_hash", name="uq_push_user_endpoint"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    endpoint_hash: Mapped[str] = mapped_column(String(128))
+    endpoint: Mapped[str] = mapped_column(Text)
+    keys: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class EmailDelivery(Base):
+    """Outbound task-result email. ``(run_id, recipient, kind)`` dedupes —
+    one intended email per terminal run, regardless of retries."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        UniqueConstraint("run_id", "recipient", "kind", name="uq_email_delivery_once"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(64))
+    notification_id: Mapped[str | None] = mapped_column(String(64))
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    schedule_id: Mapped[str | None] = mapped_column(String(64))
+    recipient: Mapped[str] = mapped_column(String(320))
+    kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class ReauthTicket(Base):
+    """Short-lived step-up proof — the digest is stored, never the ticket."""
+
+    __tablename__ = "reauth_tickets"
+    __table_args__ = (Index("ix_reauth_tickets_user", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    purpose: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WebAuthnCredential(Base):
+    """Public credential metadata — credential_id/public_key are public key
+    material, not secrets; the private key never leaves the authenticator."""
+
+    __tablename__ = "webauthn_credentials"
+    __table_args__ = (
+        UniqueConstraint("credential_id_hash", name="uq_webauthn_credential"),
+        Index("ix_webauthn_user", "user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    credential_id: Mapped[str] = mapped_column(String(512), default="")
+    credential_id_hash: Mapped[str] = mapped_column(String(128))
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    transports: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    aaguid: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WebAuthnChallenge(Base):
+    """One-time, time-boxed challenge — the digest is stored."""
+
+    __tablename__ = "webauthn_challenges"
+    __table_args__ = (Index("ix_webauthn_challenges_user", "user_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    challenge_hash: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TotpEnrollment(Base):
+    """TOTP seed sealed with the deployment keyring — required at verify time,
+    so it is encrypted (AES-256-GCM), not hashed. Never logged or returned."""
+
+    __tablename__ = "totp_enrollments"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    secret_enc: Mapped[bytes] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary)
+    key_id: Mapped[str] = mapped_column(String(32), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecoveryCode(Base):
+    """One-time backup code — only the HMAC digest is stored."""
+
+    __tablename__ = "recovery_codes"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(128), primary_key=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class SmsEnrollment(Base):
+    """SMS MFA state — the phone number is personal data, not a secret."""
+
+    __tablename__ = "sms_enrollments"
+
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    phone_e164: Mapped[str] = mapped_column(String(32), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthorizedApp(Base):
+    """Third-party grants — populated only once an IdP exists."""
+
+    __tablename__ = "authorized_apps"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(128))
+    scopes: Mapped[list] = mapped_column(JSONB, default=list)
+    granted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class SecurityEvent(Base):
+    """Append-only login/security history — never secrets, codes or keys."""
+
+    __tablename__ = "security_events"
+    __table_args__ = (Index("ix_security_events_user", "user_id", "at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    type: Mapped[str] = mapped_column(String(32))
+    at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    result: Mapped[str] = mapped_column(String(16), default="ok")
+    device_label: Mapped[str] = mapped_column(String(128), default="")
+    ip_hint: Mapped[str] = mapped_column(String(64), default="")
+
+
 WEB_TABLES = (
     "users",
     "organizations",
@@ -509,6 +807,22 @@ WEB_TABLES = (
     "email_codes",
     "model_connections",
     "user_models",
+    "user_session_meta",
+    "user_project_meta",
+    "user_preferences",
+    "sidebar_orders",
+    "schedule_executions",
+    "notification_preferences",
+    "push_subscriptions",
+    "email_deliveries",
+    "reauth_tickets",
+    "webauthn_credentials",
+    "webauthn_challenges",
+    "totp_enrollments",
+    "sms_enrollments",
+    "recovery_codes",
+    "security_events",
+    "authorized_apps",
 )
 
 

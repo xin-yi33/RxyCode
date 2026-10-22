@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Request
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.auth import current_record, require_write
-from rxycode_server.persistence.models import Outbox, Run, RunEvent, SessionRow, UsageRecord
+from rxycode_server.persistence.models import Run, RunEvent, SessionRow, UsageRecord
 from rxycode_server.usage.service import usage_cost_kind
 
 router = APIRouter()
@@ -39,8 +39,9 @@ def ensure_tables(database_url: str) -> None:
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with engine.begin() as conn:
-            conn.execute(text(
-                """
+            conn.execute(
+                text(
+                    """
                 CREATE TABLE IF NOT EXISTS web_memories (
                     id varchar(64) PRIMARY KEY,
                     tenant_id varchar(64) NOT NULL,
@@ -49,9 +50,11 @@ def ensure_tables(database_url: str) -> None:
                     updated_at varchar(40) NOT NULL
                 )
                 """
-            ))
-            conn.execute(text(
-                """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                 CREATE TABLE IF NOT EXISTS web_schedules (
                     id varchar(64) PRIMARY KEY,
                     tenant_id varchar(64) NOT NULL,
@@ -66,12 +69,14 @@ def ensure_tables(database_url: str) -> None:
                     created_at varchar(40) NOT NULL
                 )
                 """
-            ))
-            conn.execute(text(
-                "ALTER TABLE web_schedules ADD COLUMN IF NOT EXISTS user_id varchar(64)"
-            ))
-            conn.execute(text(
-                """
+                )
+            )
+            conn.execute(
+                text("ALTER TABLE web_schedules ADD COLUMN IF NOT EXISTS user_id varchar(64)")
+            )
+            conn.execute(
+                text(
+                    """
                 CREATE TABLE IF NOT EXISTS web_notifications (
                     id varchar(64) PRIMARY KEY,
                     tenant_id varchar(64) NOT NULL,
@@ -82,15 +87,19 @@ def ensure_tables(database_url: str) -> None:
                     body text NOT NULL
                 )
                 """
-            ))
-            conn.execute(text(
-                """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_web_notifications_once
                 ON web_notifications (tenant_id, user_id, run_id, kind)
                 """
-            ))
-            conn.execute(text(
-                """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                 CREATE TABLE IF NOT EXISTS web_unsubscribes (
                     tenant_id varchar(64) NOT NULL,
                     user_id varchar(64) NOT NULL,
@@ -98,7 +107,8 @@ def ensure_tables(database_url: str) -> None:
                     PRIMARY KEY (tenant_id, user_id, kind)
                 )
                 """
-            ))
+                )
+            )
     finally:
         engine.dispose()
 
@@ -127,14 +137,16 @@ def usage_statement(
                 stamp = _usage_day(db, record)
                 if day and stamp != day:
                     continue
-                lines.append({
-                    "run_id": record.run_id,
-                    "model_id": record.model_id,
-                    "tokens": int(record.tokens),
-                    "amount": record.amount,
-                    "cost_kind": usage_cost_kind(record.price_version),
-                    "day": stamp,
-                })
+                lines.append(
+                    {
+                        "run_id": record.run_id,
+                        "model_id": record.model_id,
+                        "tokens": int(record.tokens),
+                        "amount": record.amount,
+                        "cost_kind": usage_cost_kind(record.price_version),
+                        "day": stamp,
+                    }
+                )
     finally:
         engine.dispose()
     tokens = sum(int(line["tokens"]) for line in lines)
@@ -176,7 +188,12 @@ def list_memory(project_id: str, request: Request) -> dict[str, object]:
         engine.dispose()
     return {
         "memories": [
-            {"id": row.id, "body": row.body, "project_id": row.project_id, "tenant_id": record.tenant_id}
+            {
+                "id": row.id,
+                "body": row.body,
+                "project_id": row.project_id,
+                "tenant_id": record.tenant_id,
+            }
             for row in rows
         ]
     }
@@ -331,6 +348,12 @@ def create_web_schedule(
     notify: bool = True,
     enabled: bool = True,
     user_id: str = "",
+    name: str = "",
+    message: str = "",
+    timezone_name: str = "UTC",
+    model_ref: str | None = None,
+    permission_profile: str = "confirm",
+    request_id: str | None = None,
 ) -> dict[str, object]:
     """Validate the rule with ScheduleService, then store the job in the web database."""
     from appserver.schedule_service import ScheduleService
@@ -339,12 +362,20 @@ def create_web_schedule(
     if not _session_owned(database_url, tenant_id, project_id, session_id):
         raise ScheduleForbidden()
     stamp = _naive(now or datetime.now(timezone.utc))
+    from scheduler.rules import next_fire as _next_fire, parse_rule
+
+    parsed = parse_rule(rule)
     job = ScheduleService(persistent=False).create(
-        rule=rule,
+        rule=parsed,
         action={"kind": "session", "session_id": session_id},
         enabled=enabled,
         now=stamp,
     )
+    fire = job["next_fire"]
+    try:
+        fire = _next_fire(parsed, stamp, timezone_name).isoformat()
+    except Exception:
+        pass
     engine = create_engine(database_url, poolclass=NullPool)
     try:
         with engine.begin() as conn:
@@ -353,11 +384,15 @@ def create_web_schedule(
                     """
                     INSERT INTO web_schedules (
                         id, tenant_id, project_id, session_id, user_id, rule,
-                        enabled, notify, next_fire, last_run_id, created_at
+                        enabled, notify, next_fire, last_run_id, created_at,
+                        name, message, timezone, model_ref, permission_profile,
+                        request_id, revision, blocked_reason
                     )
                     VALUES (
                         :id, :tenant, :project, :session, :user_id, :rule,
-                        :enabled, :notify, :next_fire, NULL, :created
+                        :enabled, :notify, :next_fire, NULL, :created,
+                        :name, :message, :tz, :model_ref, :profile,
+                        :request_id, 0, ''
                     )
                     """
                 ),
@@ -367,11 +402,17 @@ def create_web_schedule(
                     "project": project_id,
                     "session": session_id,
                     "user_id": user_id,
-                    "rule": json.dumps(job["rule"]),
+                    "rule": json.dumps(parsed),
                     "enabled": bool(enabled),
                     "notify": bool(notify),
-                    "next_fire": job["next_fire"],
+                    "next_fire": fire,
                     "created": _stamp(),
+                    "name": name,
+                    "message": message,
+                    "tz": timezone_name,
+                    "model_ref": model_ref,
+                    "profile": permission_profile,
+                    "request_id": request_id,
                 },
             )
     finally:
@@ -384,8 +425,21 @@ def create_web_schedule(
     }
 
 
+_LIVE_RUN = (
+    "pending",
+    "running",
+    "leased",
+    "cancel_requested",
+    "waiting_approval",
+)
+
+
 def fire_due_schedules(database_url: str, *, now: datetime) -> list[dict[str, str]]:
-    """Create a durable Run for each due job. No browser and no appserver session."""
+    """Create a durable Run for each due job. No browser and no appserver session.
+
+    ``schedule_executions`` (schedule_id, scheduled_for) is the idempotency
+    key: two tickers or a restarted one can never double-fire one slot.
+    """
     from scheduler.rules import next_fire
 
     ensure_tables(database_url)
@@ -397,69 +451,172 @@ def fire_due_schedules(database_url: str, *, now: datetime) -> list[dict[str, st
             rows = db.execute(
                 text(
                     """
-                    SELECT id, tenant_id, session_id, rule, next_fire
+                    SELECT id, tenant_id, user_id, project_id, session_id, rule,
+                           next_fire, message, permission_profile, model_ref, timezone
                     FROM web_schedules
                     WHERE enabled = true
                     """
                 )
             ).all()
-            due_rows = []
-            for row in rows:
-                due_at = _naive_text(row.next_fire)
-                if due_at is not None and due_at <= stamp:
-                    due_rows.append(row)
+            due_rows = [
+                row
+                for row in rows
+                if (due_at := _naive_text(row.next_fire)) is not None and due_at <= stamp
+            ]
         for row in due_rows:
             try:
                 created.append(_fire_one(engine, row, stamp, next_fire))
             except Exception:
                 continue
+        # Housekeeping in the same tick: physically purge tombstoned
+        # sessions older than a day.
+        try:
+            from rxycode_server.api.sessions import purge_deleted_sessions
+
+            with Session(engine) as db:
+                purge_deleted_sessions(db, older_than=stamp - timedelta(days=1))
+                db.commit()
+        except Exception:
+            pass
     finally:
         engine.dispose()
     return created
 
 
-def _fire_one(engine: object, row: object, stamp: datetime, compute_next: object) -> dict[str, str]:
-    """Insert one run plus its queue event. A failure stays inside this job."""
-    run_id = uuid.uuid4().hex
-    request_id = uuid.uuid4().hex
-    event_id = uuid.uuid4().hex
+def _session_state(db: Session, tenant_id: str, session_id: str) -> str:
+    """'ok' | 'archived' | 'deleted' | 'missing' — the fire-time lifecycle."""
+    row = db.scalars(
+        select(SessionRow).where(SessionRow.id == session_id, SessionRow.tenant_id == tenant_id)
+    ).one_or_none()
+    if row is None or row.deleted_at is not None:
+        return "missing" if row is None else "deleted"
+    if row.archived_at is not None:
+        return "archived"
+    return "ok"
+
+
+def _session_busy(db: Session, tenant_id: str, session_id: str) -> bool:
+    return (
+        db.scalar(
+            select(func.count(Run.id)).where(
+                Run.session_id == session_id,
+                Run.tenant_id == tenant_id,
+                Run.status.in_(_LIVE_RUN),
+            )
+        )
+        or 0
+    ) > 0
+
+
+def _record_execution(
+    db: Session,
+    *,
+    row,
+    scheduled_for: datetime,
+    status: str,
+    reason: str = "",
+    run_id: str | None = None,
+) -> bool:
+    """Insert the firing ledger row. False = this slot already fired."""
+    from sqlalchemy.exc import IntegrityError
+
+    db.execute(
+        text(
+            """
+            INSERT INTO schedule_executions (
+                id, tenant_id, schedule_id, scheduled_for, schedule_revision,
+                run_id, status, reason, notification_status, created_at
+            ) VALUES (
+                :id, :tenant, :schedule, :for, :rev, :run, :status, :reason,
+                'none', :created
+            )
+            """
+        ),
+        {
+            "id": uuid.uuid4().hex,
+            "tenant": row.tenant_id,
+            "schedule": row.id,
+            "for": scheduled_for,
+            "rev": int(getattr(row, "revision", 0) or 0),
+            "run": run_id,
+            "status": status,
+            "reason": reason,
+            "created": _naive(datetime.now(timezone.utc)),
+        },
+    )
+    try:
+        db.flush()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+
+
+def _advance(engine, row, stamp: datetime, compute_next) -> None:
     with Session(engine) as db:
-        db.add(
-            Run(
-                id=run_id,
-                tenant_id=row.tenant_id,
-                session_id=row.session_id,
-                status="pending",
-                revision=0,
-                lease_epoch=0,
-                request_id=request_id,
-                input_digest="",
-                event_seq=1,
-                target_id="",
-            )
+        db.execute(
+            text("UPDATE web_schedules SET next_fire = :next_fire WHERE id = :id"),
+            {
+                "next_fire": compute_next(
+                    json.loads(row.rule), stamp, getattr(row, "timezone", "UTC") or "UTC"
+                ).isoformat(),
+                "id": row.id,
+            },
         )
-        db.flush()
-        db.add(
-            RunEvent(
-                event_id=event_id,
-                run_id=run_id,
-                tenant_id=row.tenant_id,
-                seq=1,
-                type="run.created",
-                payload={
-                    "message": "scheduled run",
-                    "permission_profile": "default",
-                    "request_id": request_id,
-                    "session_id": row.session_id,
-                    "target_id": "",
-                    "schedule_id": row.id,
-                },
-                at=datetime.now(timezone.utc),
-            )
+        db.commit()
+
+
+def _fire_one(engine: object, row: object, stamp: datetime, compute_next) -> dict[str, str]:
+    """One slot → one ledger row → at most one run. Refusals are recorded."""
+    with Session(engine) as db:
+        scheduled_for = _naive_text(row.next_fire) or stamp
+        state = _session_state(db, row.tenant_id, row.session_id)
+        if state != "ok":
+            if _record_execution(
+                db,
+                row=row,
+                scheduled_for=scheduled_for,
+                status="missed",
+                reason=f"session_{state}",
+            ):
+                db.execute(
+                    text(
+                        "UPDATE web_schedules SET enabled = false, blocked_reason = :b"
+                        " WHERE id = :id"
+                    ),
+                    {"b": state, "id": row.id},
+                )
+                db.commit()
+            _advance(engine, row, stamp, compute_next)
+            return {"run_id": "", "schedule_id": str(row.id), "skipped": state}
+        if _session_busy(db, row.tenant_id, row.session_id):
+            if _record_execution(
+                db,
+                row=row,
+                scheduled_for=scheduled_for,
+                status="skipped_busy",
+                reason="run_active",
+            ):
+                db.commit()
+            _advance(engine, row, stamp, compute_next)
+            return {"run_id": "", "schedule_id": str(row.id), "skipped": "busy"}
+        if not _record_execution(db, row=row, scheduled_for=scheduled_for, status="queued"):
+            db.rollback()
+            _advance(engine, row, stamp, compute_next)
+            return {"run_id": "", "schedule_id": str(row.id), "skipped": "dup"}
+        db.commit()
+
+    accepted = _submit_scheduled(engine, row)
+    with Session(engine) as db:
+        db.execute(
+            text(
+                """
+                UPDATE schedule_executions SET run_id = :run, status = 'queued'
+                WHERE schedule_id = :sid AND scheduled_for = :for
+                """
+            ),
+            {"run": accepted.run_id, "sid": row.id, "for": scheduled_for},
         )
-        db.flush()
-        db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
-        rule = json.loads(row.rule)
         db.execute(
             text(
                 """
@@ -468,10 +625,111 @@ def _fire_one(engine: object, row: object, stamp: datetime, compute_next: object
                 WHERE id = :id
                 """
             ),
-            {"next_fire": compute_next(rule, stamp).isoformat(), "run_id": run_id, "id": row.id},
+            {
+                "next_fire": compute_next(
+                    json.loads(row.rule), stamp, getattr(row, "timezone", "UTC") or "UTC"
+                ).isoformat(),
+                "run_id": accepted.run_id,
+                "id": row.id,
+            },
         )
         db.commit()
-    return {"run_id": run_id, "schedule_id": str(row.id)}
+    return {"run_id": accepted.run_id, "schedule_id": str(row.id)}
+
+
+def _submit_scheduled(engine, row):
+    """The schedule's stored intent becomes a real durable Run."""
+    from types import SimpleNamespace
+
+    from rxycode_server.runs.service import RunAlreadyActive, create_run
+
+    with Session(engine) as db:
+        record = SimpleNamespace(tenant_id=row.tenant_id, user_id=row.user_id or row.tenant_id)
+        model_snapshot = None
+        try:
+            from rxycode_server.byok.resolver import resolve_run_model
+
+            model_snapshot = resolve_run_model(db, record, getattr(row, "model_ref", None) or None)
+        except Exception:
+            model_snapshot = None
+    message = (getattr(row, "message", "") or "").strip() or "scheduled run"
+    profile = getattr(row, "permission_profile", "") or "confirm"
+    if profile not in ("confirm", "full"):
+        profile = "confirm"
+    target_id = f"cloud:{row.tenant_id}:{row.project_id}"
+    try:
+        return create_run(
+            engine.url.render_as_string(hide_password=False),
+            tenant_id=row.tenant_id,
+            session_id=row.session_id,
+            message=message,
+            target_id=target_id,
+            permission_profile=profile,
+            request_id=uuid.uuid4().hex,
+            user_id=row.user_id or row.tenant_id,
+            model_snapshot=model_snapshot,
+            request_model_ref=getattr(row, "model_ref", None) or None,
+        )
+    except RunAlreadyActive:
+        # TOCTOU busy — the ledger row stays 'queued' with no run; the next
+        # due slot records its own skipped_busy.
+        raise
+
+
+def _fire_manual(db: Session, row: dict, *, reason: str) -> dict[str, str]:
+    """Manual run-now: ledger reason 'manual:<request_id>' then a real run."""
+    from rxycode_server.runs.service import create_run
+
+    scheduled_for = _naive(datetime.now(timezone.utc))
+    exec_id = uuid.uuid4().hex
+    db.execute(
+        text(
+            """
+            INSERT INTO schedule_executions (
+                id, tenant_id, schedule_id, scheduled_for, schedule_revision,
+                run_id, status, reason, notification_status, created_at
+            ) VALUES (
+                :id, :tenant, :schedule, :for, :rev, NULL, 'queued', :reason,
+                'none', :created
+            )
+            """
+        ),
+        {
+            "id": exec_id,
+            "tenant": row["tenant_id"],
+            "schedule": row["id"],
+            "for": scheduled_for,
+            "rev": int(row.get("revision") or 0),
+            "reason": reason,
+            "created": scheduled_for,
+        },
+    )
+    db.flush()
+    message = (row.get("message") or "").strip() or "scheduled run"
+    profile = row.get("permission_profile") or "confirm"
+    if profile not in ("confirm", "full"):
+        profile = "confirm"
+    bind_url = db.get_bind().url.render_as_string(hide_password=False)
+    accepted = create_run(
+        bind_url,
+        tenant_id=row["tenant_id"],
+        session_id=row["session_id"],
+        message=message,
+        target_id=f"cloud:{row['tenant_id']}:{row['project_id']}",
+        permission_profile=profile,
+        request_id=uuid.uuid4().hex,
+        user_id=row.get("user_id") or row["tenant_id"],
+    )
+    db.execute(
+        text("UPDATE schedule_executions SET run_id = :run WHERE id = :id"),
+        {"run": accepted.run_id, "id": exec_id},
+    )
+    db.execute(
+        text("UPDATE web_schedules SET last_run_id = :run WHERE id = :id"),
+        {"run": accepted.run_id, "id": row["id"]},
+    )
+    db.flush()
+    return {"run_id": accepted.run_id}
 
 
 def _session_owned(database_url: str, tenant_id: str, project_id: str, session_id: str) -> bool:
@@ -628,7 +886,10 @@ def _usage_day(db: Session, record: UsageRecord) -> str:
     ).all()
     for event in events:
         payload = event.payload or {}
-        if payload.get("model_id") == record.model_id and payload.get("price_version") == record.price_version:
+        if (
+            payload.get("model_id") == record.model_id
+            and payload.get("price_version") == record.price_version
+        ):
             return _day(event.at)
     return ""
 
@@ -664,30 +925,11 @@ router.add_api_route(
     delete_memory,
     methods=["DELETE"],
 )
-router.add_api_route("/api/v1/notifications", list_notifications, methods=["GET"])
+# GET /api/v1/notifications moved to api/notifications.py (cursor/category/
+# read fields). POST /notifications/unsubscribe stays here for compat.
 router.add_api_route("/api/v1/notifications/unsubscribe", unsubscribe, methods=["POST"])
 
 
-async def create_schedule(request: Request) -> dict[str, object]:
-    """Create a durable schedule for the signed-in tenant."""
-    require_write(request)
-    record = current_record(request)
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        payload = {}
-    rule = payload.get("rule")
-    if not isinstance(rule, dict):
-        rule = {"kind": "interval", "every": 1, "unit": "minutes"}
-    return create_web_schedule(
-        request.app.state.database_url,
-        tenant_id=record.tenant_id,
-        project_id=str(payload.get("project_id") or ""),
-        session_id=str(payload.get("session_id") or ""),
-        rule=rule,
-        notify=bool(payload.get("notify", True)),
-        enabled=bool(payload.get("enabled", True)),
-        user_id=record.user_id,
-    )
-
-
-router.add_api_route("/api/v1/schedules", create_schedule, methods=["POST"])
+# POST /api/v1/schedules is served by api/schedules.py — the extended
+# contract (name/message/timezone/model_ref/request_id). create_web_schedule
+# above stays as the programmatic entry used by tests and seeding.

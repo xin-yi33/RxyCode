@@ -188,17 +188,15 @@ class AuthRateLimit:
         self.register_hour = _Window(5, window_seconds=3600)
 
     def check(self, route: str, ip: str, email: str) -> None:
-        if not self.ip.hit(f"{route}:ip:{ip}") or not self.email.hit(
-            f"{route}:email:{email}"
-        ):
+        if not self.ip.hit(f"{route}:ip:{ip}") or not self.email.hit(f"{route}:email:{email}"):
             raise HTTPException(status_code=429, detail="RATE_LIMITED")
 
     def check_code(self, route: str, ip: str, email: str) -> None:
         """Send-side ceiling for the three code paths: a 5-minute window so a
         burst under the per-minute caps still cannot mailbomb one address."""
-        if not self.code_email.hit(
-            f"{route}:email:{email}"
-        ) or not self.code_ip.hit(f"{route}:ip:{ip}"):
+        if not self.code_email.hit(f"{route}:email:{email}") or not self.code_ip.hit(
+            f"{route}:ip:{ip}"
+        ):
             raise HTTPException(status_code=429, detail="RATE_LIMITED")
 
     def check_register_hour(self, ip: str) -> None:
@@ -291,11 +289,7 @@ def _device_gate(request: Request, record: AuthRecord, raw: str) -> None:
     must still reach status/claim/logout, and a lock row only exists once an
     ``engine``-backed login issued it (in-memory session mode has none)."""
     path = request.url.path
-    if (
-        path == "/api/v1/me"
-        or path == "/api/v1/auth"
-        or path.startswith("/api/v1/auth/")
-    ):
+    if path == "/api/v1/me" or path == "/api/v1/auth" or path.startswith("/api/v1/auth/"):
         return
     engine = getattr(request.app.state, "engine", None)
     if engine is None:
@@ -304,11 +298,7 @@ def _device_gate(request: Request, record: AuthRecord, raw: str) -> None:
     now = datetime.now(timezone.utc)
     with Session(engine) as db:
         lock = db.get(DeviceLock, record.user_id)
-        if (
-            lock is not None
-            and lock.token_hash != digest
-            and not _lock_expired(lock, now)
-        ):
+        if lock is not None and lock.token_hash != digest and not _lock_expired(lock, now):
             raise HTTPException(status_code=409, detail="DEVICE_IN_USE")
         if lock is None:
             db.add(
@@ -359,6 +349,13 @@ def _issue(request: Request, db: Session | None, user_id: str, tenant_id: str) -
         )
         return token
     now = datetime.now(timezone.utc)
+    ip = ""
+    try:
+        from rxycode_server.api.client_ip import client_ip
+
+        ip = client_ip(request)
+    except Exception:
+        ip = ""
     db.add(
         AuthSession(
             token_hash=digest,
@@ -367,6 +364,8 @@ def _issue(request: Request, db: Session | None, user_id: str, tenant_id: str) -
             created_at=now,
             expires_at=now + _SESSION_TTL,
             last_seen_at=now,
+            device_label=(request.headers.get("user-agent") or "")[:128],
+            ip_hint=ip[:64],
         )
     )
     # The new session takes the single-device lock in the same commit.
@@ -398,9 +397,7 @@ def _require_captcha(request: Request, payload: dict) -> None:
     if registry is None:
         registry = _ReplayRegistry()
         request.app.state.altcha_registry = registry
-    if not verify_payload(
-        payload.get("captcha"), request.app.state.secret, registry
-    ):
+    if not verify_payload(payload.get("captcha"), request.app.state.secret, registry):
         raise HTTPException(status_code=400, detail="CAPTCHA_INVALID")
 
 
@@ -422,9 +419,7 @@ def _burn_codes(db: Session, purpose: str, email: str) -> None:
     )
 
 
-def _mint_code(
-    request: Request, db: Session, purpose: str, email: str, user_id: str | None
-) -> str:
+def _mint_code(request: Request, db: Session, purpose: str, email: str, user_id: str | None) -> str:
     _burn_codes(db, purpose, email)
     now = datetime.now(timezone.utc)
     code = f"{secrets.randbelow(1_000_000):06d}"
@@ -464,9 +459,7 @@ def _deliver_code(request: Request, email: str, code: str, subject: str) -> str 
         return "inline"
     if getattr(state, "reset_operator_log", False):
         # Operator outbox — register/login pages accept the code directly.
-        log.warning(
-            "verification code for %s (operator outbox): %s", email, code
-        )
+        log.warning("verification code for %s (operator outbox): %s", email, code)
         return "operator-log"
     return None
 
@@ -496,9 +489,7 @@ def _redeem_code(
     if attempts.get(key, 0) >= _CODE_MAX_ATTEMPTS:
         raise HTTPException(status_code=400, detail=detail)
     now = datetime.now(timezone.utc)
-    row = db.get(
-        EmailCode, _code_digest(request.app.state.secret, purpose, email, code)
-    )
+    row = db.get(EmailCode, _code_digest(request.app.state.secret, purpose, email, code))
     if row is None or row.used_at is not None or _aware(row.expires_at) <= now:
         attempts[key] = attempts.get(key, 0) + 1
         if attempts[key] >= _CODE_MAX_ATTEMPTS:
@@ -513,7 +504,9 @@ def _local_account(db: Session) -> tuple[User, Organization]:
     """Local mode has one user. A later login keeps that user and tenant."""
     user = db.scalars(select(User).where(User.kind == "local")).one_or_none()
     if user is not None:
-        tenant_id = db.scalars(select(Membership.tenant_id).where(Membership.user_id == user.id)).one()
+        tenant_id = db.scalars(
+            select(Membership.tenant_id).where(Membership.user_id == user.id)
+        ).one()
         org = db.scalars(select(Organization).where(Organization.tenant_id == tenant_id)).one()
         return user, org
     user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
@@ -528,7 +521,9 @@ def _local_account(db: Session) -> tuple[User, Organization]:
 def _github_account(db: Session, github_id: str) -> tuple[User, str]:
     user = db.scalars(select(User).where(User.github_id == github_id)).one_or_none()
     if user is not None:
-        tenant_id = db.scalars(select(Membership.tenant_id).where(Membership.user_id == user.id)).one()
+        tenant_id = db.scalars(
+            select(Membership.tenant_id).where(Membership.user_id == user.id)
+        ).one()
         return user, tenant_id
     user = User(id=uuid.uuid4().hex, github_id=github_id, kind="github")
     org = Organization(id=uuid.uuid4().hex, tenant_id=uuid.uuid4().hex)
@@ -744,11 +739,7 @@ def register(
     org = Organization(id=uuid.uuid4().hex, tenant_id=tenant_id)
     db.add(user)
     db.add(org)
-    db.add(
-        Membership(
-            id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, role="owner"
-        )
-    )
+    db.add(Membership(id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, role="owner"))
     try:
         user.default_project_id = _ensure_default_project(db, tenant_id)
         db.flush()
@@ -785,23 +776,53 @@ def password_login(
         if user is None or user.disabled_at is not None:
             raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
         try:
-            _redeem_code(
-                request, db, "login", email, code, detail="INVALID_CREDENTIALS"
-            )
+            _redeem_code(request, db, "login", email, code, detail="INVALID_CREDENTIALS")
         except HTTPException:
             raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS") from None
     else:
         # Always run one scrypt so unknown-email and wrong-password look alike.
         stored = user.password_hash if user is not None and user.password_hash else _DUMMY_HASH
-        if user is None or not verify_password(
-            str(payload.get("password") or ""), stored
-        ):
+        if user is None or not verify_password(str(payload.get("password") or ""), stored):
             raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     if user.disabled_at is not None:
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
-    _drop_current(request, db)
     tenant_id = _tenant_for(db, user.id)
+    # MFA gate: password verified, but an enabled factor means no cookie yet —
+    # the client completes the challenge before _issue runs.
+    from rxycode_server.api.security import (
+        issue_mfa_challenge,
+        mfa_required_for,
+        record_security_event,
+    )
+
+    methods = mfa_required_for(db, user.id)
+    if methods:
+        challenge_id = issue_mfa_challenge(db, user.id, tenant_id)
+        record_security_event(
+            db,
+            user_id=user.id,
+            tenant_id=tenant_id,
+            type="mfa_challenge_issued",
+            result="ok",
+            device_label=(request.headers.get("user-agent") or "")[:128],
+        )
+        db.flush()
+        return {
+            "mfa_required": True,
+            "challenge_id": challenge_id,
+            "allowed_methods": methods + ["recovery_code"],
+        }
+    _drop_current(request, db)
     _set_session(response, _issue(request, db, user.id, tenant_id), secure=_secure(request))
+    record_security_event(
+        db,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        type="login",
+        result="ok",
+        device_label=(request.headers.get("user-agent") or "")[:128],
+    )
+    db.flush()
     return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
 
 
@@ -822,9 +843,7 @@ def forgot_password(
         limiter.check("forgot", ip, email)
         limiter.check_code("forgot", ip, email)
     _require_captcha(request, payload)
-    user = db.scalars(
-        select(User).where(User.email == email).limit(1)
-    ).first()
+    user = db.scalars(select(User).where(User.email == email).limit(1)).first()
     body: dict[str, object] = {"ok": True}
     if (
         user is None
@@ -911,9 +930,7 @@ def forgot_password(
     return body
 
 
-def _reset_with_code(
-    request: Request, payload: dict, db: Session
-) -> dict[str, object]:
+def _reset_with_code(request: Request, payload: dict, db: Session) -> dict[str, object]:
     """Redeem an emailed 6-digit code. The stored digest is scoped to the
     purpose+email (``reset:{email}:{code}``) and repeated wrong codes burn the
     outstanding code — a 10^6 space stays safe at this ceiling."""
@@ -926,12 +943,8 @@ def _reset_with_code(
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
     limiter = getattr(request.app.state, "auth_rate", None)
     if limiter is not None:
-        limiter.check(
-            "reset-code", client_ip(request), email
-        )
-    user = db.scalars(
-        select(User).where(User.email == email).limit(1)
-    ).first()
+        limiter.check("reset-code", client_ip(request), email)
+    user = db.scalars(select(User).where(User.email == email).limit(1)).first()
     if user is None or user.disabled_at is not None:
         raise HTTPException(status_code=400, detail="RESET_INVALID")
     _redeem_code(request, db, "reset", email, code, detail="RESET_INVALID")
@@ -1016,9 +1029,7 @@ def register_code(
     if taken or channel == "none":
         return body
     code = _mint_code(request, db, "register", email, None)
-    body["delivery"] = _deliver_code(
-        request, email, code, "RxyCode 注册验证码"
-    ) or channel
+    body["delivery"] = _deliver_code(request, email, code, "RxyCode 注册验证码") or channel
     if body["delivery"] == "inline":
         body["dev_code"] = code
     return body
@@ -1044,17 +1055,10 @@ def login_code(
     channel = _delivery_channel(request.app.state)
     body: dict[str, object] = {"ok": True, "delivery": channel}
     user = db.scalars(select(User).where(User.email == email).limit(1)).first()
-    if (
-        user is None
-        or user.disabled_at is not None
-        or user.kind != "email"
-        or channel == "none"
-    ):
+    if user is None or user.disabled_at is not None or user.kind != "email" or channel == "none":
         return body
     code = _mint_code(request, db, "login", email, user.id)
-    body["delivery"] = _deliver_code(
-        request, email, code, "RxyCode 登录验证码"
-    ) or channel
+    body["delivery"] = _deliver_code(request, email, code, "RxyCode 登录验证码") or channel
     if body["delivery"] == "inline":
         body["dev_code"] = code
     return body
@@ -1183,15 +1187,11 @@ def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]
 
 
 def _session_digest(request: Request) -> str:
-    return _hash_token(
-        request.app.state.secret, request.cookies.get("rxy_session", "")
-    )
+    return _hash_token(request.app.state.secret, request.cookies.get("rxy_session", ""))
 
 
 @router.get("/api/v1/auth/device")
-def device_status(
-    request: Request, db: Session = Depends(db_session)
-) -> dict[str, str]:
+def device_status(request: Request, db: Session = Depends(db_session)) -> dict[str, str]:
     """The caller's lock view: ``active`` (this session holds it),
     ``held_elsewhere`` (a live other session holds it), ``none`` (no row or
     the holder went idle past the TTL — the lock is free for the taking)."""
@@ -1209,9 +1209,7 @@ def device_status(
 
 
 @router.post("/api/v1/auth/device/claim")
-def device_claim(
-    request: Request, db: Session = Depends(db_session)
-) -> dict[str, bool]:
+def device_claim(request: Request, db: Session = Depends(db_session)) -> dict[str, bool]:
     """Takeover: unconditionally re-points the lock at the caller's session."""
     require_write(request)
     record = current_record(request)
