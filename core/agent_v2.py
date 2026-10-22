@@ -10121,10 +10121,6 @@ class AgentV2:
             raw_args = item.get("args")
         if not isinstance(raw_args, dict):
             return False
-        try:
-            from RxyCode.RxyCode1_1_0.tools.git_tool import git_invocation_is_readonly
-        except Exception:
-            return False
         return git_invocation_is_readonly(
             str(raw_args.get("operation") or "status"),
             str(raw_args.get("args") or ""),

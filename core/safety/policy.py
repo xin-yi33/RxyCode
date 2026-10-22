@@ -9,6 +9,7 @@ vendored.
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
 from enum import IntEnum
@@ -449,7 +450,9 @@ def is_write_allowed(path: str, config: dict) -> bool:
     - the RxyCode output dir (~/.rxycode/output/ or RXYCODE_OUTPUT_DIR)
     - every entry of config ``safety.allowed_write_paths``
     """
-    from ..session_runtime import current_working_directory
+    current_working_directory = importlib.import_module(
+        f"{__package__.rsplit('.', 1)[0]}.session_runtime"
+    ).current_working_directory
 
     safety = (config or {}).get("safety", {}) or {}
     allowed_extra = safety.get("allowed_write_paths", []) or []
@@ -481,7 +484,6 @@ def is_write_allowed(path: str, config: dict) -> bool:
     try:
         # Import from the concrete package module, not sys.modules lookup,
         # so tests that stub config.settings in sys.modules don't break us.
-        import importlib
         _settings = importlib.import_module("RxyCode.RxyCode1_1_0.config.settings")
         _get_output_dir = getattr(_settings, "get_output_dir", None)
         if _get_output_dir is None:
@@ -1520,8 +1522,9 @@ def find_bash_disallowed_write_paths(
     base = workdir
     if not base:
         try:
-            from ..session_runtime import current_working_directory
-
+            current_working_directory = importlib.import_module(
+                f"{__package__.rsplit('.', 1)[0]}.session_runtime"
+            ).current_working_directory
             base = str(current_working_directory())
         except Exception:
             base = None

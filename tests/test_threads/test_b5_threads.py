@@ -520,7 +520,7 @@ def test_worker_consumes_steer_queue() -> None:
     assert "while self._steer_queue:" in text
     assert "self._steer_queue.pop(0)" in text
     # 残留 steer 合并为一条消息跑一个兜底回合（不多发「最终结果」）。
-    assert "session.prompt(self._agent, combined" in text
+    assert "session, self._agent, combined" in text
     assert "def _take_steers" in text
     assert "session.drain_steers = self._take_steers" in text
 

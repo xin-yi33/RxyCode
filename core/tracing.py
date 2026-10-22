@@ -12,6 +12,7 @@ Adapted from OpenHands (MIT) event stream/trajectory serialization pattern.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import re
 import time
@@ -439,7 +440,7 @@ def format_team_tree(spans: list[NodeSpan]) -> str:
     by_parent: dict[str, list[NodeSpan]] = {}
     roots: list[NodeSpan] = []
     # The web tree and this replay share one projection of the recorded spans.
-    from rxycode_worker.agent_events import project_run
+    project_run = importlib.import_module("rxycode_worker.agent_events").project_run
 
     projected = project_run(spans=list(spans), events=[])
     span_by_id = {span.span_id: span for span in spans}

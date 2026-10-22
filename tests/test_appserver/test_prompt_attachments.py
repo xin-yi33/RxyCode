@@ -60,7 +60,7 @@ async def test_worker_passes_attachments_once_to_core_session(tmp_path, monkeypa
             return Result()
 
     monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: FakeSession)
-    monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", lambda *_args: (None, None))
+    monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", lambda *_args, **_kw: (None, None))
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", lambda _token: None)
     monkeypatch.setattr("appserver.agent_worker.write_message", AsyncMock())
     attachments = [{"path": str(tmp_path / "notes.txt"), "name": "notes.txt"}]
@@ -117,7 +117,7 @@ async def test_worker_preserves_legacy_session_compat_and_rejects_attachment_dro
     session = LegacySession()
     monkeypatch.setattr(worker, "bind_core_session", lambda *_args: session)
     monkeypatch.setattr(
-        "appserver.agent_worker.bind_prompt_context", lambda *_args: (None, None)
+        "appserver.agent_worker.bind_prompt_context", lambda *_args, **_kw: (None, None)
     )
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", lambda _token: None)
     monkeypatch.setattr(worker, "_wind_down_stream", AsyncMock())

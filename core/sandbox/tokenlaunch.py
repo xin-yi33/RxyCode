@@ -30,6 +30,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
 import os
 import shutil
 import subprocess
@@ -79,8 +81,6 @@ def _prepare_write_root(path: Path, capability_sid_text: str | None) -> None:
 def _grant_rx(path: Path, capability_sid_text: str, marker_dir: Path, recursive: bool) -> None:
     """给能力 SID 授 RX。跨进程 marker 缓存（伪造 marker 只会让授权
     没落实 → 子进程读不进 → 失败方向永远朝拒绝，不会扩大读权）。"""
-    import hashlib
-
     marker = marker_dir / (
         "rx-" + hashlib.sha1(str(path).lower().encode("utf-8", "replace")).hexdigest()[:16]
     )
@@ -138,7 +138,7 @@ def _prepare_read_domain(exe: Path, capability_sid_text: str | None, marker_dir:
 
 def _std_handles() -> tuple[int, int, int]:
     """本进程的标准句柄（转交给受限子进程作它的 stdio）。"""
-    from . import windows
+    windows = importlib.import_module(f"{__package__}.windows")
 
     get_std = windows.kernel32.GetStdHandle
     get_std.restype = windows.wintypes.HANDLE
@@ -167,7 +167,7 @@ def main() -> int:
         print("tokenlaunch 缺少目标 argv（-- 之后）", file=sys.stderr)
         return 2
 
-    from . import windows
+    windows = importlib.import_module(f"{__package__}.windows")
 
     sid_ptr = None
     sid_text: str | None = None

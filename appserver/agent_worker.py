@@ -76,6 +76,33 @@ def install_scripted_agent_replies(agent) -> None:
     agent._raw_stream = stream
     agent._application_cache_namespace = lambda: "rxycode-scripted-agent"
     agent._scripted_replies_installed = True
+    # The build-workflow gate issues a real ``llm.ainvoke`` through
+    # ``_workflow_model_text`` (it deliberately bypasses ``_raw_stream``).
+    # Under a scripted run that call would escape the seam and hit the real
+    # provider.  Answer it through the existing ``_build_workflow_ask`` seam
+    # with a minimal valid ``question`` contract: non-development kinds pass
+    # the completion gate for free, so the scripted reply stays the answer.
+    scripted_decision = json.dumps(
+        {
+            "workflow_id": "wf-scripted",
+            "goal_revision": 1,
+            "contract_revision": 1,
+            "task_kind": "question",
+            "difficulty": "simple",
+            "stage_actions": {
+                "project_docs": "skip",
+                "clarify": "skip",
+                "design": "skip",
+                "build_verify": "skip",
+                "doc_sync": "skip",
+            },
+            "reason": "scripted test run",
+            "acceptance": ["scripted reply returned to the user"],
+            "required_checks": [],
+        },
+        ensure_ascii=False,
+    )
+    agent._build_workflow_ask = lambda _prompt: scripted_decision
 
 
 def bind_worker_todo_sink(emit) -> None:

@@ -663,7 +663,7 @@ def test_synthesis_with_tools_uses_parallel_path_and_write_snapshot():
     agent._capture_git_snapshot_async = capture
     agent._execute_tool = fake_execute_tool
     agent._raw_stream = fake_stream
-    agent._tool_result_message_content = lambda name, result: result
+    agent._tool_result_message_content = lambda name, result, is_error=None: result
 
     asyncio.run(
         agent._synthesis_with_tools(

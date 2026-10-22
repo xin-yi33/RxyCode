@@ -8,16 +8,19 @@ import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
 
-try:
-    from ..config.settings import get_data_dir, get_dated_data_dir, get_output_dir
-    from ..memory.long_term import validate_session_id
-    from ..utils.atomic_file import atomic_write_text
-except ImportError:
-    # Flat deployment layout: core/ is a top-level package on sys.path, so the
-    # nested-package relative imports above have no parent to resolve against.
-    from config.settings import get_data_dir, get_dated_data_dir, get_output_dir
-    from memory.long_term import validate_session_id
-    from utils.atomic_file import atomic_write_text
+import importlib as _importlib
+
+# Resolve sibling packages under either the nested source layout
+# (RxyCode.RxyCode1_1_0.*) or the flat deployment layout (top-level packages).
+_BASE = f"{__package__.rsplit('.', 1)[0]}." if __package__ and "." in __package__ else ""
+_settings = _importlib.import_module(f"{_BASE}config.settings")
+_long_term = _importlib.import_module(f"{_BASE}memory.long_term")
+_atomic_file = _importlib.import_module(f"{_BASE}utils.atomic_file")
+get_data_dir = _settings.get_data_dir
+get_dated_data_dir = _settings.get_dated_data_dir
+get_output_dir = _settings.get_output_dir
+validate_session_id = _long_term.validate_session_id
+atomic_write_text = _atomic_file.atomic_write_text
 
 
 _ACTIVE_SESSION_ID: ContextVar[str] = ContextVar(

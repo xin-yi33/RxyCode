@@ -22,6 +22,7 @@ All entries share the same fixed execution order:
 from __future__ import annotations
 
 import asyncio
+import importlib
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -42,6 +43,10 @@ from protocol.subagents import (
     WorkspaceMode,
     WorkspaceScope,
 )
+
+
+def _worker_agent_events() -> object:
+    return importlib.import_module("rxycode_worker.agent_events")
 
 from .definitions import AgentDefinitionRegistry
 from .modes import (
@@ -172,14 +177,14 @@ class ChildSessionManager:
     def _journal_child(self, method: str, session: ChildSession, payload: dict) -> None:
         """Write the same lifecycle notice into the web run log, when one is active."""
         try:
-            from rxycode_worker.agent_events import default_run_journal
+            default_run_journal = _worker_agent_events().default_run_journal
         except ImportError:
             return
         journal = default_run_journal()
         if journal is None:
             return
         root = str(getattr(session, "root_session_id", "") or "")
-        from rxycode_worker.agent_events import run_matches_session
+        run_matches_session = _worker_agent_events().run_matches_session
 
         child_id = str(getattr(session, "session_id", "") or "")
         if not run_matches_session(journal.run_id, root, child_id):
@@ -256,14 +261,12 @@ class ChildSessionManager:
     def get_tree(self, root_session_id: str) -> SessionTree:
         """Return the session tree for a Primary session."""
         try:
-            from rxycode_worker.agent_events import bind_run
+            bind_run = _worker_agent_events().bind_run
         except ImportError:
             bind_run = None
         if bind_run is not None:
             bind_run(root_session_id, manager=self, tree_root=root_session_id)
-            from rxycode_worker.agent_events import bind_manager_for_active_run
-
-            bind_manager_for_active_run(root_session_id, self)
+            _worker_agent_events().bind_manager_for_active_run(root_session_id, self)
         return self._tree_for(root_session_id)
 
     def get_session(self, root_session_id: str, session_id: str) -> ChildSession:

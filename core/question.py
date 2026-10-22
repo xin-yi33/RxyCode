@@ -8,6 +8,7 @@ separate request/response registry and transport.
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
 import json
 import os
 import re
@@ -231,7 +232,7 @@ def _question_token(question_id: str) -> str:
 
 def _caller_session_id() -> str:
     try:
-        from appserver.runtime import get_bound_session_id
+        get_bound_session_id = _importlib.import_module("appserver.runtime").get_bound_session_id
     except ImportError:
         get_bound_session_id = None
     if get_bound_session_id is not None:
@@ -241,12 +242,11 @@ def _caller_session_id() -> str:
     else:
         bound = ""
     try:
-        from core.session_runtime import current_session_id
+        current_session_id = _importlib.import_module(
+            f"{__package__}.session_runtime"
+        ).current_session_id
     except ImportError:
-        try:
-            from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
-        except ImportError:
-            return bound
+        return bound
     try:
         current = str(current_session_id() or "").strip()
     except (TypeError, ValueError):
@@ -275,7 +275,7 @@ def _question_lock(token: str):
     class _Lock:
         def __enter__(self):
             if os.name == "nt":
-                import msvcrt
+                msvcrt = _importlib.import_module("msvcrt")
 
                 while True:
                     try:
@@ -284,7 +284,7 @@ def _question_lock(token: str):
                         return self
                     except OSError:
                         time.sleep(0.01)
-            import fcntl
+            fcntl = _importlib.import_module("fcntl")
 
             fcntl.flock(fd, fcntl.LOCK_EX)
             return self
@@ -292,12 +292,12 @@ def _question_lock(token: str):
         def __exit__(self, exc_type, exc, tb):
             try:
                 if os.name == "nt":
-                    import msvcrt
+                    msvcrt = _importlib.import_module("msvcrt")
 
                     os.lseek(fd, 0, os.SEEK_SET)
                     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
                 else:
-                    import fcntl
+                    fcntl = _importlib.import_module("fcntl")
 
                     fcntl.flock(fd, fcntl.LOCK_UN)
             finally:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -31,8 +33,6 @@ EmitCallback = Callable[[BaseModel], None]
 
 
 def _run_context_module() -> Any:
-    import importlib
-    import sys
 
     try:
         return importlib.import_module("rxycode_protocol.run_context")

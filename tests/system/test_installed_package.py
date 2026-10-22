@@ -240,12 +240,22 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
             "secret",
             "secrets",
         }
+
+        def leaks_workspace_state(path: PurePosixPath) -> bool:
+            # A forbidden name only counts as runtime state at the payload
+            # root or directly under the embedded checkout root — nested
+            # package dirs (e.g. rxycode_server/artifacts) are shipped code.
+            for index, part in enumerate(path.parts):
+                if part.casefold() not in forbidden_directories:
+                    continue
+                if index == 0 or path.parts[:index] == VERSIONED_ROOT.parts:
+                    return True
+            return False
+
         leaked = [
             str(path)
             for path in paths
-            if forbidden_directories.intersection(
-                part.casefold() for part in path.parts
-            )
+            if leaks_workspace_state(path)
             or path.suffix.casefold() in {".log", ".key", ".pem"}
             or path.name.casefold()
             in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}
@@ -302,7 +312,7 @@ def test_sdist_contains_bootstraps_without_runtime_state(
     leaked = [
         str(path)
         for path in relative
-        if forbidden.intersection(part.casefold() for part in path.parts)
+        if path.parts and path.parts[0].casefold() in forbidden
         or path.suffix.casefold() in {".log", ".key", ".pem"}
         or path.name.casefold()
         in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}

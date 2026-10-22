@@ -14,14 +14,17 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import importlib
 import inspect
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -183,10 +186,6 @@ def _is_generated_spill_line(line: str) -> bool:
 
 
 def _execution_port_module() -> Any:
-    import importlib
-    import sys
-    from pathlib import Path
-
     try:
         return importlib.import_module("rxycode_core.runtime.execution_port")
     except ImportError:
@@ -639,7 +638,9 @@ class ToolOrchestrator:
         ):
             self._selection_report = []
             return chosen
-        from rxycode_core.tools.capability_catalog import filter_selection
+        filter_selection = importlib.import_module(
+            "rxycode_core.tools.capability_catalog"
+        ).filter_selection
 
         kept, report = filter_selection(
             chosen,
@@ -1906,7 +1907,7 @@ class ToolOrchestrator:
         production_bash = False
         if name in {"bash", "shell"}:
             try:
-                from tools.bash import bash_tool
+                bash_tool = importlib.import_module("tools.bash").bash_tool
             except ImportError:
                 bash_tool = None
             production_bash = tool is bash_tool or name == "shell"
@@ -1918,7 +1919,9 @@ class ToolOrchestrator:
             command = args.get("command") if isinstance(args, dict) else None
             if isinstance(command, str) and command.strip():
                 async def native_runner() -> str:
-                    from rxycode_runner.local.native_backend import LocalNativeBackend
+                    LocalNativeBackend = importlib.import_module(
+                        "rxycode_runner.local.native_backend"
+                    ).LocalNativeBackend
 
                     backend = LocalNativeBackend(target="local", permission="full")
                     port.register_local_full(backend)
@@ -1931,14 +1934,14 @@ class ToolOrchestrator:
                                 timeout = max(1, int(args.get("timeout")))
                             except (TypeError, ValueError):
                                 timeout = 1800
-                    from utils.shell import shell_executor
+                    shell_executor = importlib.import_module("utils.shell").shell_executor
 
                     try:
                         cwd = shell_executor.resolved_workdir(workdir)
                     except ValueError as exc:
                         return f"[error executing bash: {exc}]"
                     try:
-                        from tools.bash import _format_result
+                        _format_result = importlib.import_module("tools.bash")._format_result
                     except ImportError:
                         _format_result = None
                     # WEB-W7-C02：与常规执行面同一 argv 构造——full_auto
