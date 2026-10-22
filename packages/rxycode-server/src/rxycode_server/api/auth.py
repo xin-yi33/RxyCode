@@ -186,6 +186,11 @@ class AuthRateLimit:
         self.code_email = _Window(5, window_seconds=300)
         self.code_ip = _Window(15, window_seconds=300)
         self.register_hour = _Window(5, window_seconds=3600)
+        self.security = _Window(5)
+
+    def hit(self, key: str) -> bool:
+        """Security routes still call this after the windowed counters split out."""
+        return self.security.hit(key)
 
     def check(self, route: str, ip: str, email: str) -> None:
         if not self.ip.hit(f"{route}:ip:{ip}") or not self.email.hit(f"{route}:email:{email}"):

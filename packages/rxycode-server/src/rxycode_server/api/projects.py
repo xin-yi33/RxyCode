@@ -63,6 +63,11 @@ def _iso(value):
     return stamp.isoformat() if stamp is not None else None
 
 
+def _project_body(item: dict[str, object]) -> dict[str, object]:
+    """Keep the nested project for the web client and the flat id for older tests."""
+    return {"project": item, "id": item["id"], "tenant_id": item["tenant_id"], "name": item["name"]}
+
+
 def _project_item(db: Session, record, row: Project) -> dict[str, object]:
     meta = db.get(UserProjectMeta, (record.user_id, row.id))
     return {
@@ -151,7 +156,7 @@ def create_project(
             )
         ).one_or_none()
         if existing is not None:
-            return {"project": _project_item(db, record, existing)}
+            return _project_body(_project_item(db, record, existing))
     config = dict(payload.repo_config)
     config.pop("workspace_root", None)
     config.pop("target_id", None)
@@ -176,7 +181,7 @@ def create_project(
     )
     db.add(project)
     db.flush()
-    return {"project": _project_item(db, record, project)}
+    return _project_body(_project_item(db, record, project))
 
 
 def _locked_project(db: Session, record, project_id: str) -> Project:

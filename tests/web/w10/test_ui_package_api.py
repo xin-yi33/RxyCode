@@ -180,14 +180,14 @@ def test_w10_session_delete_tombstone(postgres_url: str, monkeypatch: pytest.Mon
     _finish_run(postgres_url, made.json()["run_id"])
 
     # delete requires confirm
-    refused = client.delete(
+    refused = client.request("DELETE", 
         f"/api/v1/sessions/{session_id}",
         json={"confirm": False},
         headers=_headers(_csrf(client)),
     )
     assert refused.status_code in (400, 422)
 
-    gone = client.delete(
+    gone = client.request("DELETE", 
         f"/api/v1/sessions/{session_id}",
         json={"confirm": True},
         headers=_headers(_csrf(client)),
@@ -240,7 +240,7 @@ def test_w10_projects_crud_and_conflicts(postgres_url: str, monkeypatch: pytest.
     assert patched.json()["project"]["name"] == "Beta"
 
     # default project cannot be deleted
-    denied = client.delete(
+    denied = client.request("DELETE", 
         f"/api/v1/projects/{default_id}",
         json={},
         headers=_headers(_csrf(client)),
@@ -251,7 +251,7 @@ def test_w10_projects_crud_and_conflicts(postgres_url: str, monkeypatch: pytest.
     made = _post_task(client, "project task", project_id=project["id"])
     assert made.status_code == 202, made.text
     _finish_run(postgres_url, made.json()["run_id"])
-    deleted = client.delete(
+    deleted = client.request("DELETE", 
         f"/api/v1/projects/{project['id']}",
         json={"keep_sessions": True},
         headers=_headers(_csrf(client)),
@@ -397,7 +397,7 @@ def test_w10_schedules_crud_and_run_now(postgres_url: str, monkeypatch: pytest.M
     )
     assert paused.status_code == 200
     assert paused.json()["schedule"]["enabled"] is False
-    deleted = client.delete(
+    deleted = client.request("DELETE", 
         f"/api/v1/schedules/{schedule['id']}",
         headers=_headers(_csrf(client)),
     )
@@ -492,7 +492,7 @@ def test_w10_totp_enroll_confirm_disable(postgres_url: str, monkeypatch: pytest.
         headers=_headers(_csrf(client)),
     ).json()["reauth_token"]
     code2 = pyotp.TOTP(body["secret"]).now()
-    removed = client.delete(
+    removed = client.request("DELETE", 
         "/api/v1/auth/mfa/totp",
         json={"reauth_token": ticket2, "code": code2},
         headers=_headers(_csrf(client)),
