@@ -174,6 +174,7 @@ process.stdout.write(html)
             cwd=REPO,
             env=env,
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=False,
             timeout=60,

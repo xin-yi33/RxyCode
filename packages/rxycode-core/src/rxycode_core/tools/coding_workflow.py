@@ -8,6 +8,7 @@ returns no references.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -134,14 +135,24 @@ async def _run_tests(
     runner = orchestrator or _orchestrator()
     script = root / "_rxy_pytest_runner.py"
     script.write_text(
+        "import os\n"
         "import subprocess\n"
         "import sys\n"
-        "completed = subprocess.run([sys.executable, '-m', 'pytest', sys.argv[1], '-q'])\n"
+        "env = dict(os.environ)\n"
+        "env['PYTHONIOENCODING'] = 'utf-8'\n"
+        "env['PYTHONUTF8'] = '1'\n"
+        "completed = subprocess.run(\n"
+        "    [sys.executable, '-m', 'pytest', sys.argv[1], '-q'], env=env\n"
+        ")\n"
         "print('RXY_PYTEST_EXIT', completed.returncode)\n"
         "raise SystemExit(completed.returncode)\n",
         encoding="utf-8",
     )
-    command = f'"{sys.executable}" "{script}" "{test_path}"'
+    # PowerShell (the Windows shell) needs the call operator to run a quoted
+    # path; cmd.exe parses a leading `&` as an empty separator, so the same
+    # spelling survives both shells.
+    prefix = "& " if os.name == "nt" else ""
+    command = f'{prefix}"{sys.executable}" "{script}" "{test_path}"'
     output = await runner.execute_tool(
         "bash",
         {"command": command, "workdir": str(root)},

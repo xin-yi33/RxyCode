@@ -24,7 +24,7 @@ for _name in ("rxycode-server", "rxycode-worker", "rxycode-runner", "rxycode-pro
 
 from rxycode_server.api.auth import invite_digest  # noqa: E402
 from rxycode_server.main import create_app  # noqa: E402
-from rxycode_server.persistence.models import Invite, Run  # noqa: E402
+from rxycode_server.persistence.models import Invite, Run, User  # noqa: E402
 
 ORIGIN = "https://w10.example"
 SECRET = "w10-web-secret-value-32bytes-long!!"
@@ -109,12 +109,53 @@ def _finish_run(postgres_url: str, run_id: str, status: str = "succeeded") -> No
     engine.dispose()
 
 
+def _byok_ring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point BYOK at a throwaway keyring (BYOK-only policy: runs need a model)."""
+    import base64
+    import json
+    import tempfile
+
+    ring = Path(tempfile.mkdtemp(prefix="rxy-w10-keyring-")) / "keyring.json"
+    ring.write_text(
+        json.dumps({"active": "k1", "keys": {"k1": base64.b64encode(b"k" * 32).decode()}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RXYCODE_BYOK_KEYRING_FILE", str(ring))
+
+
+def _byok_model(client: TestClient, postgres_url: str, user_id: str) -> str:
+    """Create a BYOK connection+model and make it the user's default so
+    ``_post_task``/``_post_run`` resolve a snapshot under BYOK-only policy."""
+    conn = client.post(
+        "/api/v1/model-connections",
+        json={"preset_id": "deepseek", "api_key": "sk-canary-w10-a1b2c3d4e5f6"},
+        headers=_headers(_csrf(client)),
+    )
+    assert conn.status_code == 201, conn.text
+    conn_id = conn.json()["connection"]["id"]
+    added = client.post(
+        f"/api/v1/model-connections/{conn_id}/models",
+        json={"model_ids": ["deepseek-chat"]},
+        headers=_headers(_csrf(client)),
+    )
+    assert added.status_code in (200, 201), added.text
+    model_ref = added.json()["results"][0]["model_ref"]
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.execute(update(User).where(User.id == user_id).values(default_model_ref=model_ref))
+        db.commit()
+    engine.dispose()
+    return model_ref
+
+
 # ---- sessions lifecycle -----------------------------------------------------
 
 
 def test_w10_session_patch_archive_unarchive(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
-    client, _me = _client(postgres_url, "lifecycle@example.com")
+    _byok_ring(monkeypatch)
+    client, me = _client(postgres_url, "lifecycle@example.com")
+    _byok_model(client, postgres_url, me["user"]["id"])
     made = _post_task(client, "archive me please")
     assert made.status_code == 202
     session_id = made.json()["session_id"]
@@ -174,7 +215,9 @@ def test_w10_session_patch_archive_unarchive(postgres_url: str, monkeypatch: pyt
 
 def test_w10_session_delete_tombstone(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
-    client, _me = _client(postgres_url, "deleter@example.com")
+    _byok_ring(monkeypatch)
+    client, me = _client(postgres_url, "deleter@example.com")
+    _byok_model(client, postgres_url, me["user"]["id"])
     made = _post_task(client, "delete me")
     session_id = made.json()["session_id"]
     _finish_run(postgres_url, made.json()["run_id"])
@@ -210,7 +253,9 @@ def test_w10_session_delete_tombstone(postgres_url: str, monkeypatch: pytest.Mon
 
 def test_w10_projects_crud_and_conflicts(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
+    _byok_ring(monkeypatch)
     client, me = _client(postgres_url, "projects@example.com")
+    _byok_model(client, postgres_url, me["user"]["id"])
     default_id = me["default_project_id"]
 
     created = client.post(
@@ -267,7 +312,9 @@ def test_w10_projects_crud_and_conflicts(postgres_url: str, monkeypatch: pytest.
 
 def test_w10_search_chinese_substring(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
-    client, _me = _client(postgres_url, "searcher@example.com")
+    _byok_ring(monkeypatch)
+    client, me = _client(postgres_url, "searcher@example.com")
+    _byok_model(client, postgres_url, me["user"]["id"])
     other, _me2 = _client(postgres_url, "stranger@example.com")
     made = _post_task(client, "帮我修复登录页面的样式问题")
     assert made.status_code == 202
@@ -330,7 +377,9 @@ def test_w10_preferences_get_patch(postgres_url: str, monkeypatch: pytest.Monkey
 
 def test_w10_schedules_crud_and_run_now(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
+    _byok_ring(monkeypatch)
     client, me = _client(postgres_url, "scheduler@example.com")
+    _byok_model(client, postgres_url, me["user"]["id"])
     made = _post_task(client, "schedule host")
     session_id = made.json()["session_id"]
     _finish_run(postgres_url, made.json()["run_id"])

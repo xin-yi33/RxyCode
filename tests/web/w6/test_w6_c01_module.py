@@ -63,6 +63,7 @@ def _assert_wheel_contains_catalog() -> None:
         ],
         cwd=REPO,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
         timeout=180,
