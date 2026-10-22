@@ -191,3 +191,14 @@
 - **根因 2（跨栈 schema 竞态）**：每个 `_Stack` 共用 worker 库 `rxycode_gw<N>` 并 `DROP SCHEMA public`；上一个栈的 uvicorn 线程异步退出，其 SSE `_pull` 恰在 reset 窗口内查询得到 `relation "runs" does not exist`（CI stderr 实锤）。现每个 `_Stack` 建独立数据库 `w3c02_<rand>`、`close()` join api/proxy 线程后 `DROP DATABASE`——任何残留栈都摸不到新栈的 schema。
 - **BYOK-only 适配**：R6 已部署的策略使 `POST /tasks` 无 BYOK 即 403 `BYOK_REQUIRED`。contract 测试登录后经真实 API（proxy → `POST /model-connections` → `POST .../models` → `POST /models/default`）给 local 账号配默认 BYOK 模型，keyring 用临时 `RXYCODE_BYOK_KEYRING_FILE`；新旧 resolver 两种策略下均可解析 snapshot。
 - **验证**：本机 `pytest tests/web/w3/test_w3_c02_unit.py` 2/2 通过（9.9s，VM postgres + 本机 Chromium）；与 w10 的 BYOK 种子模式一致。
+
+## 修复：主题切换链路（guest 死链 + CSS 覆盖 + rem 缩放回归）（2026-10-22）
+
+- **根因 1（guest 主题切换死链）**：顶栏切换走 `PATCH /me/preferences`——访客无偏好接口（401/503）且 `onError` 静默吞错，游客永远无法切主题。修复为本地优先：`applyAppearance` 立即落 DOM + `rxy_theme` cookie，仅 `auth.status==="authed"` 时再同步服务端；切换按钮标签由「实际应用态」推导（服务端偏好→访客 cookie/系统→CSS 默认 light），避免 OS 暗色偏好下标签与显示态脱节。
+- **根因 2（`.dark` 背景被覆盖）**：外观引擎钩子块在 `:root` 重声明 `--rxy-bg: transparent`/`--rxy-fg: inherit`——与 `.dark` 同特异性且源码序靠后，dark 模式的 `#212121` 被压掉，body 算得 `rgba(0,0,0,0)`。删除两行占位（`applyAppearance` 走 inline style，无需 CSS 默认）。
+- **根因 3（rem 全局缩放）**：`applyAppearance` 向 `<html>` 写 `fontSize:14px`，Tailwind rem 值整体缩至 87.5%（`rounded-md`/`p-1.5` 6px→5.25px，w3_c08 生产布局断言红）。文本缩放本就由 `.rxy-app-shell{font-size:var(--rxy-ui-font)}` 负责，删除 html 级 fontSize。
+- **`useApplyAppearance` 按身份分流**：authed 无偏好数据时不再用访客 cookie/系统值猜主题（保持样式表默认，等服务端事实）；仅 `auth.status==="guest"` 时走 `rxy_theme` cookie→系统回退。
+- **外观分区离线可用**：偏好读取失败（或访客 `enabled:false` 恒 pending）时以 `defaultPreferences()` 渲染控件并乐观应用——不再因 `isError`/`isPending` 早退成纯错误/无限加载文案；authed+读失败时展示内联告警但控件仍可用。
+- **测试适配**：`test_theme_topbar_and_settings_entry_points_follow_selected_theme` 改走契约路由 `/settings/appearance` 与 APP-01 三模式 `radiogroup`（旧版"切换到浅色/深色"按钮已被规格化缩略图单选取代）；`设置` heading 断言加 `exact` 防子串误中分区标题。
+- **验证**：`tests/web/w3` 全目录 **59 passed / 10 skipped / 0 failed**（含 `test_theme_cookie_and_computed_styles_survive_mobile_spa_route_and_reload[chromium]`、production 布局断言、`mobile_browser_ui` 全套）；`tsc --noEmit` 全绿。
+- 工作树中 Tailwind v3 迁移（`@tailwind` 指令 + rgb channel 变量）为用户并行 WIP，未随本提交收拢；仅暂存外观钩子块的 `--rxy-bg` 修复。

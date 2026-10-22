@@ -9,11 +9,17 @@ import {
   type DeviceStatus,
   type Me,
   type NotificationItem,
+  type Preferences,
   type SessionListItem,
 } from "../../sdk/client"
 import { apiErrorText } from "../../sdk/errors"
-import { ACCENTS, THEMES } from "../../lib/appearance"
-import { useApplyAppearance, usePatchPreferences, usePreferences } from "../../state/prefs"
+import { ACCENTS, THEMES, applyAppearance, resolveAppearance } from "../../lib/appearance"
+import {
+  defaultPreferences,
+  useApplyAppearance,
+  usePatchPreferences,
+  usePreferences,
+} from "../../state/prefs"
 import { useUi } from "../../state/ui"
 import { useAuth, useLogout } from "../auth/useAuth"
 import { runStatusKind, runStatusText } from "../runs/status"
@@ -302,31 +308,37 @@ function ColorField({
 export function AppearanceSection() {
   const prefs = usePreferences()
   const patch = usePatchPreferences()
+  const auth = useAuth()
+  const authed = auth.status === "authed"
   const showToast = useUi((state) => state.showToast)
   const [error, setError] = useState("")
   const [advanced, setAdvanced] = useState(false)
   const [modeTab, setModeTab] = useState<"light" | "dark">("light")
-  const appearance = prefs.data?.appearance
+  // 访客与服务端读取失败时以默认形状渲染控件：外观是本地可持久化
+  // （rxy_theme cookie + DOM 立即生效），登录用户再同步服务端。
+  const base = prefs.data ?? defaultPreferences()
+  const appearance = base.appearance
 
   useApplyAppearance(prefs.data)
 
   const save = (body: Parameters<typeof patch.mutate>[0]) => {
     setError("")
-    patch.mutate(
-      { ...body, expected_revision: prefs.data?.revision },
-      { onError: (err) => setError(apiErrorText(err)) },
-    )
+    const merged: Preferences = {
+      ...base,
+      appearance: { ...base.appearance, ...(body.appearance ?? {}) },
+    }
+    applyAppearance(resolveAppearance(merged))
+    if (authed) {
+      patch.mutate(
+        { ...body, expected_revision: prefs.data?.revision },
+        { onError: (err) => setError(apiErrorText(err)) },
+      )
+    }
   }
   const setAppearance = (part: Partial<NonNullable<typeof appearance>>) =>
     save({ appearance: part })
 
-  if (prefs.isPending) return <p className="text-sm text-muted">正在加载偏好…</p>
-  if (prefs.isError)
-    return (
-      <p role="alert" className="text-sm text-failure">
-        {apiErrorText(prefs.error)}
-      </p>
-    )
+  if (authed && prefs.isPending) return <p className="text-sm text-muted">正在加载偏好…</p>
 
   const separate = appearance?.separate_modes ?? false
   const shared = appearance?.shared ?? {}
@@ -720,6 +732,11 @@ export function AppearanceSection() {
       >
         恢复默认外观
       </button>
+      {authed && prefs.isError ? (
+        <p role="alert" className="text-sm text-failure">
+          {apiErrorText(prefs.error)}（外观修改仍会即时生效并写入本机）
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-sm text-failure">
           {error}

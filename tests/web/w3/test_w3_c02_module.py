@@ -24,6 +24,7 @@ def test_w3_c02_integration() -> None:
             seen: list[str] = []
             page.on("request", lambda item: seen.append(item.url))
             _mod._login(page, stack.origin)
+            _mod._provision_byok(page, stack)
             # W9-F3: the import/创建会话 widgets are gone — POST /tasks is the
             # entrypoint. Dev has no worker so the run stays 排队中.
             with page.expect_response(

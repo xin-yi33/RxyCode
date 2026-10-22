@@ -30,6 +30,25 @@ export function usePatchPreferences() {
   })
 }
 
+// Default preference shape used when the server payload is unavailable
+// (guests, offline) — matches the backend defaults.
+export function defaultPreferences(): Preferences {
+  return {
+    revision: 0,
+    locale: "auto",
+    sidebar: { grouping: "merged", sort: "updated_at", show_projects: true },
+    appearance: {
+      mode: "system",
+      separate_modes: false,
+      shared: {},
+      light: null,
+      dark: null,
+      reduced_motion: "system",
+      diff_markers: "color",
+    },
+  }
+}
+
 // Guest fallback: cookie-backed mode until preferences land.
 export function guestMode(): "light" | "dark" {
   try {
@@ -52,29 +71,20 @@ export function localeSettingFromPrefs(
   return readLocaleCookie()
 }
 
-// Applies resolved appearance to <html> whenever prefs change; for guests the
-// cookie mode is applied so there's no flash of the wrong theme.
+// Applies resolved appearance to <html> whenever prefs change. For guests the
+// cookie mode is applied so there's no flash of the wrong theme; for signed-in
+// users the server is the only source of truth — until it answers we keep the
+// stylesheet default instead of guessing from the OS preference.
 export function useApplyAppearance(prefs: Preferences | null | undefined) {
+  const auth = useAuth()
   useEffect(() => {
     if (prefs) {
       applyAppearance(resolveAppearance(prefs))
-    } else {
-      applyAppearance(
-        resolveAppearance({
-          revision: 0,
-          locale: "auto",
-          sidebar: { grouping: "merged", sort: "updated_at", show_projects: true },
-          appearance: {
-            mode: guestMode(),
-            separate_modes: false,
-            shared: {},
-            light: null,
-            dark: null,
-            reduced_motion: "system",
-            diff_markers: "color",
-          },
-        }),
-      )
+      return
     }
-  }, [prefs])
+    if (auth.status !== "guest") return
+    const base = defaultPreferences()
+    base.appearance.mode = guestMode()
+    applyAppearance(resolveAppearance(base))
+  }, [prefs, auth.status])
 }

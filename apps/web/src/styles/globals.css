@@ -102,8 +102,6 @@ body {
   --rxy-ui-font: 14px;
   --rxy-code-font: 13px;
   --rxy-accent: #0f62fe;
-  --rxy-bg: transparent;
-  --rxy-fg: inherit;
 }
 
 .rxy-app-shell {

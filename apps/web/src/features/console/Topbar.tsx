@@ -1,9 +1,18 @@
 import { useQuery } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
 import { useLocation, useParams } from "react-router"
 
 import { IconConsole, IconMenu, IconMoon, IconSun } from "../../components/icons"
 import { createClient } from "../../sdk/client"
-import { useApplyAppearance, usePatchPreferences, usePreferences } from "../../state/prefs"
+import { applyAppearance, resolveAppearance } from "../../lib/appearance"
+import {
+  defaultPreferences,
+  guestMode,
+  useApplyAppearance,
+  usePatchPreferences,
+  usePreferences,
+} from "../../state/prefs"
+import { useAuth } from "../auth/useAuth"
 import { useUi } from "../../state/ui"
 
 const api = createClient()
@@ -14,11 +23,22 @@ export function Topbar() {
   const toggleSidebar = useUi((state) => state.toggleSidebar)
   const consoleOpen = useUi((state) => state.consoleOpen)
   const toggleConsole = useUi((state) => state.toggleConsole)
+  const auth = useAuth()
 
   const prefs = usePreferences()
   const patch = usePatchPreferences()
   useApplyAppearance(prefs.data)
-  const mode = prefs.data?.appearance.mode ?? "system"
+  // Optimistic local switch: guests have no preferences endpoint, and a
+  // failed write must not leave the toggle dead — the rxy_theme cookie
+  // (written by applyAppearance) persists the choice for guests/reloads.
+  const [override, setOverride] = useState<"light" | "dark" | null>(null)
+  useEffect(() => setOverride(null), [prefs.data])
+  const resolved = resolveAppearance(prefs.data ?? defaultPreferences())
+  // Track what is actually applied: server prefs when present, the cookie/
+  // system fallback for guests, otherwise the stylesheet default (light).
+  const mode =
+    override ??
+    (prefs.data ? resolved.mode : auth.status === "guest" ? guestMode() : "light")
 
   const sessionId = params.sessionId ?? ""
   const session = useQuery({
@@ -43,10 +63,14 @@ export function Topbar() {
 
   const cycleTheme = () => {
     const next = mode === "dark" ? "light" : "dark"
-    patch.mutate(
-      { appearance: { mode: next }, expected_revision: prefs.data?.revision },
-      { onError: () => undefined },
-    )
+    applyAppearance({ ...resolved, mode: next })
+    setOverride(next)
+    if (auth.status === "authed") {
+      patch.mutate(
+        { appearance: { mode: next }, expected_revision: prefs.data?.revision },
+        { onError: () => undefined },
+      )
+    }
   }
 
   return (

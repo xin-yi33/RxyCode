@@ -32,6 +32,9 @@ def test_w3_c07_integration() -> None:
             browser = playwright.chromium.launch()
             page = browser.new_page(viewport={"width": 375, "height": 812})
             _c02._login(page, stack.origin)
+            # c06's _seed resolves its own copy of the c02 module — point it at
+            # this stack's per-stack database or it seeds into the base db.
+            _c06._c02.URL = stack.url
             run_id, _approval_id = _c06._seed(datetime.now(timezone.utc) + timedelta(minutes=10))
             # /runs/{id} now resolves to the owning session page; the approve/
             # cancel buttons on the card are F4-RunTimeline scope, so the

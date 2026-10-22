@@ -134,7 +134,6 @@ export function applyAppearance(resolved: ResolvedAppearance): void {
   root.dataset.diffMarkers = resolved.diffMarkers
   root.style.setProperty("--rxy-ui-font", `${resolved.uiFontPx}px`)
   root.style.setProperty("--rxy-code-font", `${resolved.codeFontPx}px`)
-  root.style.fontSize = `${resolved.uiFontPx}px`
   root.classList.toggle("reduced-motion", resolved.reducedMotion)
   const { accent, background, foreground, theme_id } = resolved.profile
   if (accent) root.style.setProperty("--rxy-accent", accent)
