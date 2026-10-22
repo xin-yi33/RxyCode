@@ -41,6 +41,8 @@ from tests.support.pgurl import ensure_container, worker_url  # noqa: E402
 _PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 ensure_container("rxy-w2c01-pg", 55432)
 _URL = worker_url(_PG_BASE)
+# Older W3 tests import this module and use the shared worker database.
+URL = _URL
 SECRET = "local-web-secret-value-32bytes!!"
 
 
