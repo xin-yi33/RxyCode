@@ -26,7 +26,17 @@ def docker(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def external_url() -> str | None:
+    """``RXYCODE_PGURL`` points tests at a postgres the harness doesn't own
+    (e.g. a disposable container on a LAN host when Docker is unavailable).
+    Unset in CI — docker path is unchanged there."""
+    url = os.environ.get("RXYCODE_PGURL", "").strip()
+    return url or None
+
+
 def ensure_container(container: str, port: int) -> None:
+    if external_url():
+        return
     ready = docker("exec", container, "pg_isready", "-U", "postgres", "-d", "rxycode")
     if ready.returncode == 0:
         return
@@ -68,6 +78,9 @@ def worker_dbname() -> str:
 
 def worker_url(server_url: str) -> str:
     """Return ``server_url`` with the per-worker database created and swapped in."""
+    external = external_url()
+    if external:
+        server_url = external
     dbname = worker_dbname()
     base, sep, _ = server_url.rpartition("/")
     if not sep:
