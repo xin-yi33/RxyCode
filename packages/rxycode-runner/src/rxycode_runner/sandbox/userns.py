@@ -37,6 +37,7 @@ turn on the worker host.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -47,6 +48,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .provider import AttachRefused, ExecResult, IsolationUnavailable, SandboxHandle
+
+_LOG = logging.getLogger(__name__)
 
 RUNTIME = "userns-bwrap"
 
@@ -276,7 +279,16 @@ def userns_available(*, force: bool = False) -> bool:
     try:
         done = subprocess.run(argv, capture_output=True, check=False, timeout=15)
         _AVAILABLE = done.returncode == 0
+        if not _AVAILABLE:
+            # Fail-closed verdicts must be diagnosable: "unavailable" alone
+            # cannot distinguish a missing kernel flag from a seccomp deny.
+            _LOG.warning(
+                "userns probe failed rc=%s stderr=%s",
+                done.returncode,
+                (done.stderr or b"").decode("utf-8", errors="replace")[:400],
+            )
     except Exception:
+        _LOG.warning("userns probe raised", exc_info=True)
         _AVAILABLE = False
     _AVAILABLE_FAILED_AT = time.monotonic() if not _AVAILABLE else 0.0
     return _AVAILABLE

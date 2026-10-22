@@ -92,6 +92,20 @@ jobs:
         # the turn still executes inside bwrap.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Probe bwrap userns inside a container
+        # Same boundary shape the compose worker uses (seccomp=unconfined,
+        # no extra caps): prints the REAL bwrap verdict + stderr so a
+        # fail-closed run.error shows the kernel/AppArmor reason verbatim
+        # instead of guessing from the drain's refusal string.
+        run: |
+          docker run --rm --security-opt seccomp=unconfined python:3.12-slim \
+            sh -c 'apt-get update -qq >/dev/null 2>&1; \
+                   apt-get install -y -qq --no-install-recommends bubblewrap >/dev/null 2>&1; \
+                   bwrap --unshare-user --uid 0 --gid 0 --unshare-pid \
+                     --die-with-parent --new-session --dev /dev \
+                     --tmpfs /tmp --chdir /tmp /bin/true; \
+                   echo "bwrap-probe rc=$?"'
+
       - name: Start postgres for durable tests
         # Named exactly like the shared container the w7 conftest reuses, so
         # tests/web/w7/conftest.py binds to it instead of spawning its own.
