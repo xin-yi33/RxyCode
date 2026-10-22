@@ -676,6 +676,7 @@ def test_w8_c01_chain_boundary_denial(
         assert not outside.exists()
     finally:
         set_approval_broker(None)
+        outside.unlink(missing_ok=True)
 
     # The writable domain itself is the sandbox-truth — workspace + private
     # home + private tmp, never other tenants' paths or the platform root.
