@@ -765,6 +765,9 @@ def scenario_sse_disconnect_reconnect(url: str, redis_url: str) -> dict:
     app = create_app(
         url, mode="local", secret=_SECRET, allowed_origins=["http://127.0.0.1"]
     )
+    # create_app keeps browser sessions in the database. This scenario
+    # still injects cookies into the per-process dict the lookup checks first.
+    app.state.sessions = {}
     app.state.redis = _redis_lib.Redis.from_url(redis_url, decode_responses=True)
     server, server_thread, port = _serve_app(app)
 
