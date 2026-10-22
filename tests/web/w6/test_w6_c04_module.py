@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,23 @@ _SERVER = REPO / "packages" / "rxycode-server" / "src"
 from tests.support.pgurl import bun_path
 
 BUN = bun_path()
+
+
+def _run_async(coro):
+    """asyncio.run cannot start when this thread already has a loop."""
+    box: dict[str, BaseException] = {}
+
+    def _go() -> None:
+        try:
+            asyncio.run(coro)
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=_go)
+    worker.start()
+    worker.join()
+    if "error" in box:
+        raise box["error"]
 for _entry in (str(_WORKER), str(_SERVER), str(REPO / "tests" / "web" / "w6")):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
@@ -44,7 +62,7 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     store = EventStore()
     before = store.latest_cursor()
     run_id = str(first["run_id"])
-    one, two, queued = asyncio.run(_steer_pair(run_id, store))
+    one, two, queued = _run_async(_steer_pair(run_id, store))
     assert one["run_id"] == run_id
     assert two["run_id"] == run_id
     assert [item["text"] for item in two["applied"]] == ["steer-one", "steer-two"]
@@ -68,7 +86,7 @@ def test_w6_c04_integration(tmp_path: Path) -> None:
     assert f'data-id="{child["id"]}"' in markup
     assert f'data-parent="{child["parent_id"]}"' in markup
     assert f'data-tokens="{child["tokens"]}"' in markup
-    web_agents = asyncio.run(_web_commands())
+    web_agents = _run_async(_web_commands())
     assert any(item["parent_id"] and item["status"] == "completed" for item in web_agents)
 
 

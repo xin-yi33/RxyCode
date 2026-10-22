@@ -59,16 +59,22 @@ def test_w6_c03_integration() -> None:
         reused = open_agent_context(profile_dir=agent_dir, kind="preview")
         assert reused["status"] == "refused"
         alias = root / "preview-alias"
-        linked = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(alias), str(agent_dir)],
-            capture_output=True,
-            check=False,
-        )
-        detail = (linked.stderr or linked.stdout).decode("utf-8", "replace")
-        assert linked.returncode == 0, detail
+        if os.name == "nt":
+            linked = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(alias), str(agent_dir)],
+                capture_output=True,
+                check=False,
+            )
+            detail = (linked.stderr or linked.stdout).decode("utf-8", "replace")
+            assert linked.returncode == 0, detail
+        else:
+            alias.symlink_to(agent_dir, target_is_directory=True)
         aliased = open_agent_context(profile_dir=alias, kind="preview")
         assert aliased["status"] == "refused"
-        os.rmdir(alias)
+        if os.name == "nt":
+            os.rmdir(alias)
+        else:
+            alias.unlink()
         preview = open_agent_context(profile_dir=preview_dir, kind="preview")
         assert preview["status"] == "open"
         assert agent["profile_kind"] == "agent"
