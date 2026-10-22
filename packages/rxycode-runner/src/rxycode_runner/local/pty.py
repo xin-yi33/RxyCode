@@ -364,7 +364,11 @@ class _PosixPty(_Backend):
 
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, _winsize(rows, cols))
+        os.set_inheritable(slave, True)
         self._master = master
+        # close_fds drops the slave before the child dups it onto 0/1/2
+        # unless pass_fds keeps it. The session then has a live pid and a
+        # websocket that never receives a byte.
         self._proc = subprocess.Popen(
             argv,
             stdin=slave,
@@ -374,6 +378,7 @@ class _PosixPty(_Backend):
             env=self._env,
             start_new_session=True,
             close_fds=True,
+            pass_fds=(slave,),
         )
         os.close(slave)
         self.pid = int(self._proc.pid)

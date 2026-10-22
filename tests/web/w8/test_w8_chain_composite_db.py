@@ -193,7 +193,9 @@ def test_w8_chain_submit_edit_approve_restart_test_final_answer(
     monkeypatch.setenv("RXYCODE_TURN_APPROVAL", approval_id)
     resume = asyncio.run(drain._prepare_resume(channel=channel_b, run_id=run_id,
                                               tenant_id=tenant, workdir=workspace))
-    assert target.read_text(encoding="utf-8") == "x\n", "the approved write ran"
+    wrote = str(resume.get("result") or "")
+    assert target.is_file(), wrote
+    assert target.read_text(encoding="utf-8") == "x\n", wrote
     assert resume["checkpoint"]["paused"]["call_id"] == "c-edit"
 
     agent_b = _agent(isolated_runtime, monkeypatch)

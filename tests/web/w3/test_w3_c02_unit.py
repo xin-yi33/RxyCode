@@ -202,8 +202,10 @@ def _login(page, origin: str) -> None:
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
     page.get_by_role("button", name="使用本机口令登录").click()
-    # The console composer proves the session reached /app.
-    expect(page.get_by_label("消息")).to_be_visible(timeout=10000)
+    # The console composer proves the session reached /app. CI's shared
+    # runner often needs longer than 10s before /app paints the field.
+    page.wait_for_url(re.compile(r"/app"), timeout=30000)
+    expect(page.get_by_label("消息")).to_be_visible(timeout=30000)
 
 
 def test_w3_c02_contract() -> None:
