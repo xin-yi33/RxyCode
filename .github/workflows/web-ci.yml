@@ -82,6 +82,16 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip install -e . --no-deps
 
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04)
+        # ubuntu-latest is 24.04, which defaults
+        # kernel.apparmor_restrict_unprivileged_userns=1 — bwrap's
+        # --unshare-user is denied inside the docker containers below, so
+        # the drain fail-closes every run ("userns/bwrap isolation is
+        # unavailable") and no confined turn ever spawns. Relax the host
+        # sysctl so the stack's REAL kernel sandbox boundary runs in CI;
+        # the turn still executes inside bwrap.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Start postgres for durable tests
         # Named exactly like the shared container the w7 conftest reuses, so
         # tests/web/w7/conftest.py binds to it instead of spawning its own.

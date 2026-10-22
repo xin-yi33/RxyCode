@@ -457,8 +457,18 @@ def test_w7_c05_integration() -> None:
             # And the turn machinery really ran: AgentRuntime.spawn ->
             # AgentTask._journal writes event/agent_started through the
             # RunJournal bound by remember_web_run — a row only a real
-            # executed turn produces, not a stubbed terminal.
-            assert "event/agent_started" in kinds
+            # executed turn produces, not a stubbed terminal. When it is
+            # absent, surface the run's own failure row + the full event
+            # vocabulary so a refused turn is self-describing.
+            if "event/agent_started" not in kinds:
+                error_payload = next(
+                    (e.get("payload") for e in events if e["type"] == "run.error"),
+                    None,
+                )
+                raise AssertionError(
+                    f"confined turn never spawned (terminal={terminal}): "
+                    f"kinds={kinds} run.error={error_payload}"
+                )
         finally:
             engine.dispose()
 

@@ -436,7 +436,7 @@ def test_w7_c02_negative(postgres_url: str, tmp_path: Path):
             run_id=ok_run.run_id,
             call_id="call_" + uuid.uuid4().hex,
             attempt_id="att_" + uuid.uuid4().hex,
-            command="Write-Output 'c02-ok-output'",
+            command=("Write-Output 'c02-ok-output'" if os.name == "nt" else "echo c02-ok-output"),
             workdir=str(ok_workdir),
             journal=ToolExecutionJournal(str(tmp_path / "journal-ok")),
             worker_id="w-c02-ok",
