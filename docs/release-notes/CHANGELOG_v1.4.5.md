@@ -184,3 +184,10 @@
 - **修复**：`tools/edit.py` 单一模型侧变更入口（`operation=replace|write|patch` + 恰好一个匹配 payload；write 走 `write_file`、patch 走 `run_patch`，结果附 post-write 报告）；`tools/patch.py` 仅在全部 hunk 匹配时落盘并保留文件换行约定；`tools/view.py` 复用 `read_file`；`tools/registry.py` 别名继承目标 risk 使 `write`→`edit` 别名保持 WRITE 分类。提交 `b9ca5017`。
 - **证据**：真实 Linux 代码下 `edit`/`open_file` 证据均 `succeeded`，主链测试通过；`tests/integration/test_agent_main_chain.py` 诊断增加工具证据记录转储（`aa2947c4`）。
 - **VM 验证环境修复**：CI 容器镜像烤死 `PYTHONPATH=/opt/pkg:...`，sys.path 先于 editable finder 命中镜像内旧安装，此前 VM 全量结果实际跑的是过期代码。`rxyci_run.sh` 现以 `PYTHONPATH=/src/_package_root` 覆盖并加 `import` 路径断言（`m.__file__ == "/src/tools/edit.py"`）；此前 VM 结果作废，以修正后重跑为准。
+
+## CI 修复：w3_c02 登录竞态与 BYOK-only 适配（2026-10-22）
+
+- **根因 1（登录假阳性等待）**：`_login` 的 `wait_for_url(re.compile(r"/app"))` 会误匹配 `/login?next=/app`——登录被拒或首个 API 调用失败被弹回登录页时，URL 里的 `next=/app` 让等待"成功"，随后 `消息` 字段断言才超时，CI 日志显示为 `test_w3_c02_negative` 在 `_login` 挂且 aria 快照是登录页。现按 path 断言（`urlparse(...).path == "/app"`），失败会指向真实原因。
+- **根因 2（跨栈 schema 竞态）**：每个 `_Stack` 共用 worker 库 `rxycode_gw<N>` 并 `DROP SCHEMA public`；上一个栈的 uvicorn 线程异步退出，其 SSE `_pull` 恰在 reset 窗口内查询得到 `relation "runs" does not exist`（CI stderr 实锤）。现每个 `_Stack` 建独立数据库 `w3c02_<rand>`、`close()` join api/proxy 线程后 `DROP DATABASE`——任何残留栈都摸不到新栈的 schema。
+- **BYOK-only 适配**：R6 已部署的策略使 `POST /tasks` 无 BYOK 即 403 `BYOK_REQUIRED`。contract 测试登录后经真实 API（proxy → `POST /model-connections` → `POST .../models` → `POST /models/default`）给 local 账号配默认 BYOK 模型，keyring 用临时 `RXYCODE_BYOK_KEYRING_FILE`；新旧 resolver 两种策略下均可解析 snapshot。
+- **验证**：本机 `pytest tests/web/w3/test_w3_c02_unit.py` 2/2 通过（9.9s，VM postgres + 本机 Chromium）；与 w10 的 BYOK 种子模式一致。

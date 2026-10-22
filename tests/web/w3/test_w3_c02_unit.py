@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
+import os
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -35,7 +40,7 @@ from tests.support.pgurl import ensure_container, worker_url  # noqa: E402
 
 _PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 ensure_container("rxy-w2c01-pg", 55432)
-URL = worker_url(_PG_BASE)
+_URL = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 
 
@@ -47,13 +52,47 @@ def _port() -> int:
     return port
 
 
-def _reset_db() -> None:
-    engine = create_engine(URL)
-    with engine.begin() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
-    upgrade_head(URL)
+def _make_db() -> tuple[str, str]:
+    """Each stack gets its own database. A zombie server from an earlier
+    stack (its uvicorn thread exits asynchronously) can never see this one
+    DROP SCHEMA, and a failing stack leaves evidence behind until close."""
+    dbname = f"w3c02_{uuid.uuid4().hex[:12]}"
+    engine = create_engine(_URL, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f'CREATE DATABASE "{dbname}"'))
+    finally:
+        engine.dispose()
+    base, _, _ = _URL.rpartition("/")
+    url = f"{base}/{dbname}"
+    upgrade_head(url)
+    return dbname, url
+
+
+def _drop_db(dbname: str) -> None:
+    engine = create_engine(_URL, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :d AND pid <> pg_backend_pid()"
+                ),
+                {"d": dbname},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{dbname}"'))
+    finally:
+        engine.dispose()
+
+
+def _make_keyring() -> str:
+    """A throwaway BYOK keyring so the stack can seal model credentials."""
+    ring = Path(tempfile.mkdtemp(prefix="rxy-w3c02-keyring-")) / "keyring.json"
+    ring.write_text(
+        json.dumps({"active": "k1", "keys": {"k1": base64.b64encode(b"k" * 32).decode()}}),
+        encoding="utf-8",
+    )
+    return str(ring)
 
 
 def _wait_api(port: int) -> None:
@@ -72,13 +111,17 @@ def _wait_api(port: int) -> None:
 class _Stack:
     def __init__(self) -> None:
         dist = _mod.build_web()
-        _reset_db()
+        self.dbname, self.url = _make_db()
+        # BYOK-only policy: task submission needs a user-owned model, which
+        # needs a keyring to seal credentials. Scoped to this stack's life.
+        self._old_keyring = os.environ.get("RXYCODE_BYOK_KEYRING_FILE")
+        os.environ["RXYCODE_BYOK_KEYRING_FILE"] = _make_keyring()
         self.proxy_port = _port()
         origin = f"http://127.0.0.1:{self.proxy_port}"
         # W9: github/start is 503 AUTH_PROVIDER_NOT_CONFIGURED unless all three
         # values are set — the OAuth-flow assertions below need them present.
         app = create_app(
-            URL,
+            self.url,
             mode="local",
             secret=SECRET,
             allowed_origins=[origin],
@@ -193,7 +236,16 @@ class _Stack:
 
     def close(self) -> None:
         self.proxy.shutdown()
+        self.proxy_thread.join(timeout=5)
         self.api.should_exit = True
+        self.api_thread.join(timeout=10)
+        try:
+            _drop_db(self.dbname)
+        finally:
+            if self._old_keyring is None:
+                os.environ.pop("RXYCODE_BYOK_KEYRING_FILE", None)
+            else:
+                os.environ["RXYCODE_BYOK_KEYRING_FILE"] = self._old_keyring
 
 
 def _login(page, origin: str) -> None:
@@ -202,10 +254,58 @@ def _login(page, origin: str) -> None:
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
     page.get_by_role("button", name="使用本机口令登录").click()
-    # The console composer proves the session reached /app. CI's shared
-    # runner often needs longer than 10s before /app paints the field.
-    page.wait_for_url(re.compile(r"/app"), timeout=30000)
+    # /login?next=/app contains the literal "/app" — match the path, not the
+    # string, or a bounced redirect satisfies the wait and the next expect
+    # fails with a misleading "no composer" message.
+    page.wait_for_url(
+        lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=30000
+    )
     expect(page.get_by_label("消息")).to_be_visible(timeout=30000)
+
+
+def _provision_byok(page, stack: _Stack) -> None:
+    """Give the fresh local account a default BYOK model through the proxy.
+
+    BYOK-only policy makes POST /tasks 403 without one. Goes over the real
+    HTTP surface (same as the UI) rather than writing rows directly."""
+    cookies = {c["name"]: c["value"] for c in page.context.cookies(stack.origin)}
+    cookie = "; ".join(f"{name}={value}" for name, value in cookies.items())
+    csrf = cookies.get("rxy_csrf", "")
+    assert csrf, "login did not leave a csrf cookie"
+
+    def _req(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+        conn = http.client.HTTPConnection("127.0.0.1", stack.proxy_port, timeout=10)
+        headers = {
+            "Origin": stack.origin,
+            "X-CSRF-Token": csrf,
+            "Cookie": cookie,
+        }
+        payload = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            payload = json.dumps(body)
+        conn.request(method, path, body=payload, headers=headers)
+        response = conn.getresponse()
+        data = response.read().decode()
+        conn.close()
+        return response.status, json.loads(data) if data else {}
+
+    status, data = _req(
+        "POST",
+        "/api/v1/model-connections",
+        {"preset_id": "deepseek", "api_key": "sk-w3c02-canary-0123456789abcdef"},
+    )
+    assert status == 201, data
+    conn_id = data["connection"]["id"]
+    status, data = _req(
+        "POST",
+        f"/api/v1/model-connections/{conn_id}/models",
+        {"model_ids": ["deepseek-chat"]},
+    )
+    assert status in (200, 201), data
+    model_ref = data["results"][0]["model_ref"]
+    status, data = _req("POST", "/api/v1/models/default", {"model_ref": model_ref})
+    assert status == 200, data
 
 
 def test_w3_c02_contract() -> None:
@@ -216,6 +316,7 @@ def test_w3_c02_contract() -> None:
             browser = playwright.chromium.launch()
             page = browser.new_page(viewport={"width": 390, "height": 844})
             _login(page, stack.origin)
+            _provision_byok(page, stack)
             # W9-F3: project 导入 UI was removed — POST /tasks provisions the
             # server session + run and the session list is the persistence
             # surface this test now asserts.
