@@ -691,9 +691,14 @@ def test_w8_c01_ctl_roundtrip(tmp_path: Path) -> None:
         server = CtlServer(tmp_path / "ctl.sock", {"echo": lambda a: dict(a)})
         await server.start()
         try:
-            assert ctl_call(server.sock_path, "echo", x=5) == {"x": 5}
+            # ctl_call is synchronous. Calling it on the server's loop
+            # means the accept callback never runs, so the client waits
+            # until timeout.
+            assert await asyncio.to_thread(
+                ctl_call, server.sock_path, "echo", x=5
+            ) == {"x": 5}
             with pytest.raises(CtlError):
-                ctl_call(server.sock_path, "missing")
+                await asyncio.to_thread(ctl_call, server.sock_path, "missing")
         finally:
             await server.stop()
 

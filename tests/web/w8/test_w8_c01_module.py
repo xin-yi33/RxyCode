@@ -618,7 +618,10 @@ def test_w8_c01_chain_boundary_denial(
     )
     _sandbox_data_dir(tmp_path, tmp_path, monkeypatch)
     orch = _orchestrator()
-    outside = tmp_path.parent / f"outside-{uuid.uuid4().hex[:8]}.txt"
+    # pytest's tmp_path is under /tmp on Linux, and the sandbox domain
+    # allows /tmp. A sibling of tmp_path is therefore still inside the
+    # domain. Put the probe under the home directory instead.
+    outside = Path.home() / f"rxy-w8-outside-{uuid.uuid4().hex[:8]}.txt"
 
     asks: list[Any] = []
 

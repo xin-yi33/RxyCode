@@ -324,10 +324,11 @@ document.querySelector("button").addEventListener("click", async () => {{
 
 
 def _start_handoff_server() -> None:
-    global _HANDOFF_SERVER
+    global _HANDOFF_SERVER, HANDOFF_PORT
     if _HANDOFF_SERVER is not None:
         return
-    server = ThreadingHTTPServer(("127.0.0.1", HANDOFF_PORT), _HandoffApi)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HandoffApi)
+    HANDOFF_PORT = int(server.server_address[1])
     threading.Thread(target=server.serve_forever, daemon=True).start()
     _HANDOFF_SERVER = server
 
