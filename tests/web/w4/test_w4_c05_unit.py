@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -18,6 +19,12 @@ WEB = REPO / "apps" / "web"
 from tests.support.pgurl import bun_path
 
 BUN = bun_path()
+
+
+def _py(args: str) -> str:
+    if os.name == "nt":
+        return f"cmd /c python {args}"
+    return f"python3 {args}"
 for entry in (
     REPO,
     REPO / "packages" / "rxycode-runner" / "src",
@@ -212,7 +219,7 @@ def test_w4_c05_contract(tmp_path: Path) -> None:
                     "session_id": session_id,
                     "run_id": run_id,
                     "workspace": str(work),
-                    "command": "cmd /c python mark.py",
+                    "command": _py("mark.py"),
                     "workdir": str(work),
                     "timeout": 30,
                 },
@@ -259,7 +266,7 @@ def test_w4_c05_contract(tmp_path: Path) -> None:
                     "session_id": session_id,
                     "run_id": run_id,
                     "workspace": str(work),
-                    "command": "cmd /c python -c \"from pathlib import Path; Path('where.txt').write_text(str(Path.cwd()))\"",
+                    "command": _py("-c \"from pathlib import Path; Path('where.txt').write_text(str(Path.cwd()))\""),
                     "timeout": 30,
                 },
             },
@@ -282,7 +289,7 @@ def test_w4_c05_contract(tmp_path: Path) -> None:
                         "session_id": session_id,
                         "run_id": run_id,
                         "workspace": str(work),
-                        "command": "cmd /c python mark.py",
+                        "command": _py("mark.py"),
                         "workdir": str(work),
                         "timeout": 30,
                     },
@@ -355,7 +362,7 @@ def test_w4_c05_negative(tmp_path: Path) -> None:
                     "session_id": "sess-c05",
                     "run_id": "run-c05",
                     "workspace": str(work),
-                    "command": "cmd /c python -c \"print(1)\"",
+                    "command": _py("-c \"print(1)\""),
                     "workdir": str(work),
                     "timeout": 30,
                 },
@@ -404,7 +411,7 @@ def test_w4_c05_negative(tmp_path: Path) -> None:
             "session_id": "sess-c05",
             "run_id": "run-c05",
             "workspace": str(work),
-            "command": "cmd /c python -c \"print(1)\"",
+            "command": _py("-c \"print(1)\""),
             "workdir": str(work),
             "timeout": 30,
         }

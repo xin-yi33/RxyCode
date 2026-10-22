@@ -162,7 +162,8 @@ def test_w6_c03_integration() -> None:
             close_session(session_id=session_id)
         server.shutdown()
         alias = root / "preview-alias"
-        if os.path.isjunction(alias):
+        is_junction = getattr(os.path, "isjunction", None)
+        if is_junction is not None and is_junction(alias):
             os.rmdir(alias)
         shutil.rmtree(root, ignore_errors=True)
 

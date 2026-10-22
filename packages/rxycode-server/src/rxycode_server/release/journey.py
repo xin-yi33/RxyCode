@@ -44,7 +44,7 @@ _BUCKET = "rxycode-artifacts"
 
 def cloud_release_journey(database_url: str, *, work_dir: Path, secret: str) -> dict[str, object]:
     """Start cloud login, create a project and run, then download the pytest log."""
-    started = _github(secret)
+    started = _github(secret, database_url)
     app, token = _login(database_url, secret)
     engine = create_engine(database_url, poolclass=NullPool)
     project_id = ""
@@ -219,10 +219,18 @@ def remote_full_unpaired(secret: str, device_id: str, work_dir: Path) -> dict[st
     }
 
 
-def _github(secret: str) -> dict[str, str]:
+def _github(secret: str, database_url: str) -> dict[str, str]:
     app = _bare_app(secret, "cloud")
-    request = _request(app, "GET", token="", extra=[(b"origin", _ORIGIN.encode())])
-    return github_start(request, Response())
+    engine = create_engine(database_url, poolclass=NullPool)
+    db = Session(engine)
+    try:
+        request = _request(app, "GET", token="", extra=[(b"origin", _ORIGIN.encode())])
+        started = github_start(request, Response(), db)
+        db.commit()
+        return started
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def _login(database_url: str, secret: str) -> tuple[object, str]:
@@ -397,6 +405,7 @@ def _bare_app(secret: str, mode: str) -> object:
     app.state.sessions = {}
     app.state.oauth_states = {}
     app.state.github_client_id = "release-client"
+    app.state.github_client_secret = "release-secret"
     app.state.github_redirect_uri = _ORIGIN + "/oauth/callback"
     return app
 

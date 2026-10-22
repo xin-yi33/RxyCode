@@ -13,7 +13,9 @@ Playwright dependency) — labeled, not claimed.
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -91,4 +93,18 @@ def test_w7_c06_integration(_postgres_server: str) -> None:
             forged = await client.get("/api/v1/me", cookies={"rxy_session": "forged-token"})
             assert forged.status_code == 401, forged.text
 
-    asyncio.run(_drive())
+    # pytest-asyncio may already own this thread's loop. Run the driver
+    # on a fresh thread so asyncio.run is legal.
+    box: dict[str, BaseException | None] = {"error": None}
+
+    def _go() -> None:
+        try:
+            asyncio.run(_drive())
+        except BaseException as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=_go)
+    worker.start()
+    worker.join()
+    if box["error"] is not None:
+        raise box["error"]

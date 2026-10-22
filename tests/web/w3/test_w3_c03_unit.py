@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 REDUCER = REPO / "apps" / "web" / "src" / "features" / "runs" / "eventReducer.ts"
-_SCRATCH = Path(r"C:\Users\Administrator\AppData\Local\Temp\grok-goal-633d8463e340\implementer")
+_SCRATCH = Path(tempfile.gettempdir()) / "rxy-w3c03"
 
 
 def _bun() -> str:
