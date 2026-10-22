@@ -664,6 +664,7 @@ class ToolOrchestrator:
         selected = []
         for hint in hints:
             hint_lower = self._canonical_name(hint)
+            self.get(hint_lower)
             for name, tool in self._bound_tools.items():
                 if hint_lower in name.lower():
                     selected.append(tool)

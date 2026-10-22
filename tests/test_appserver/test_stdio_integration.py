@@ -24,6 +24,10 @@ def _appserver_env() -> dict[str, str]:
     env["RXYCODE_APPSERVER_STUB"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(PROJECT_ROOT)
+    # Web binding is opt-in per surface: an RXYCODE_WEB_DATABASE_URL leaked
+    # by an in-process serve()/publish_database_url elsewhere in the suite
+    # must not make the headless stub worker try to bind a web run.
+    env.pop("RXYCODE_WEB_DATABASE_URL", None)
     return env
 
 

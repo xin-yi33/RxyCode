@@ -1767,22 +1767,31 @@ class AgentWorker:
         session_id = str(session_id or getattr(self, "_session_id", "") or "")
         if not url or not session_id:
             return
-        found = lookup_web_run(url, session_id)
+        try:
+            found = lookup_web_run(url, session_id)
+        except Exception:
+            # A stale/unreachable/unmigrated web database must never take
+            # down the CLI session — the run simply stays unbound.
+            _logger.warning("web run lookup failed; session runs unbound", exc_info=True)
+            return
         if found is None:
             return
         root = found["session_id"] or found["run_id"]
-        remember_web_run(
-            url,
-            found["tenant_id"],
-            found["run_id"],
-            parent_id=root,
-            session_id=root,
-        )
-        bind_run(found["run_id"], worker=self, tree_root=root)
-        self._web_run_id = found["run_id"]
-        manager = getattr(self, "_subagent_manager", None)
-        if manager is not None:
-            bind_run(found["run_id"], manager=manager, tree_root=root)
+        try:
+            remember_web_run(
+                url,
+                found["tenant_id"],
+                found["run_id"],
+                parent_id=root,
+                session_id=root,
+            )
+            bind_run(found["run_id"], worker=self, tree_root=root)
+            self._web_run_id = found["run_id"]
+            manager = getattr(self, "_subagent_manager", None)
+            if manager is not None:
+                bind_run(found["run_id"], manager=manager, tree_root=root)
+        except Exception:
+            _logger.warning("web run bind failed; session runs unbound", exc_info=True)
 
     async def drain_web_commands(self) -> list[dict[str, object]]:
         """Apply steer and child-cancel rows committed for this run."""

@@ -53,3 +53,10 @@
 - 最终公网四模式（normal、Worker 禁止、Worker 内 `crypto.subtle` 缺失、Worker 与 window `crypto.subtle` 均缺失）均先 hold capabilities、填表并强制 submit，确认按钮 disabled 且无 POST；释放真实配置后等待 verified 再提交。耗时依次 `7.01/7.70/7.00/5.68s`（含网络、PoW、CSRF、POST），token `348–352` 字节且 hash 数学成立，服务器均返回 `401 INVALID_CREDENTIALS`，即接受 captcha 后拒绝无效账号认证；无 pageerror。Worker 与 window crypto 均缺失时，`/register` 与 `/forgot` 的中文兼容验证也通过，未注册、未发邮件、未触发收费模型调用。
 - 公网 JS/CSS 均 HTTP 200，SHA-256 与本地产物一致：JS `38af81fa6cd04b599c1b4672a66b67c009baa33b50c35b0f9a59d495c8fcd600`，CSS `3e612ba4ebcadca867ff8125f6780d7c305cbc8c581c8e2e764023b0539fc405`。父代理完整 fresh suite `23 passed, 6 skipped`（37.78s，R2 最终结果，非 R1 旧 `20 passed`）；Ruff/typecheck 与隔离 production build 通过。
 - QA 5189/5190、Playwright context/browser 与临时 sidecar/staging 均已清理；R1/R2 镜像和 rollback 保留。生产 env/keyring/Caddyfile 哈希未变，权限仍为 `600 root:root`；API、3 Worker、PG、Redis、Minio、SMTP 容器未变，gateway healthy。物理 Vivo 真机未测，缓存不是已证实根因。
+
+## Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
+
+- `execution/tool_orchestrator.py::_match_hints`: hint 归一后先经 `get()` 物化懒注册内建工具（`write` 自 5ea33c9d 起只在 `get()` 内注册）——此前 `select_safe_tools(["write", ...])` 静默漏掉 write 代理，模型 write 调用被 ToolNode 判 unknown，leaf `task.evidence` 为空并被 deterministic 校验判 cancel（`tests/integration/test_agent_main_chain.py` 在 Linux CI 的 `evidence=[]` 失败即此）。
+- `tests/fixtures/responses/main_chain_write.json`: 脚本化 `write` 工具调用迁移为统一文件工具的 `edit`（`operation:"write"`），与 HEAD 上测试的 `edit` 审计断言配套——此前测试文件已更新、夹具漏提交。
+- `appserver/agent_worker.py::AgentWorker.activate_web_database`: `lookup_web_run` 及 `remember_web_run`/`bind_run` 绑定块均加异常降级——进程内被 `publish_database_url` 泄漏的失迁/不可达 Web DSN 不再令 CLI worker 崩溃，仅记 warning 并保持未绑定。
+- `appserver/live_env.py::_ISOLATION_KEYS` 与 `tests/test_appserver/test_stdio_integration.py::_appserver_env`: `RXYCODE_WEB_DATABASE_URL` 列入隔离键并在 spawn 子进程前剥离——`serve()` 在同 pytest 进程内发布的 Web DSN 不再渗入 appserver 子进程环境。
