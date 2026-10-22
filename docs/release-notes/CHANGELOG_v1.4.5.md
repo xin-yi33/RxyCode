@@ -6,7 +6,7 @@
 
 ## 思考过程与 BYOK 额度（本地，尚未上线）
 
-- Web「思考过程」不再拼接 `Analyzing your request...`、`Thinking... (round N)`、`思考中...` 这类进度文案。这些仍只做活动状态。模型的 `event/reasoning_snapshot` 按 CLI 的方式拼进思考块。
+- Web 思考块的标题是 `thoughts`。它不再拼接 `Analyzing your request...`、`Thinking... (round N)`、`思考中...` 这类进度文案。这些仍只做活动状态。模型的 `event/reasoning_snapshot` 按 CLI 的方式拼进这块。
 - Web 是 BYOK。我们不再用每日任务数或 token 计数拒绝对话。只有上游返回 HTTP 403，且正文写明没有额度（quota / billing / 余额不足）时，用户才看到「您没有额度了」。并发和排队上限仍是服务器容量，不是用户额度。没有改超级号的数据。
 
 ## Web 手机认证与主题兼容（2026-10-22）

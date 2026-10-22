@@ -31,7 +31,7 @@ export function ThinkingBlock({ text, active }: { text: string; active: boolean 
         >
           ▸
         </span>
-        <span>思考过程</span>
+        <span>thoughts</span>
         {active ? (
           <span className="rxy-pulse ml-1 flex items-center gap-1 text-muted-ink">
             <IconSpinner size={11} />
