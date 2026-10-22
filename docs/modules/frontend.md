@@ -147,6 +147,12 @@ budget, not transcript deletion, summarization, or an RSS/Private-memory claim.
 
 ## Environment (OpenTUI)
 
+2026-10-13: the unified `edit` file tool uses the existing edit-family card.
+`operation="write"` (or an unambiguous historical content payload) displays
+`Wrote` and the content preview; replace/patch display `Edited` and red/green
+differences. Old write/edit/patch cards remain readable. Whole-file overwrite
+previews still show submitted content, not a verified before/after diff.
+
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `RXYCODE_TRANSPORT` | `stdio` | `stdio` = appserver subprocess (default); `http` = SSE via embedded API |
@@ -161,3 +167,89 @@ budget, not transcript deletion, summarization, or an RSS/Private-memory claim.
 - Tests: npx vitest run
 - Dev mode: npm run dev (tsx)
 - Production: npm run build && npm start
+
+## Web (apps/web)
+
+Web theme state remains in the existing app-root `ThemeSync`: `rxy_theme` cookie initializes Zustand, and the selected theme updates the root `.dark` class and `data-theme`. Cookie reads and writes are best-effort so browser storage restrictions do not prevent an in-memory theme change; no localStorage fallback is used. The global CSS declares `color-scheme: light` for the light theme and `dark` for `.dark`, including native controls. This does not guarantee immunity to vendor-forced night-mode transformations.
+
+ALTCHA 3.4.1 must receive its endpoint through `challenge`, not the unsupported legacy `challengeurl`. The widget uses the supported JSON `configuration` attribute for `hideFooter`/`hideLogo`, and clears its single-use payload whenever it leaves the verified state. The server's V1 challenge format, signing, and verification remain unchanged. Browser regression coverage lives in `tests/web/w3/test_w3_c08_browser_regressions.py`; run it with `python -m pytest tests/web/w3/test_w3_c08_browser_regressions.py -k chromium -q`. WebKit and physical-device behavior require separate available runtimes.
+
+When ALTCHA 3.4.1 emits its `error` state, the auth widget makes one bounded
+fallback attempt using a same-origin V1 challenge and the pinned `js-sha256`
+pure-JavaScript implementation. The fallback runs only in a secure context,
+hashes the unchanged `SHA-256(salt + decimal counter)` input, yields in small
+main-thread batches, and stops on abort, expiry, or the existing 90-second
+limit. Failure leaves the auth token empty; another attempt requires the
+visible retry button. The normal worker-backed widget path is unchanged.
+
+The console stylesheet is built with Tailwind CSS `3.4.19`, PostCSS `8.5.31`,
+and Autoprefixer `10.6.1` (exact versions in both `package-lock.json` and
+`bun.lock`). The previous Tailwind v4 output relied on cascade layers and newer
+color/transition CSS; Chromium `98.0.4758.0` ignored the utility rules and left
+the `/app` flex shell and fixed mobile sidebar unstyled. `tailwind.config.js`
+maps the existing semantic palette to comma-separated RGB custom properties so
+v3 opacity utilities such as `bg-card/60` and `bg-waiting/15` remain valid; the
+`shadow-sm` value is pinned to the prior console elevation. `vite.config.ts`
+uses conservative syntax targets (`chrome90`, `safari14`, `es2020`) only; these
+are not a browser-support promise and do not add polyfills.
+
+Composer request IDs prefer `crypto.randomUUID()`. Where that method is absent,
+`src/lib/secureRequestId.ts` uses `crypto.getRandomValues()` and sets RFC 4122
+UUIDv4 version/variant bits; there is no `Math.random()` path. If secure random
+values themselves are unavailable, the composer shows an inline error and
+does not issue a task request. A network-failed retry retains the same draft
+ID; server responses continue to follow the existing request-id reset rules.
+
+The production CSS and computed-layout regressions are in
+`tests/web/w3/test_w3_c08_browser_regressions.py`. They build and serve a
+production bundle only when selected, reject cascade layers, `@property`, CSS
+nesting, `color-mix()` and `oklch()`, and inspect mobile/desktop shell layout,
+sidebar overlay, theme, composer transition completion, and model-button text
+colors. To run those checks use
+`python -m pytest tests/web/w3/test_w3_c08_browser_regressions.py -k 'production_css or production_app_layout' -q`.
+The optional `RXYCODE_LEGACY_CHROMIUM` environment variable points to a real
+Chromium 98 executable; the test checks its actual browser version and does not
+spoof the user agent. The secure request-ID fallback test can be run against a
+real Chromium 90 executable using `RXYCODE_UUID_FALLBACK_CHROMIUM`; otherwise
+it removes only `randomUUID` in the modern test context while retaining real
+`getRandomValues`. These checks do not establish general Chrome 90/Safari 14
+support; WebKit, Safari, and physical-device behavior remain separate targets.
+
+### 2026-10-22 CAPTCHA transport and execution-path correction
+
+This section supersedes the earlier ALTCHA note above only where it says the
+fallback requires `isSecureContext === true` or that the normal widget is
+unchanged on every device. The compatibility solver requires an HTTPS page (or
+loopback HTTP for local development), not the browser's `isSecureContext` flag,
+Worker, or `crypto.subtle`. Public `rxycode.xyz` and `www.rxycode.xyz` HTTP
+entries upgrade before React renders; other non-loopback HTTP origins render no
+auth form. Caddy independently redirects allowlisted public HTTP using
+Cloudflare's overwritten `X-Forwarded-Proto`, with explicit route ordering and
+one-day HSTS without subdomain/preload flags.
+
+Mobile-like clients selected by touch, viewport, and mobile-UA signals start
+the chunked pure-JS solver directly. Desktop clients dynamically load the
+official ALTCHA worker widget and fall back to the same solver on widget error
+or load failure. These signals affect execution only: all clients submit the
+same V1 payload to the same server HMAC verifier, with unchanged endpoint,
+counter maximum, TTL, and replay protection. The UA is never an authorization
+signal. The public HTTP 200 observation established that HTTP could be served;
+it did not establish the URL used by the user's handset or an HTTPS
+`isSecureContext` regression on that handset.
+
+The focused regressions and opt-in anonymous live smoke are in
+`tests/web/w3/test_w3_c08_browser_regressions.py`. The live smoke requires an
+isolated Playwright context and makes no auth POST; it checks the public HTTP
+308 with a raw `http.client` request rather than relying on browser/CLI HTTPS
+upgrade behavior. Local focused browser runs completed with 24 passed and 3
+WebKit cases skipped because its browser binary is not installed; web typecheck
+passed, and official Caddy `v2.11.7 validate` accepted `Caddyfile.prod` after
+the downloaded release matched its published SHA-512. The anonymous live smoke,
+parent's fresh full-file run, and deployment verification remain pending; those
+results belong in `OPS-LOG.md` only after the parent supplies evidence. The
+brief upstream comparison is in
+`docs/deploy/mobile-browser-adaptation-20261022.md`.
+
+## Web 控制台（UI-2026-10-22 开发包，apps/web）
+
+路由：`/app`（会话）、`/app/p/:projectId`（项目首页）、`/scheduled`（定时任务）、`/settings/:section`（general/appearance/notifications/security/archived/models）、`/plugins`（占位）；`/app/settings?section=x` 旧深链重定向到对应新分区。侧栏三分区：导航（新任务/Ctrl+K 搜索/定时任务）+ 项目 + 会话（置顶与最近分组、⋯ 菜单走 sessions 生命周期 API）；桌面收起为 56px 图标轨。`SearchModal`：250ms 防抖、AbortController、IME 安全、五类搜索与 cursor 分页。外观引擎 `lib/appearance.ts` 把服务端偏好解析为 `<html>` data 属性与 `--rxy-*` 变量；`rxy_theme` cookie 仅作访客回退，无 localStorage。i18n `lib/i18n.tsx`（auto/zh-CN/en），偏好 locale 优先、`rxy_locale` cookie 次之、navigator 兜底。归档会话在 SessionPage 显示只读横幅并隐藏 Composer。安全：thinking 时间线条目为纯进度块，不渲染 reasoning/intermediate 原始文本（`tests/web/w3/test_w3_c03_unit.py` 契约）。后端 API 契约测试在 `tests/web/w10/`（postgres 容器同 w9）。
