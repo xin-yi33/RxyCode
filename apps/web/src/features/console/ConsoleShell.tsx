@@ -1,6 +1,7 @@
 import { useEffect } from "react"
-import { Outlet } from "react-router"
+import { Outlet, useLocation } from "react-router"
 
+import { recordAppPath } from "../../lib/lastAppPath"
 import { useUi } from "../../state/ui"
 import { useMobileViewport } from "../../lib/useMobileViewport"
 import { DeviceConflictModal } from "../devices/DeviceConflictModal"
@@ -14,9 +15,15 @@ import { Topbar } from "./Topbar"
 // every /app page.
 export function ConsoleShell() {
   useMobileViewport()
+  const location = useLocation()
   const consoleOpen = useUi((state) => state.consoleOpen)
   const setOffline = useUi((state) => state.setOffline)
   const setSidebarOpen = useUi((state) => state.setSidebarOpen)
+
+  // SET-01「返回应用」记录最后一个应用内位置（/settings 自身不计入）。
+  useEffect(() => {
+    recordAppPath(location.pathname, location.search)
+  }, [location.pathname, location.search])
 
   useEffect(() => {
     const sync = () => setOffline(!navigator.onLine)
@@ -55,6 +62,27 @@ export function ConsoleShell() {
       <DeviceConflictModal />
       {/* Ctrl+K 全局搜索（UI-2026-10-22 §02）。 */}
       <SearchModal />
+      <ToastHost />
+    </div>
+  )
+}
+
+/** 轻量 toast —— “链接已复制”等一次性提示，3s 自动消退（SES-05）。 */
+function ToastHost() {
+  const toast = useUi((state) => state.toast)
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => useUi.setState({ toast: null }), 3000)
+    return () => window.clearTimeout(timer)
+  }, [toast])
+  if (!toast) return null
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-6 left-1/2 z-[80] -translate-x-1/2 rounded-md border border-border bg-card px-3 py-2 text-sm shadow-md"
+    >
+      {toast.text}
     </div>
   )
 }

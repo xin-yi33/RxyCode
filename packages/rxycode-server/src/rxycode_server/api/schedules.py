@@ -203,6 +203,37 @@ def list_executions(
     if len(rows) > limit:
         rows = rows[:limit]
         next_cursor = base64.urlsafe_b64encode(json.dumps([rows[-1]["id"]]).encode()).decode()
+    # SCH-13：按 run_id 关联通知与邮件投递行，详情抽屉可展示投递状态
+    # 并对 failed 提供“重试邮件”（只重发该结果邮件，不重跑 Agent）。
+    run_ids = [str(r["run_id"]) for r in rows if r.get("run_id")]
+    notes: dict[str, str] = {}
+    delivery: dict[str, dict] = {}
+    run_status: dict[str, str] = {}
+    if run_ids:
+        run_status = {
+            str(r.id): str(r.status)
+            for r in db.scalars(select(Run).where(Run.id.in_(run_ids))).all()
+        }
+        for note in db.execute(
+            text(
+                "SELECT id, run_id FROM web_notifications"
+                " WHERE run_id = ANY(:ids) AND tenant_id = :t"
+            ),
+            {"ids": run_ids, "t": record.tenant_id},
+        ).mappings():
+            notes[str(note["run_id"])] = str(note["id"])
+        for row in db.execute(
+            text(
+                "SELECT DISTINCT ON (run_id) run_id, id, status FROM email_deliveries"
+                " WHERE run_id = ANY(:ids) AND tenant_id = :t"
+                " ORDER BY run_id, created_at DESC"
+            ),
+            {"ids": run_ids, "t": record.tenant_id},
+        ).mappings():
+            delivery[str(row["run_id"])] = {
+                "id": str(row["id"]),
+                "status": str(row["status"]),
+            }
     return {
         "executions": [
             {
@@ -214,6 +245,9 @@ def list_executions(
                 "status": row["status"],
                 "reason": row["reason"] or "",
                 "notification_status": row.get("notification_status") or "none",
+                "notification_id": notes.get(str(row["run_id"])),
+                "email": delivery.get(str(row["run_id"])),
+                "run_status": run_status.get(str(row["run_id"])),
             }
             for row in rows
         ],

@@ -40,6 +40,37 @@ export const THEMES: ThemeSpec[] = [
     license: "MIT",
     version: "1.0.0",
   },
+  {
+    id: "rxy-paper",
+    name: "Rxy Paper",
+    kind: "light",
+    accent: "#b25e09",
+    background: "#faf6ef",
+    foreground: "#26221c",
+    source: "bundled",
+    license: "MIT",
+    version: "1.0.0",
+  },
+  {
+    id: "rxy-midnight",
+    name: "Rxy Midnight",
+    kind: "dark",
+    accent: "#58a6ff",
+    background: "#0b1220",
+    foreground: "#dde6f2",
+    source: "bundled",
+    license: "MIT",
+    version: "1.0.0",
+  },
+]
+
+export const ACCENTS: { id: string; name: string; color: string }[] = [
+  { id: "default", name: "默认", color: "" },
+  { id: "blue", name: "蓝", color: "#0f62fe" },
+  { id: "green", name: "绿", color: "#1a7f37" },
+  { id: "orange", name: "橙", color: "#bc4c00" },
+  { id: "purple", name: "紫", color: "#8250df" },
+  { id: "rose", name: "玫红", color: "#bf3989" },
 ]
 
 export type ResolvedAppearance = {
@@ -49,7 +80,8 @@ export type ResolvedAppearance = {
   diffMarkers: "color" | "symbols"
   uiFontPx: number
   codeFontPx: number
-  contrast: "normal" | "high"
+  /** 0–100 视觉差异强度（APP-14）。 */
+  contrast: number
 }
 
 export function resolveAppearance(
@@ -82,7 +114,12 @@ export function resolveAppearance(
     diffMarkers: appearance?.diff_markers ?? "color",
     uiFontPx: profile.ui_font_px ?? 14,
     codeFontPx: profile.code_font_px ?? 13,
-    contrast: profile.contrast ?? "normal",
+    contrast:
+      typeof profile.contrast === "number"
+        ? Math.max(0, Math.min(100, profile.contrast))
+        : profile.contrast === "high"
+          ? 80
+          : 45,
   }
 }
 
@@ -91,7 +128,9 @@ export function applyAppearance(resolved: ResolvedAppearance): void {
   const root = document.documentElement
   root.classList.toggle("dark", resolved.mode === "dark")
   root.dataset.theme = resolved.mode
-  root.dataset.contrast = resolved.contrast
+  // 既有 CSS 按 "high"/"normal" 分档；细粒度数值也落到 CSS 变量。
+  root.dataset.contrast = resolved.contrast >= 70 ? "high" : "normal"
+  root.style.setProperty("--rxy-contrast", String(resolved.contrast))
   root.dataset.diffMarkers = resolved.diffMarkers
   root.style.setProperty("--rxy-ui-font", `${resolved.uiFontPx}px`)
   root.style.setProperty("--rxy-code-font", `${resolved.codeFontPx}px`)

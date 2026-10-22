@@ -112,7 +112,7 @@ async def memory_operation_async(
 
 
 def _resolve_search_root(scope: str, scope_id: str) -> Path:
-    from ..config.settings import get_data_dir
+    from ..memory._scope import memory_root as _scoped_root
 
     if scope not in _SCOPE_PATHS:
         raise ValueError("scope must be one of: user, sessions, global")
@@ -124,7 +124,7 @@ def _resolve_search_root(scope: str, scope_id: str) -> Path:
             "letters, numbers, '.', '_' or '-'"
         )
 
-    memory_root = (get_data_dir() / "memory").resolve()
+    memory_root = _scoped_root().resolve()
     scope_root = (memory_root / _SCOPE_PATHS[scope]).resolve()
     base = (scope_root / scope_id).resolve() if scope_id else scope_root
     if not scope_root.is_relative_to(memory_root) or not base.is_relative_to(scope_root):

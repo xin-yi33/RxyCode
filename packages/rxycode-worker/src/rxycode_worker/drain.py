@@ -276,9 +276,12 @@ def _run_identity(database_url: str, run_id: str) -> dict[str, Any]:
                 text(
                     "SELECT r.tenant_id, COALESCE(s.project_id, ''), "
                     "r.model_ref, r.model_id, r.provider_id, r.provider_name, "
-                    "r.credential_source, r.connection_id, r.credential_version "
+                    "r.credential_source, r.connection_id, r.credential_version, "
+                    "COALESCE(p.memory_mode, '') "
                     "FROM runs r LEFT JOIN sessions s "
                     "ON s.tenant_id = r.tenant_id AND s.id = r.session_id "
+                    "LEFT JOIN projects p "
+                    "ON p.tenant_id = s.tenant_id AND p.id = s.project_id "
                     "WHERE r.id = :id"
                 ),
                 {"id": run_id},
@@ -312,6 +315,7 @@ def _run_identity(database_url: str, run_id: str) -> dict[str, Any]:
         "actor_id": str(quota.get("user_id") or ""),
         "traceparent": str(payload.get("traceparent") or ""),
         "model": model,
+        "memory_mode": str(row[9] or ""),
     }
 
 
@@ -5983,6 +5987,23 @@ async def execute_run(
         # Per-tenant workspace: the sandbox's only writable path.
         workdir = provider.workspaces_root / tenant_id / session_id
         workdir.mkdir(parents=True, exist_ok=True)
+        # Project memory scope (FR-PROJECT-03): the memory subtree is
+        # redirected out of the per-session .data dir into a durable
+        # scope dir — project_only sessions share the project scope and
+        # never see the actor's cross-project user memory; default keeps
+        # the user scope so cross-session memory works as allowed.
+        _mem_mode = str(identity.get("memory_mode") or "default")
+        if _mem_mode == "project_only" and identity.get("project_id"):
+            _mem_kind = "projects"
+            _mem_key = str(identity["project_id"])
+        else:
+            _mem_kind = "users"
+            _mem_key = str(identity.get("actor_id") or session_id)
+        _mem_key = re.sub(r"[^A-Za-z0-9._-]", "_", _mem_key)[:64] or "anon"
+        memory_dir = (
+            provider.workspaces_root / ".memory" / tenant_id / _mem_kind / _mem_key
+        )
+        memory_dir.mkdir(parents=True, exist_ok=True)
         # The config home lives OUTSIDE the writable workspace (a confined
         # turn could otherwise plant a symlinked config.yaml for the
         # unsandboxed parent to overwrite on the next run — audit r4).
@@ -6184,6 +6205,12 @@ async def execute_run(
             "RXYCODE_TURN_PROFILE": permission_profile,
             "RXYCODE_TURN_PERMISSION": permission_mode or "",
             "RXYCODE_TURN_TRACEPARENT": identity["traceparent"],
+            # FR-PROJECT-03 memory scope — read by memory/_scope.py inside
+            # the turn: memory_root() replaces <data>/memory, memory_key()
+            # replaces the cwd-derived experience key.
+            "RXYCODE_MEMORY_ROOT": str(memory_dir),
+            "RXYCODE_MEMORY_KEY": f"{_mem_kind}:{_mem_key}",
+            "RXYCODE_MEMORY_MODE": _mem_mode,
             "RXYCODE_TURN_WORKDIR": str(workdir),
             "RXYCODE_TURN_EPOCH": str(epoch),
             # Two distinct dirs: the config source is a parent-owned
@@ -6230,9 +6257,10 @@ async def execute_run(
         ro_binds = ["/repo", str(data_dir)] + [
             entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
         ]
-        # Task-private writable mounts: the control dir only — HOME and the
-        # package caches live inside the workspace mount itself.
-        rw_binds = [str(ctl_dir)]
+        # Task-private writable mounts: the control dir and the memory
+        # scope dir (parent-owned path under workspaces_root/.memory —
+        # never inside the workspace, never tenant-crossing).
+        rw_binds = [str(ctl_dir), str(memory_dir)]
         # System-package installs (apt/dpkg) write to a per-task PERSISTENT
         # overlay layer — never the host's /usr — when the kernel allows
         # userns overlayfs; otherwise the ro mounts honestly refuse. Upper

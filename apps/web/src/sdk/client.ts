@@ -222,7 +222,8 @@ export type AppearanceProfile = {
   foreground?: string
   ui_font_px?: number
   code_font_px?: number
-  contrast?: "normal" | "high"
+  // APP-14：0–100 视觉差异强度（默认45）；旧枚举值由服务端归一化为数值。
+  contrast?: number | "normal" | "high"
 }
 
 export type Preferences = {
@@ -232,6 +233,8 @@ export type Preferences = {
     grouping: "project" | "merged"
     sort: "updated_at" | "manual"
     show_projects: boolean
+    projects_collapsed?: boolean
+    recent_collapsed?: boolean
   }
   appearance: {
     mode: "system" | "light" | "dark"
@@ -284,6 +287,9 @@ export type ScheduleExecution = {
   status: string
   reason: string
   notification_status: string
+  notification_id?: string | null
+  email?: { id: string; status: string } | null
+  run_status?: string | null
 }
 
 export type NotificationCategory = {
@@ -293,6 +299,7 @@ export type NotificationCategory = {
   reason: string
   allowed_channels: string[]
   selected_channels: string[]
+  description?: string
 }
 
 export type NotificationPreferences = {
@@ -709,7 +716,7 @@ export function createClient() {
       return writeJson("/api/v1/projects", body) as Promise<{ project: ProjectItem }>
     },
     putSidebarOrder(body: {
-      scope: "pinned_projects" | "pinned_sessions" | "sessions"
+      scope: "pinned_sessions" | "projects" | "project_sessions" | "recent"
       project_id?: string
       ordered_ids: string[]
       expected_revision?: number

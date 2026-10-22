@@ -61,8 +61,8 @@ def _push_capability(request: Request) -> dict[str, object]:
     }
 
 
-def _email_delivery(request: Request) -> dict[str, object]:
-    configured = bool(getattr(request.app.state, "mailer", None))
+def _email_delivery(request: Request) -> str:
+    configured = bool(getattr(request.app.state, "smtp_url", "") or "")
     return "configured" if configured else "unavailable"
 
 
@@ -87,19 +87,46 @@ def _legacy_muted(db: Session, record) -> set[str]:
 def _prefs_payload(db: Session, request: Request, record) -> dict[str, object]:
     overrides = _category_rows(db, record.user_id)
     muted = _legacy_muted(db, record)
+    email_ok = _email_delivery(request) == "configured"
+    push_ok = bool(_push_capability(request)["available"])
+    # 无业务源的分类诚实标依赖（§03 NTF-05/07/09/10 待确认项）：
+    # 行保留、可选渠道为空、原因可读；不伪称已接入。
+    _SOURCES: dict[str, str] = {
+        "health": "no_event_source",
+        "group_chats": "no_event_source",
+        "library": "no_event_source",
+        "projects": "no_event_source",
+        "personalized": "no_event_source",
+    }
     categories = []
     for cat in _CATEGORIES:
         row = overrides.get(cat)
-        selected = list(row.channels) if row is not None else list(_DEFAULT_CHANNELS)
+        if cat == "scheduled_tasks":
+            # 定时结果邮件默认开启（§03）；其余分类默认仅站内。
+            default = ["in_app", "email"]
+        elif cat == "marketing":
+            default = []  # 单独同意，默认关闭
+        else:
+            default = list(_DEFAULT_CHANNELS)
+        selected = list(row.channels) if row is not None else default
         if cat == "agent_tasks" and "run.completed" in muted and row is None:
             selected = [c for c in selected if c != "in_app"]
+        source = _SOURCES.get(cat, "")
+        channels_allowed = ["in_app"]
+        if push_ok:
+            channels_allowed.append("push")
+        if email_ok:
+            channels_allowed.append("email")
+        if source:
+            channels_allowed = []
+            selected = []
         categories.append(
             {
                 "id": cat,
                 "label": cat.replace("_", " "),
-                "available": True,
-                "reason": "",
-                "allowed_channels": ["in_app", "push", "email"],
+                "available": not source,
+                "reason": source,
+                "allowed_channels": channels_allowed,
                 "selected_channels": selected,
             }
         )
@@ -149,6 +176,12 @@ def patch_notification_preferences(
         raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
     if "push" in payload.selected_channels and not _push_capability(request)["available"]:
         raise HTTPException(status_code=503, detail="PUSH_UNAVAILABLE")
+    if "email" in payload.selected_channels and _email_delivery(request) != "configured":
+        raise HTTPException(status_code=503, detail="EMAIL_DELIVERY_UNAVAILABLE")
+    # 无业务源的分类拒绝假开启（NTF-05/07/09/10 待确认项）。
+    _NO_SOURCE = {"health", "group_chats", "library", "projects", "personalized"}
+    if payload.selected_channels and payload.category_id in _NO_SOURCE:
+        raise HTTPException(status_code=422, detail="CATEGORY_UNAVAILABLE")
     row = db.execute(
         select(NotificationPreference)
         .where(
@@ -300,7 +333,7 @@ def retry_email(
     """Re-queue ONLY the email leg — never re-runs the model or the run."""
     require_write(request)
     record = current_record(request)
-    if not getattr(request.app.state, "mailer", None):
+    if not getattr(request.app.state, "smtp_url", "") or "":
         raise HTTPException(status_code=503, detail="EMAIL_DELIVERY_UNAVAILABLE")
     note = (
         db.execute(
@@ -319,6 +352,24 @@ def retry_email(
     recipient = str(getattr(user, "email", "") or "")
     if not recipient:
         raise HTTPException(status_code=422, detail="EMAIL_REQUIRED")
+    # One intended email per (run, recipient, kind): retry revives the same
+    # delivery row instead of inserting a duplicate (unique constraint).
+    delivery = db.scalars(
+        select(EmailDelivery).where(
+            EmailDelivery.run_id == note["run_id"],
+            EmailDelivery.recipient == recipient,
+            EmailDelivery.kind == (note["kind"] or "run.completed"),
+        )
+    ).first()
+    if delivery is not None:
+        if delivery.status == "sent":
+            return {"delivery_id": delivery.id, "status": "sent"}
+        delivery.status = "pending"
+        delivery.notification_id = notification_id
+        delivery.next_retry_at = None
+        delivery.last_error = ""
+        db.flush()
+        return {"delivery_id": delivery.id, "status": "pending"}
     delivery = EmailDelivery(
         id=uuid.uuid4().hex,
         tenant_id=record.tenant_id,

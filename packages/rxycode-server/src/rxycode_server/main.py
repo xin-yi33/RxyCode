@@ -34,12 +34,24 @@ _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "exam
 
 
 async def _fire_due_schedules(app: FastAPI, stop: asyncio.Event) -> None:
-    """Fire due web schedules from the database. This process is not appserver."""
-    from rxycode_server.notifications.service import fire_due_schedules
+    """Fire due web schedules from the database. This process is not appserver.
+    Same tick drains pending result emails — SMTP creds live on api only."""
+    from rxycode_server.notifications.service import (
+        drain_email_deliveries,
+        fire_due_schedules,
+    )
 
     while not stop.is_set():
         try:
             fire_due_schedules(app.state.database_url, now=datetime.now(timezone.utc))
+        except Exception:
+            pass
+        try:
+            drain_email_deliveries(
+                app.state.database_url,
+                smtp_url=str(getattr(app.state, "smtp_url", "") or ""),
+                smtp_from=str(getattr(app.state, "smtp_from", "") or ""),
+            )
         except Exception:
             pass
         try:

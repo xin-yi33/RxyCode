@@ -130,3 +130,35 @@
 - SDK client：全部新端点的类型化方法（sessions 生命周期、projects、sidebar-order、search、preferences、schedules+executions+run-now、notification-preferences/notifications/push-subscriptions、security/reauth/sessions/events/password/passkeys/TOTP/recovery）。
 - 测试：`tests/web/w10/`（复用 w9 postgres 容器）新增契约测试——会话归档/删除 tombstone、项目冲突与默认保护、中文搜索与跨租户隔离、偏好乐观锁、定时任务 CRUD+run-now 幂等、reauth 白名单/会话清单/TOTP 全链、通知偏好；`w3_c03` 思维链契约更新为「无文本泄漏」断言并补 UTF-8 解码。
 - 验证：`tsc --noEmit` 全绿、`vite build` 通过、`ruff check` 全绿、`pytest tests/web/w3/test_w3_c03_unit.py` 3 passed；postgres/docker 集成测试待 Docker Desktop 可用后执行（CI 可跑）。
+
+## UI-2026-10-22 开发包（第二轮）：规格缺口补齐（本轮本地实现，未部署）
+
+### 后端（packages/rxycode-server / worker / memory）
+
+- `alembic/011_ui_package.py`：`user_project_meta.manual_order` 列（已存在表走 `ALTER TABLE … IF NOT EXISTS`，幂等）。
+- `persistence/models.py`：`UserProjectMeta.manual_order`。
+- `api/projects.py`：`PUT /me/sidebar-order` 按契约重写——`scope=sessions|projects` 分表写入；`sessions` scope 更新 `user_session_meta.pin_order`（置顶序），`projects` scope 写 `manual_order`；列表排序 pinned→manual_order→name。项目列表 `sort=manual` 消费 `manual_order`。
+- `api/schedules.py`：executions 响应补 `notification_id`/`email_status`/`run_status`——详情抽屉才能渲染投递状态、运行中停止按钮与失败重试。
+- `api/notifications.py`：retry-email 修正——仅失败投递可复活，已 sent 不重复投递；`_prefs_payload` 输出 10 类类别与诚实 `available`/`reason`（无业务源的类别保留行但 `available=false`）。
+- `notifications/service.py` + `main.py`：定时任务结果邮件投递链——`publish_run_status` 终态时向 `email_deliveries` 入队（`run_id+recipient+kind` 去重），api 进程 30s tick 顺带 `drain_email_deliveries`（SMTP 凭据只在 api 进程）；`app.state.smtp_url/smtp_from` 由 `RXYCODE_SMTP_URL`/`RXYCODE_SMTP_FROM` 初始化。邮件正文含任务名/执行时间(时区)/模型/结果摘要/错误码，不含 Key、env、CoT 或 share token。
+- `api/preferences.py`：`appearance.*.contrast` 接受 0–100 数值（APP-14 滑块），旧 `"normal"/"high"` 枚举映射为 45/80，保持向后兼容。
+- `packages/rxycode-worker/drain.py`：`_run_identity` 联查 `projects.memory_mode`；turn 环境把记忆根目录重定向到 `workspaces_root/.memory/<tenant>/{users|projects}/<key>`——`project_only` 会话落在项目作用域，不读不写跨项目用户记忆。
+- `memory/_scope.py`（新）：`memory_root()`/`memory_key()` 读取 turn env，把共享记忆根重定向到租户/项目作用域；`user_memory/long_term/vector_memory/search/auto_memory/manager`、`tools/memory_tool` 的共享路径助手全部改走 `_scope`，会话本地与 legacy 路径保留回退。
+
+### 前端（apps/web）
+
+- **路由契约 §01**：`/settings/:section` 用契约分区名 `general-settings/appearance/notifications/security/archived-chats/addmodel`；`/app/settings*`、`/settings?section=`、`/projects/:id/schedule` 旧链全部重定向；`AuthGate` 回跳白名单扩到 `/settings|/scheduled|/plugins` 等顶层路径；`/settings`、`/scheduled`、`/plugins` 在 ConsoleShell 公共壳下——常规/外观分区访客可见，私有分区（通知/安全/归档/模型）内联登录入口而非硬跳。
+- **Sidebar 补全**：会话 ⋯ 菜单重写——复制链接（toast 反馈）、带搜索的项目移动子菜单 + 「移出项目」、移动前的记忆作用域提示、活跃 run 移动/归档/删除 busy 拦截、永久删除弹窗声明不可撤销；项目区支持折叠、行 ⋯ 菜单（重命名/置顶/删除→会话迁入默认项目）、行内新建会话、创建弹窗含 `memory_mode` 选择；最近区 ⋯ 菜单提供 grouping/sort 偏好 + 手动排序上下移；桌面收起为 56px 图标轨。
+- **`/scheduled` 页重写**：顶栏输入框（+ 图标、任务文本、发送箭头）——输入文本后打配置弹窗而非直接执行；推荐模板可折叠且只预填表单；URL `status` 筛选持久化；行展示名称/可读规则+时区/下次执行(server `next_fire`)/模型/启停/最近结果，失败原因可展开；详情抽屉含完整指令、执行历史、邮件投递状态与失败重试、活跃 run 停止（仅 run_status 活跃时显示，只取消当前 run）；run-now 弹窗明示计费/配额消耗并要求确认；删除确认声明已生成聊天保留；编辑器含项目选择、会话选择/专用会话、模型选择器(`model_ref`)、权限档位(confirm/full)、interval/at/weekly 规则 + 时区(默认浏览器 IANA) + 服务端 `next_fire` 预览、邮件开关默认开、字段非法/邮箱未验证/投递未配置时的 blocked 说明、提交去重。
+- **归档页**：搜索 + 来源/项目/排序筛选全部同步 URL query、按项目名分组卡片、取消归档、永久删除二次确认弹窗。
+- **外观分区 APP-01..16**：system/light/dark 三模式缩略图单选；主题下拉 + Aa 缩略预览（用主题真实 token，新增随包主题 `rxy-paper`/`rxy-midnight`）；下载/复制主题 JSON（仅外观字段，无 Key/会话/账号）；强调色固定安全色板（不覆盖 danger/success 语义色）；背景/前景色 color input + hex 输入双向同步、非法值就地报错回滚；「高级」可键盘开合折叠区——UI 字号 12–22px / 代码字号 11–24px 数字 stepper、对比度 0–100 滑块(默认45)、减少动态效果 system/on/off 分段钮、差异标记颜色/符号切换；「分别设置浅色和深色」开关 + light/dark 编辑 Tab（各自 profile 独立保存）；恢复默认只还原外观字段。
+- **通知分区**：图32 十行卡片布局——左标题/说明右胶囊下拉（关闭/站内/推送/电子邮件/推送和电子邮件），可用项由 `allowed_channels` 裁剪、不可用类别保留行但禁用并显示 `reason`；推送选项先走真实 `PushManager.subscribe` + VAPID 订阅上传，浏览器不支持/权限拒绝/未配置就地提示原因不伪开；`scheduled_tasks` 行旁「管理任务」→ `/scheduled`；每行 busy/错误独立。
+- `lib/appearance.ts`：`contrast` 归一化为 0–100，`data-contrast` ≥70 记 `high` 兼容旧 CSS，同时落 `--rxy-contrast` 细粒度变量；`ACCENTS` 安全色板导出。
+- `state/ui.ts` + `ConsoleShell`：轻量 `showToast`/`ToastHost`（3s 消退、aria-live）；`lib/lastAppPath.ts` 记录最后应用内路径供设置页「返回应用」。
+- SDK：`NotificationCategory.description`；`AppearanceProfile.contrast` 联合类型（数值为主，枚举兼容）。
+
+### 验证
+
+- `tsc --noEmit` 全绿；`vite build` 通过；`ruff check`（全部改动后端文件）全绿；后端模块 `import` 校验通过。
+- `memory/` 与 `tools/memory_tool.py` 行尾已归一为原样 LF，diff 仅语义改动。
+- 待执行（上线前门禁）：Docker 起来后 `pytest tests/web/w10/`、浏览器页面元素逐项核对（webapp-testing/Playwright）。**未部署到生产。**

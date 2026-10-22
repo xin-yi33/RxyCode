@@ -530,6 +530,8 @@ class UserProjectMeta(Base):
     project_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     pin_order: Mapped[int | None] = mapped_column(Integer)
+    # 手动排序（scope=projects）；与 pin_order 分开——置顶只决定排前面。
+    manual_order: Mapped[int | None] = mapped_column(Integer)
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )

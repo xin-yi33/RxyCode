@@ -136,6 +136,7 @@ def upgrade() -> None:
             sa.Column("project_id", sa.String(length=64), primary_key=True),
             sa.Column("pinned", sa.Boolean(), server_default=sa.false(), nullable=False),
             sa.Column("pin_order", sa.Integer(), nullable=True),
+            sa.Column("manual_order", sa.Integer(), nullable=True),
             sa.Column(
                 "updated_at",
                 sa.DateTime(timezone=True),
@@ -143,6 +144,8 @@ def upgrade() -> None:
                 nullable=True,
             ),
         )
+    else:
+        op.execute("ALTER TABLE user_project_meta ADD COLUMN IF NOT EXISTS manual_order integer")
 
     # -- preferences + manual ordering ---------------------------------------
     if "user_preferences" not in tables:

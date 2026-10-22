@@ -27,6 +27,8 @@ type UiState = {
   // 409 DEVICE_IN_USE：任一请求撞上“另一台设备使用中”就置位，
   // ConsoleShell 顶层的 <DeviceConflictModal> 据此弹全局模态。
   deviceConflict: boolean
+  // 一次性通知文案（“链接已复制”等）——ToastHost 自动消退。
+  toast: { id: number; text: string } | null
   setTheme: (theme: ThemeName) => void
   toggleTheme: () => void
   setOffline: (offline: boolean) => void
@@ -37,6 +39,7 @@ type UiState = {
   setSearchOpen: (open: boolean) => void
   setPendingIntent: (value: boolean) => void
   setDeviceConflict: (value: boolean) => void
+  showToast: (text: string) => void
   draftFor: (sessionId: string) => ComposerDraft
   setDraft: (sessionId: string, draft: ComposerDraft) => void
   patchDraft: (sessionId: string, patch: Partial<ComposerDraft>) => void
@@ -85,6 +88,7 @@ export const useUi = create<UiState>()((set, get) => ({
   drafts: {},
   pendingIntent: false,
   deviceConflict: false,
+  toast: null,
   setTheme: (theme) => {
     persistTheme(theme)
     set({ theme })
@@ -102,6 +106,7 @@ export const useUi = create<UiState>()((set, get) => ({
   setSearchOpen: (searchOpen) => set({ searchOpen }),
   setPendingIntent: (pendingIntent) => set({ pendingIntent }),
   setDeviceConflict: (deviceConflict) => set({ deviceConflict }),
+  showToast: (text) => set({ toast: { id: Date.now(), text } }),
   draftFor: (sessionId) => get().drafts[sessionId] ?? EMPTY_DRAFT,
   setDraft: (sessionId, draft) =>
     set({ drafts: { ...get().drafts, [sessionId]: draft } }),

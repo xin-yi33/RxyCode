@@ -15,6 +15,7 @@ from rxycode_server.api.runs import _aware
 from rxycode_server.persistence.models import (
     Project,
     SessionRow,
+    UserPreference,
     UserProjectMeta,
     UserSessionMeta,
 )
@@ -118,12 +119,16 @@ def list_projects(request: Request, db: Session = Depends(db_session)) -> dict[s
                 **_project_item(db, record, row),
                 "pinned": bool(metas[row.id].pinned) if row.id in metas else False,
                 "pin_order": metas[row.id].pin_order if row.id in metas else None,
+                "manual_order": metas[row.id].manual_order if row.id in metas else None,
             }
             for row in rows
         ),
+        # PROJ-18：pin 的项目排在列表内部最前（不进“置顶聊天”区），
+        # 其余按 sidebar-order 手动序，无序项按名称兜底保持稳定。
         key=lambda item: (
             0 if item["pinned"] else 1,
             item["pin_order"] if item["pin_order"] is not None else 1 << 30,
+            item["manual_order"] if item["manual_order"] is not None else 1 << 30,
             str(item["name"]).lower(),
         ),
     )
@@ -294,6 +299,21 @@ def delete_project(
     return None
 
 
+_ORDER_SCOPES = ("pinned_sessions", "projects", "project_sessions", "recent")
+
+
+def _check_pref_revision(
+    db: Session, user_id: str, expected: int | None
+) -> "UserPreference | None":
+    """Sidebar ordering shares the preferences revision so a second device
+    cannot silently reorder over your pending changes."""
+    row = db.get(UserPreference, user_id)
+    current = int(row.revision or 0) if row is not None else 0
+    if expected is not None and int(expected) != current:
+        raise HTTPException(status_code=409, detail="REVISION_CONFLICT")
+    return row
+
+
 @router.put("/api/v1/me/sidebar-order")
 def put_sidebar_order(
     payload: SidebarOrderIn,
@@ -302,49 +322,86 @@ def put_sidebar_order(
 ) -> dict[str, object]:
     require_write(request)
     record = current_record(request)
-    if payload.scope not in ("pinned_projects", "pinned_sessions", "sessions"):
+    if payload.scope not in _ORDER_SCOPES:
         raise HTTPException(status_code=400, detail="INVALID_INPUT")
-    changed = 0
-    if payload.scope == "pinned_projects":
+    if payload.scope == "project_sessions" and not payload.project_id:
+        raise HTTPException(status_code=400, detail="INVALID_INPUT")
+    pref = _check_pref_revision(db, record.user_id, payload.expected_revision)
+
+    # Every ordered id must be visible to this user in the same scope —
+    # foreign ids are rejected outright, not silently skipped.
+    if payload.scope == "projects":
+        valid = set(
+            db.scalars(
+                select(Project.id).where(
+                    Project.tenant_id == record.tenant_id,
+                    Project.id.in_(payload.ordered_ids),
+                    Project.is_default.is_(False),
+                )
+            ).all()
+        )
+        if len(valid) != len(set(payload.ordered_ids)):
+            raise HTTPException(status_code=403, detail="FORBIDDEN")
         rows = {
             row.project_id: row
             for row in db.scalars(
                 select(UserProjectMeta).where(
                     UserProjectMeta.user_id == record.user_id,
-                    UserProjectMeta.project_id.in_(payload.ordered_ids),
+                    UserProjectMeta.project_id.in_(valid),
                 )
             ).all()
         }
-        # Only reorder ids that are actually pinned for this user.
         for index, pid in enumerate(payload.ordered_ids):
             meta = rows.get(pid)
-            if meta is not None and meta.pinned:
-                if meta.pin_order != index + 1:
-                    meta.pin_order = index + 1
-                    changed += 1
+            if meta is None:
+                meta = UserProjectMeta(user_id=record.user_id, project_id=pid)
+                db.add(meta)
+            meta.manual_order = index + 1
+        saved = payload.ordered_ids
     else:
+        clauses = [
+            SessionRow.tenant_id == record.tenant_id,
+            SessionRow.id.in_(payload.ordered_ids),
+            SessionRow.deleted_at.is_(None),
+            SessionRow.archived_at.is_(None),
+        ]
+        if payload.scope == "project_sessions":
+            clauses.append(SessionRow.project_id == payload.project_id)
+        valid = set(db.scalars(select(SessionRow.id).where(*clauses)).all())
+        if len(valid) != len(set(payload.ordered_ids)):
+            raise HTTPException(status_code=403, detail="FORBIDDEN")
         rows = {
             row.session_id: row
             for row in db.scalars(
                 select(UserSessionMeta).where(
                     UserSessionMeta.user_id == record.user_id,
-                    UserSessionMeta.session_id.in_(payload.ordered_ids),
+                    UserSessionMeta.session_id.in_(valid),
                 )
             ).all()
         }
         for index, sid in enumerate(payload.ordered_ids):
             meta = rows.get(sid)
             if meta is None:
-                continue
+                meta = UserSessionMeta(user_id=record.user_id, session_id=sid)
+                db.add(meta)
             if payload.scope == "pinned_sessions":
-                if meta.pinned and meta.pin_order != index + 1:
+                if meta.pinned:
                     meta.pin_order = index + 1
-                    changed += 1
-            elif meta.manual_order != index + 1:
+            else:
                 meta.manual_order = index + 1
-                changed += 1
+        saved = payload.ordered_ids
+
+    if pref is None:
+        pref = UserPreference(user_id=record.user_id)
+        db.add(pref)
+    pref.revision = int(pref.revision or 0) + 1
     db.flush()
-    return {"updated": True, "scope": payload.scope, "changed": changed}
+    return {
+        "scope": payload.scope,
+        "project_id": payload.project_id,
+        "ordered_ids": saved,
+        "revision": int(pref.revision),
+    }
 
 
 @router.get("/api/v1/projects/{project_id}")

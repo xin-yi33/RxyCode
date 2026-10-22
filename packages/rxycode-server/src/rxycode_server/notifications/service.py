@@ -817,7 +817,7 @@ def publish_run_status(
             found = db.execute(
                 text(
                     """
-                    SELECT id FROM web_notifications
+                    SELECT id, delivery FROM web_notifications
                     WHERE tenant_id = :tenant AND user_id = :user
                       AND run_id = :run_id AND kind = :kind
                     """
@@ -825,16 +825,41 @@ def publish_run_status(
                 {"tenant": tenant_id, "user": user_id, "run_id": run_id, "kind": _NOTICE},
             ).first()
             if found is not None:
+                # 重复终态回调：站内通知已存在，但首次入队邮件可能尚未发生
+                # （旧版本写入的行没有 delivery 字段）。补入队一次，dedupe
+                # 仍由 email_deliveries 唯一约束兜底。
+                if str(found.delivery or "in_app") != "email":
+                    _enqueue_result_email(
+                        db,
+                        run=run,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        notification_id=str(found.id),
+                        status=status,
+                    )
                 db.commit()
                 return {"notification_id": str(found.id), "status": status}
+            schedule = _schedule_for_run(db, tenant_id, run_id)
+            category = "scheduled_tasks" if schedule is not None else "agent_tasks"
+            title = str(schedule.get("name") or "") if schedule else ""
             note_id = uuid.uuid4().hex
+            delivery_id = _enqueue_result_email(
+                db,
+                run=run,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                notification_id=note_id,
+                status=status,
+            )
             db.execute(
                 text(
                     """
                     INSERT INTO web_notifications
-                        (id, tenant_id, user_id, kind, run_id, status, body)
+                        (id, tenant_id, user_id, kind, run_id, status, body,
+                         title, category, delivery)
                     VALUES
-                        (:id, :tenant, :user, :kind, :run_id, :status, :body)
+                        (:id, :tenant, :user, :kind, :run_id, :status, :body,
+                         :title, :category, :delivery)
                     """
                 ),
                 {
@@ -845,6 +870,9 @@ def publish_run_status(
                     "run_id": run_id,
                     "status": status,
                     "body": status + " " + run_id,
+                    "title": title or ("定时任务" if schedule else "任务"),
+                    "category": category,
+                    "delivery": "email" if delivery_id else "in_app",
                 },
             )
             db.commit()
@@ -875,6 +903,273 @@ def _silenced(db: Session, tenant_id: str, user_id: str, run_id: str) -> bool:
         {"tenant": tenant_id, "run_id": run_id},
     ).first()
     return job is not None and not bool(job.notify)
+
+
+# ---- 结果邮件投递（FR-SCHEDULE-03） -----------------------------------------
+#
+# 终态通知入队后由 enqueue 落一条 email_deliveries（同一事务，dedupe 由
+# (run_id, recipient, kind) 唯一约束保证）；实际发送走 drain_email_deliveries
+# —— 挂在 api 进程的调度 tick 上，worker 进程不需要 SMTP 凭据。
+
+_EMAIL_MAX_ATTEMPTS = 5
+_EMAIL_BACKOFF_S = 120
+
+
+def _schedule_for_run(db: Session, tenant_id: str, run_id: str) -> dict | None:
+    row = db.execute(
+        text(
+            """
+            SELECT s.id, s.name, s.timezone, s.notify, s.user_id
+            FROM web_schedules s
+            JOIN schedule_executions e ON e.schedule_id = s.id
+            WHERE e.run_id = :run_id AND s.tenant_id = :tenant
+            ORDER BY e.scheduled_for DESC LIMIT 1
+            """
+        ),
+        {"run_id": run_id, "tenant": tenant_id},
+    ).mappings().first()
+    if row is None:
+        row = db.execute(
+            text(
+                """
+                SELECT id, name, timezone, notify, user_id FROM web_schedules
+                WHERE tenant_id = :tenant AND last_run_id = :run_id LIMIT 1
+                """
+            ),
+            {"tenant": tenant_id, "run_id": run_id},
+        ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _email_channel_on(db: Session, user_id: str, category: str) -> bool:
+    """scheduled_tasks 默认开邮件（规格 §03）；其余分类默认仅站内。"""
+    row = db.execute(
+        text(
+            "SELECT channels FROM notification_preferences"
+            " WHERE user_id = :u AND category = :c"
+        ),
+        {"u": user_id, "c": category},
+    ).first()
+    default = ["in_app", "email"] if category == "scheduled_tasks" else ["in_app"]
+    channels = list(row.channels) if row is not None else default
+    return "email" in channels
+
+
+def _result_excerpt(db: Session, run_id: str) -> str:
+    """简短公开结果：最后一个 assistant.final 的可见文本，截 240 字符。
+    不含工具输出/思维链/错误堆栈。"""
+    event = db.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id, RunEvent.type == "assistant.final")
+        .order_by(RunEvent.seq.desc())
+        .limit(1)
+    ).first()
+    if event is None:
+        return ""
+    payload = event.payload or {}
+    text_out = str(payload.get("text") or payload.get("content") or "")
+    return text_out.strip()[:240]
+
+
+def _enqueue_result_email(
+    db: Session,
+    *,
+    run: Run,
+    tenant_id: str,
+    user_id: str,
+    notification_id: str,
+    status: str,
+) -> str | None:
+    """Create the pending delivery row in the same tx as the notification.
+    Returns the delivery id, or None when email is not warranted."""
+    schedule = _schedule_for_run(db, tenant_id, run.id)
+    category = "scheduled_tasks" if schedule is not None else "agent_tasks"
+    if not _email_channel_on(db, user_id, category):
+        return None
+    recipient_row = db.execute(
+        text("SELECT email FROM users WHERE id = :u"), {"u": user_id}
+    ).first()
+    recipient = str(recipient_row.email or "") if recipient_row else ""
+    if not recipient:
+        return None
+    delivery_id = uuid.uuid4().hex
+    try:
+        with db.begin_nested():  # dedupe by (run_id, recipient, kind)
+            db.execute(
+                text(
+                    """
+                    INSERT INTO email_deliveries (
+                        id, tenant_id, user_id, notification_id, run_id,
+                        schedule_id, recipient, kind, status, attempts,
+                        last_error, created_at
+                    ) VALUES (
+                        :id, :tenant, :user, :note, :run, :schedule,
+                        :recipient, :kind, 'pending', 0, '', :now
+                    )
+                    """
+                ),
+                {
+                    "id": delivery_id,
+                    "tenant": tenant_id,
+                    "user": user_id,
+                    "note": notification_id,
+                    "run": run.id,
+                    "schedule": schedule["id"] if schedule else None,
+                    "recipient": recipient,
+                    "kind": _NOTICE,
+                    "now": datetime.now(timezone.utc),
+                },
+            )
+    except Exception:
+        # Unique-key race or repeated terminal callback — the intended mail
+        # already exists; nothing to enqueue.
+        return None
+    return delivery_id
+
+
+def _render_result_email(
+    db: Session, run: Run, schedule: dict | None, status: str
+) -> tuple[str, str]:
+    tz_name = str(schedule.get("timezone") or "UTC") if schedule else "UTC"
+    name = str(schedule.get("name") or "") if schedule else ""
+    try:
+        from scheduler.rules import parse_timezone
+
+        zone = parse_timezone(tz_name)
+    except Exception:
+        zone = timezone.utc
+    finished = run.created_at or datetime.now(timezone.utc)
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    local = finished.astimezone(zone)
+    when = local.strftime("%Y-%m-%d %H:%M %Z")
+    model = run.model_id or run.model_ref or ""
+    session_url = f"/app/s/{run.session_id}"
+
+    if status == "succeeded":
+        label = "已完成"
+        subject = f"定时任务「{name}」已完成" if name else "定时任务已完成"
+        excerpt = _result_excerpt(db, run.id)
+    elif status == "cancelled":
+        label = "已取消"
+        subject = f"定时任务「{name}」已取消" if name else "定时任务已取消"
+        excerpt = ""
+    else:
+        label = "执行失败"
+        subject = f"定时任务「{name}」执行失败" if name else "定时任务执行失败"
+        excerpt = _result_excerpt(db, run.id)
+
+    lines = [
+        f"任务：{name or '定时任务'}",
+        f"状态：{label}",
+        f"完成时间：{when}（{tz_name}）",
+        f"模型：{model or '—'}",
+    ]
+    if excerpt:
+        lines += ["", "结果摘要：", excerpt]
+    lines += ["", f"查看完整记录：{session_url}"]
+    return subject, "\n".join(lines)
+
+
+def drain_email_deliveries(
+    database_url: str,
+    *,
+    smtp_url: str,
+    smtp_from: str = "",
+    limit: int = 10,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Send pending result emails via the shared mailer. Called from the API
+    process tick loop — workers never hold SMTP credentials."""
+    counts = {"sent": 0, "failed": 0, "pending": 0}
+    if not smtp_url:
+        return counts
+    from rxycode_server.mailer import send_mail
+
+    stamp = _naive(now or datetime.now(timezone.utc))
+    engine = create_engine(database_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            rows = db.execute(
+                text(
+                    """
+                    SELECT id FROM email_deliveries
+                    WHERE status = 'pending'
+                      AND (next_retry_at IS NULL OR next_retry_at <= :now)
+                    ORDER BY created_at LIMIT :limit
+                    FOR UPDATE SKIP LOCKED
+                    """
+                ),
+                {"now": stamp, "limit": limit},
+            ).all()
+            ids = [str(row.id) for row in rows]
+            if not ids:
+                return counts
+            deliveries = db.execute(
+                text("SELECT * FROM email_deliveries WHERE id = ANY(:ids)"),
+                {"ids": ids},
+            ).mappings().all()
+            for row in deliveries:
+                run = db.get(Run, row["run_id"]) if row["run_id"] else None
+                schedule = (
+                    _schedule_for_run(db, str(row["tenant_id"]), str(row["run_id"]))
+                    if row["run_id"]
+                    else None
+                )
+                if run is None:
+                    db.execute(
+                        text(
+                            "UPDATE email_deliveries SET status = 'failed',"
+                            " last_error = 'run_missing' WHERE id = :id"
+                        ),
+                        {"id": row["id"]},
+                    )
+                    counts["failed"] += 1
+                    continue
+                subject, body = _render_result_email(
+                    db, run, schedule, str(run.status)
+                )
+                attempts = int(row["attempts"] or 0) + 1
+                ok = send_mail(
+                    smtp_url,
+                    to=str(row["recipient"]),
+                    subject=subject,
+                    body=body,
+                    sender=smtp_from,
+                )
+                if ok:
+                    db.execute(
+                        text(
+                            "UPDATE email_deliveries SET status = 'sent',"
+                            " attempts = :a, sent_at = :now, last_error = ''"
+                            " WHERE id = :id"
+                        ),
+                        {"a": attempts, "now": stamp, "id": row["id"]},
+                    )
+                    counts["sent"] += 1
+                else:
+                    exhausted = attempts >= _EMAIL_MAX_ATTEMPTS
+                    db.execute(
+                        text(
+                            "UPDATE email_deliveries SET status = :status,"
+                            " attempts = :a, last_error = :err,"
+                            " next_retry_at = :retry WHERE id = :id"
+                        ),
+                        {
+                            "status": "failed" if exhausted else "pending",
+                            "a": attempts,
+                            "err": "smtp_rejected" if not exhausted else "smtp_rejected_final",
+                            "retry": None
+                            if exhausted
+                            else stamp + timedelta(seconds=_EMAIL_BACKOFF_S * attempts),
+                            "id": row["id"],
+                        },
+                    )
+                    counts["failed" if exhausted else "pending"] += 1
+            db.commit()
+            return counts
+    finally:
+        engine.dispose()
 
 
 def _usage_day(db: Session, record: UsageRecord) -> str:

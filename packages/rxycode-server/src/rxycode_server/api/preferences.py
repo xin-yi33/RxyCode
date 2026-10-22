@@ -43,7 +43,13 @@ _TOP_KEYS = {"locale", "sidebar", "appearance", "expected_revision"}
 
 _DEFAULT = {
     "locale": "auto",
-    "sidebar": {"grouping": "project", "sort": "updated_at", "show_projects": True},
+    "sidebar": {
+        "grouping": "project",
+        "sort": "updated_at",
+        "show_projects": True,
+        "projects_collapsed": False,
+        "recent_collapsed": False,
+    },
     "appearance": {
         "mode": "system",
         "separate_modes": False,
@@ -78,9 +84,16 @@ def _profile(value: object, *, allow_null: bool) -> dict | None:
                 raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
             out[key] = item
         elif key == "contrast":
-            if item not in _CONTRAST:
+            # APP-14：滑块数值 0–100（默认45）；旧客户端的 "normal"/"high"
+            # 枚举仍接受并映射到数值，前端只发 int。
+            if isinstance(item, str):
+                if item not in _CONTRAST:
+                    raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
+                out[key] = {"normal": 45, "high": 80}[item]
+            elif isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 100:
+                out[key] = item
+            else:
                 raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
-            out[key] = item
         else:
             text = str(item)
             if len(text) > 200:
@@ -90,7 +103,14 @@ def _profile(value: object, *, allow_null: bool) -> dict | None:
 
 
 def _sidebar(value: object) -> dict:
-    if not isinstance(value, dict) or not set(value) <= {"grouping", "sort", "show_projects"}:
+    allowed = {
+        "grouping",
+        "sort",
+        "show_projects",
+        "projects_collapsed",
+        "recent_collapsed",
+    }
+    if not isinstance(value, dict) or not set(value) <= allowed:
         raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
     out = {}
     if "grouping" in value:
@@ -105,6 +125,11 @@ def _sidebar(value: object) -> dict:
         if not isinstance(value["show_projects"], bool):
             raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
         out["show_projects"] = value["show_projects"]
+    for key in ("projects_collapsed", "recent_collapsed"):
+        if key in value:
+            if not isinstance(value[key], bool):
+                raise HTTPException(status_code=422, detail="INVALID_PREFERENCE")
+            out[key] = value[key]
     return out
 
 

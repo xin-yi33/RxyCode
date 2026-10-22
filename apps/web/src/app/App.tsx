@@ -20,7 +20,6 @@ import { NewSessionPage } from "../features/console/NewSessionPage"
 import { SessionPage } from "../features/console/SessionPage"
 import { MemoryPage } from "../features/memory/MemoryPage"
 import { RunHistoryRoute } from "../features/runs/RunHistoryRoute"
-import { SchedulePage } from "../features/schedule/SchedulePage"
 import { SettingsShell } from "../features/settings/SettingsShell"
 import { SchedulesPage } from "../features/schedule/SchedulesPage"
 import { ProjectPage } from "../features/projects/ProjectPage"
@@ -160,21 +159,31 @@ function gated(element: ReactNode) {
   return <AuthGate>{element}</AuthGate>
 }
 
-// /app/settings?section=models 旧深链 → /settings/models；未知 section 落 general。
-const SETTINGS_SECTIONS = new Set([
-  "general",
-  "appearance",
-  "notifications",
-  "security",
-  "archived",
-  "models",
-])
+// /app/settings?section=models 旧深链 → /settings/addmodel；未知 section 落 general-settings。
+const LEGACY_SECTION_MAP: Record<string, string> = {
+  general: "general-settings",
+  "general-settings": "general-settings",
+  appearance: "appearance",
+  notifications: "notifications",
+  security: "security",
+  archived: "archived-chats",
+  "archived-chats": "archived-chats",
+  models: "addmodel",
+  addmodel: "addmodel",
+}
 
 function LegacySettingsRedirect() {
+  const { section } = useParams()
   const params = new URLSearchParams(window.location.search)
-  const section = params.get("section") ?? "general"
-  const target = SETTINGS_SECTIONS.has(section) ? section : "general"
-  return <Navigate to={`/settings/${target}`} replace />
+  const raw = section ?? params.get("section") ?? "general-settings"
+  return <Navigate to={`/settings/${LEGACY_SECTION_MAP[raw] ?? "general-settings"}`} replace />
+}
+
+// /projects/:id/schedule 旧链 → /scheduled?project_id=...。
+function LegacyProjectScheduleRedirect() {
+  const { projectId } = useParams()
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""
+  return <Navigate to={`/scheduled${query}`} replace />
 }
 
 const router = createBrowserRouter([
@@ -203,22 +212,25 @@ const router = createBrowserRouter([
     ],
   },
   {
-    // 顶层 /settings/:section 走同一控制台壳（规格 UI-2026-10-22 §01）。
+    // 顶层 /settings/:section 公共壳；常规/外观访客可预览，
+    // 私有分区在各 section 内给登录入口（§01 路由表）。
     path: "/settings",
-    element: gated(<ConsoleShell />),
+    element: <ConsoleShell />,
     children: [
-      { index: true, element: <Navigate to="general" replace /> },
+      { index: true, element: <Navigate to="general-settings" replace /> },
       { path: ":section", element: <SettingsShell /> },
     ],
   },
   {
+    // 规格：/scheduled 未登录保留壳+登录入口，不硬跳转（§01 路由表）。
     path: "/scheduled",
-    element: gated(<ConsoleShell />),
+    element: <ConsoleShell />,
     children: [{ index: true, element: <SchedulesPage /> }],
   },
   {
+    // /plugins 公共可看（占位页）。
     path: "/plugins",
-    element: gated(<ConsoleShell />),
+    element: <ConsoleShell />,
     children: [{ index: true, element: <PluginsPage /> }],
   },
   {
@@ -229,7 +241,8 @@ const router = createBrowserRouter([
   // Legacy pages kept behind auth until W10.
   { path: "/usage", element: gated(<UsagePage />) },
   { path: "/projects/:projectId/memory", element: gated(<MemoryPage />) },
-  { path: "/projects/:projectId/schedule", element: gated(<SchedulePage />) },
+  // 旧项目排程页已被 /scheduled?project_id= 取代（§01 兼容表）。
+  { path: "/projects/:projectId/schedule", element: <LegacyProjectScheduleRedirect /> },
   { path: "/projects/:projectId/workspace", element: gated(<WorkspacePage />) },
   { path: "/terminal/:sessionId", element: gated(<TerminalPage />) },
   { path: "/browser/:sessionId", element: gated(<BrowserHandoffPage />) },

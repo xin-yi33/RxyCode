@@ -4,9 +4,10 @@ import { Navigate, useLocation, useSearchParams } from "react-router"
 import { Button } from "../components/ui/button"
 import { useAuth } from "../features/auth/useAuth"
 
-// 只允许以 /app 为根的站内路径作为登录后回跳目标 —— 必须跟
+// 只允许白名单的站内控制台路径作为登录后回跳目标 —— 必须跟
 // "/"、"?"、"#" 或恰好结尾，否则 "/apple" 之类的路径会漏进来。
-const APP_PATH_RE = /^\/app(?:[/?#]|$)/
+// /settings/*、/scheduled、/plugins 等新增路由同样允许续接（UI-2026-10-22 §01）。
+const APP_PATH_RE = /^\/(app|settings|scheduled|plugins|runs|usage|projects|terminal|browser|memory)(?:[/?#]|$)/
 
 export function isAppPath(path: string): boolean {
   return APP_PATH_RE.test(path)
