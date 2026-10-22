@@ -236,7 +236,21 @@ describe("App transcript mount integration", () => {
       expect(scrollBox.content.getRenderable("transcript-message-881")).toBeTruthy();
       expect(scrollBox.content.getRenderable("transcript-message-999")).toBeUndefined();
       expect(messageRows(scrollBox)).toHaveLength(80);
-      expect(scrollBox.content.getRenderable(anchorId)?.screenY).toBe(anchorScreenY);
+      // The anchor correction runs on a setTimeout(0) macrotask after commit
+      // (scheduleViewportCorrection); under CI load it can lag the 1ms settle
+      // in pressAndFlush, so poll briefly instead of reading one stale frame.
+      {
+        const deadline = Date.now() + 2_000;
+        let observedY = scrollBox.content.getRenderable(anchorId)?.screenY;
+        while (observedY !== anchorScreenY && Date.now() < deadline) {
+          await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            await ui.flush();
+          });
+          observedY = scrollBox.content.getRenderable(anchorId)?.screenY;
+        }
+        expect(observedY).toBe(anchorScreenY);
+      }
 
       await typeCommand(ui.mockInput, ui.flush, "/copy");
       expect(copied).toHaveLength(1);
