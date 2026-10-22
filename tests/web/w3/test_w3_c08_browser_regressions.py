@@ -1272,9 +1272,11 @@ def _assert_production_console_styles(page, origin: str) -> None:
     menu.click()
     overlay = page.locator('button.fixed[aria-label="关闭会话列表"]')
     expect(overlay).to_be_visible()
-    assert overlay.evaluate("el => getComputedStyle(el).backgroundColor") == (
-        "rgba(0, 0, 0, 0.4)"
-    )
+    # Current Chromium serializes this translucent black as oklab.
+    assert overlay.evaluate("el => getComputedStyle(el).backgroundColor") in {
+        "rgba(0, 0, 0, 0.4)",
+        "oklab(0 0 0 / 0.4)",
+    }
     page.locator('aside button[aria-label="关闭会话列表"]').click()
     expect(overlay).to_have_count(0)
 

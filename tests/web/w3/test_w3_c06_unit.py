@@ -66,7 +66,7 @@ def _seed(deadline: datetime) -> tuple[str, str]:
             Project(
                 id=project_id,
                 tenant_id=tenant_id,
-                name="c06",
+                name="c06-" + uuid.uuid4().hex[:8],
                 repo_config={},
             )
         )

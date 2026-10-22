@@ -78,7 +78,7 @@ def _project(root: Path, target: str) -> str:
             Project(
                 id=project_id,
                 tenant_id=tenant_id,
-                name="workspace",
+                name="workspace-" + uuid.uuid4().hex[:8],
                 repo_config={"workspace_root": str(root), "target_id": target},
             )
         )

@@ -57,7 +57,14 @@ def _seed() -> tuple[str, str, str]:
             )
         project_id = uuid.uuid4().hex
         session_id = uuid.uuid4().hex
-        db.add(Project(id=project_id, tenant_id=tenant_id, name="chat", repo_config={}))
+        db.add(
+            Project(
+                id=project_id,
+                tenant_id=tenant_id,
+                name="chat-" + uuid.uuid4().hex[:8],
+                repo_config={},
+            )
+        )
         db.add(
             SessionRow(
                 id=session_id,
