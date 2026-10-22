@@ -23,11 +23,11 @@ BUN = bun_path()
 
 def _run_async(coro):
     """asyncio.run cannot start when this thread already has a loop."""
-    box: dict[str, BaseException] = {}
+    box: dict[str, object] = {}
 
     def _go() -> None:
         try:
-            asyncio.run(coro)
+            box["value"] = asyncio.run(coro)
         except BaseException as exc:
             box["error"] = exc
 
@@ -36,6 +36,7 @@ def _run_async(coro):
     worker.join()
     if "error" in box:
         raise box["error"]
+    return box.get("value")
 for _entry in (str(_WORKER), str(_SERVER), str(REPO / "tests" / "web" / "w6")):
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
