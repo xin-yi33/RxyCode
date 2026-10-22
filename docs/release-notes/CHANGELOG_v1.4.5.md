@@ -21,3 +21,14 @@
 - `docs/portfolio/rxycode-web-case-study.md`: 规模引用的证据路径从 gitignored 的 `docs/plans/` 改为已跟踪的 `evidence/web/`。
 - 新增证据目录：`evidence/web/WEB-W9-C01`（认证/准入/频控/设备锁）、`WEB-W10-C01`（BYOK 密钥库）、`WEB-W10-C02`（生产部署与公网 demo）、`WEB-W12-C01`（会话工作区文件 API+并发扩容）、`WEB-W13-C01`（设备桥真机 E2E）。
 - `.github/workflows/web-ci.yml`: `pytest web contract subset` 超时 30→60 分钟（真实 compose 套件首轮完整跑需 ~53 分钟）。
+- `.github/workflows/web-ci.yml`: contract 作业前置 `sysctl kernel.apparmor_restrict_unprivileged_userns=0`——ubuntu-latest (24.04) 默认限制非特权 userns，worker 容器内 `bwrap --unshare-user` 被拒，`userns_available()` 探测为 False，drain fail-closed 直接 failed、confined turn 从未 spawn（全部事件父进程所写，缺 `event/agent_started`）。放开 runner sysctl 让真实内核沙箱边界在 CI 运行，turn 仍在 bwrap 内执行。
+- `tests/web/w7/test_w7_c05_module.py`: `agent_started` 缺失断言改为带完整 `kinds` 列表与 `run.error` payload 的自诊断报错；断言本身未放宽（turn 仍必须真实 spawn）。
+- `tests/web/w7/test_w7_c05_unit.py`: alembic head 断言从硬编码 `007_password_resets` 改为动态 `_alembic_head()`（当前链顶 `010_device_locks`，此后新增迁移不再让断言过期）。
+- `tests/web/w7/test_w7_c02_unit.py`: `negative` 用例的 `Write-Output` 命令按平台分支（Windows 保留原义，POSIX 用 `echo`）。
+
+## Web ALTCHA 移动端兼容求解（2026-10-22）
+
+- 官方 ALTCHA 控件发出 `error` 状态后仅自动切换一次兼容流程；不依赖 `detail.error`、UA 判断或真实错误文本。正常官方 Worker 路径不增加额外 challenge 请求。
+- 兼容流程仅在 `isSecureContext` 为真时发起同源 challenge 请求；使用精确依赖 `js-sha256@1.0.0` 在主线程分批计算服务端原有的 `SHA-256(salt + 十进制计数器)`。challenge 结构、签名格式、上限、salt 过期时间均校验，90 秒上限、卸载/重试取消及兼容 payload 过期清 token；失败展示固定诊断码，只有用户点“重试验证”才重新请求。
+- 后端挑战/验签接口、算法、密钥、TTL 和登录/注册/找回表单接口均未修改；兼容验证仍提交原生 V1 base64 JSON payload，不放宽服务端校验。
+- 线上 Chromium/Vivo-like UA 新旧资源和具体真机故障根因仍由独立复测确认；本次客户端兼容实现本身不声称已验证具体用户设备根因。
