@@ -1542,7 +1542,7 @@ export function Sidebar() {
             {t("app.scheduled")}
           </NavLink>
         </div>
-        <nav className="min-h-0 flex-1 overflow-y-auto">
+        <nav className="min-h-24 flex-1 overflow-y-auto">
           <ConsoleLists />
         </nav>
         <AccountMenu />
