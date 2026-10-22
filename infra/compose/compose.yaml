@@ -87,6 +87,12 @@ services:
       - |
         while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
         echo "repo-src seeded"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /repo/.rxy-sync-done"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
 
   migrate:
     image: python:3.12-slim
@@ -133,6 +139,12 @@ services:
         upgrade_head(url)
         PY
         touch /boot/.migrate-done
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /boot/.migrate-done"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
 
   api:
     image: python:3.12-slim
@@ -422,6 +434,12 @@ services:
         npm install --no-audit --no-fund
         npm run build
         cp -a dist/. /dist/
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dist/index.html"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
 
   gateway:
     image: caddy:2.11

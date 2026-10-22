@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -93,7 +94,11 @@ def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None
     target = workdir / "shell-write.txt"
     attempt_id = "att_" + uuid.uuid4().hex
     call_id = "call_" + uuid.uuid4().hex
-    command = "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
+    command = (
+        "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
+        if os.name == "nt"
+        else "printf '%s' shell-write > shell-write.txt"
+    )
     epoch = claim(postgres_url, created.run_id, "worker-c05")
     assert epoch == 1
     common = {
@@ -210,7 +215,11 @@ def _assert_lost_ack(postgres_url: str, created, workdir: Path, journal) -> None
         run_id=asked.run_id,
         call_id="call_" + uuid.uuid4().hex,
         attempt_id="att_" + uuid.uuid4().hex,
-        command="Add-Content -LiteralPath 'not-approved.txt' -Value 'nope' -Encoding utf8",
+        command=(
+            "Add-Content -LiteralPath 'not-approved.txt' -Value 'nope' -Encoding utf8"
+            if os.name == "nt"
+            else "printf '%s' nope > not-approved.txt"
+        ),
         workdir=str(workdir),
         journal=ask_journal,
         worker_id="worker-ask",

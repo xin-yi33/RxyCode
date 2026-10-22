@@ -402,6 +402,8 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "deploy",
         "portfolio",
         "product",
+        # The web execution plan is the one docs/plans tree published to GitHub.
+        "plans",
     }
     allowed_files = {
         "quickstart.md",

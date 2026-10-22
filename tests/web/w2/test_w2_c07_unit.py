@@ -67,9 +67,7 @@ def _minio() -> dict[str, str]:
         f"MINIO_ROOT_USER={_ACCESS}",
         "-e",
         f"MINIO_ROOT_PASSWORD={_SECRET_KEY}",
-        "minio/minio",
-        "server",
-        "/data",
+        "bitnamilegacy/minio:2025.7.23",
     )
     assert started.returncode == 0, started.stderr
     deadline = time.time() + 40

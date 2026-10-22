@@ -41,6 +41,8 @@ NEEDLES_PHASE = [
 
 
 def test_session_durability_research_needles():
+    if not RESEARCH.is_file():
+        pytest.skip("research note is not in the GitHub tree")
     body = RESEARCH.read_text(encoding="utf-8")
     for n in NEEDLES_RESEARCH:
         assert n in body, n

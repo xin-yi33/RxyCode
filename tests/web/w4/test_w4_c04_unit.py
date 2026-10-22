@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -18,6 +19,13 @@ _SERVER = REPO / "packages" / "rxycode-server" / "src"
 for entry in (str(REPO), str(_RUNNER), str(_WORKER), str(_SERVER)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
+
+
+def _py(args: str) -> str:
+    """The Linux CI shell is bash. cmd.exe only exists on Windows."""
+    if os.name == "nt":
+        return f"cmd /c python {args}"
+    return f"python3 {args}"
 
 
 def _ids() -> tuple[str, str]:
@@ -160,7 +168,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                     timeout=5,
                 )
 
-        command = "cmd /c python mark.py"
+        command = _py("mark.py")
         bash_call = f"call_{uuid4().hex}"
         bash_args = {"command": command, "workdir": str(work), "timeout": 30}
         browser = gateway.browser_session("tenant-a")
@@ -206,7 +214,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                 "call_id": f"call_{uuid4().hex}",
                 "tool": "bash",
                 "args": {
-                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
+                    "command": _py("-c \"import time; time.sleep(3)\""),
                     "workdir": str(work),
                     "timeout": 1,
                 },
@@ -224,7 +232,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                 "call_id": f"call_{uuid4().hex}",
                 "tool": "bash",
                 "args": {
-                    "command": "cmd /c python -c \"import time; time.sleep(3)\"",
+                    "command": _py("-c \"import time; time.sleep(3)\""),
                     "workdir": str(work),
                     "timeout": 0,
                 },
@@ -287,7 +295,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                 "call_id": f"call_{uuid4().hex}",
                 "tool": "bash",
                 "args": {
-                    "command": "cmd /c python delay.py",
+                    "command": _py("delay.py"),
                     "workdir": str(work),
                     "timeout": 30,
                 },
@@ -322,7 +330,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                     "call_id": abandon_call,
                     "tool": "bash",
                     "args": {
-                        "command": "cmd /c python abandon.py",
+                        "command": _py("abandon.py"),
                         "workdir": str(work),
                         "timeout": 30,
                     },
@@ -391,7 +399,7 @@ def test_w4_c04_contract(tmp_path: Path) -> None:
                     "call_id": pair_calls[name],
                     "tool": "bash",
                     "args": {
-                        "command": f"cmd /c python {name}.py",
+                        "command": _py(f"{name}.py"),
                         "workdir": str(work),
                         "timeout": 30,
                     },
