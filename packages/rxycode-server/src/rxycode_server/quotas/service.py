@@ -76,6 +76,9 @@ class Limits:
     sandbox_fee: int
     window_seconds: int | None = None
     queue_max: int | None = None
+    # False on the web gate: BYOK users are not metered by us. Explicit
+    # gates used by older cloud-cost tests still pass True.
+    meter_user_quota: bool = True
 
 
 DEFAULT_LIMITS = Limits(
@@ -84,6 +87,7 @@ DEFAULT_LIMITS = Limits(
     concurrency=DEFAULT_LIMITS_CONCURRENCY,
     preview_fee=DEFAULT_LIMITS_FEE,
     sandbox_fee=DEFAULT_LIMITS_FEE,
+    meter_user_quota=False,
 )
 
 
@@ -205,9 +209,10 @@ class QuotaGate:
             return self._refuse(tenant_id, user_id, "credentials")
         if model is not None and (budget is None or budget <= 0):
             return self._refuse(tenant_id, user_id, "budget")
-        incoming = _token_count(message)
-        if incoming > self._limits.tokens:
-            return self._refuse(tenant_id, user_id, "token")
+        if self._limits.meter_user_quota:
+            incoming = _token_count(message)
+            if incoming > self._limits.tokens:
+                return self._refuse(tenant_id, user_id, "token")
         return None
 
     def reserve(
@@ -226,10 +231,11 @@ class QuotaGate:
         usage = _usage(db, tenant_id, self._limits.window_seconds, user_id)
         incoming = _token_count(message)
         limits = self._limits
-        if usage.tasks >= limits.tasks:
-            return self._refuse(tenant_id, user_id, "task")
-        if usage.tokens + incoming > limits.tokens:
-            return self._refuse(tenant_id, user_id, "token")
+        if limits.meter_user_quota:
+            if usage.tasks >= limits.tasks:
+                return self._refuse(tenant_id, user_id, "task")
+            if usage.tokens + incoming > limits.tokens:
+                return self._refuse(tenant_id, user_id, "token")
         if usage.preview_fee + 1 > limits.preview_fee:
             return self._refuse(tenant_id, user_id, "preview")
         if usage.sandbox_fee + 1 > limits.sandbox_fee:
@@ -256,7 +262,7 @@ class QuotaGate:
         return Reservation(
             tenant_id=tenant_id,
             user_id=user_id,
-            tokens=incoming,
+            tokens=incoming if limits.meter_user_quota else 0,
             worker_id=worker_id,
         )
 

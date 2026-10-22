@@ -334,6 +334,7 @@ def test_w9_b4_queue_max_is_global(postgres_url: str, monkeypatch: pytest.Monkey
 
 
 def test_w9_b4_windowed_daily_tasks(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
+    """BYOK does not apply our daily task ceiling. The user's key is the quota."""
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     monkeypatch.setenv("RXYCODE_QUOTA_TASKS_PER_DAY", "1")
     monkeypatch.setenv("RXYCODE_QUOTA_CONCURRENCY", "10")
@@ -341,9 +342,8 @@ def test_w9_b4_windowed_daily_tasks(postgres_url: str, monkeypatch: pytest.Monke
     client, _me = _client(postgres_url, "daily@example.com", app=app)
     first = _post_task(client, "today's task")
     assert first.status_code == 202
-    refused = _post_task(client, "over the daily task ceiling")
-    assert refused.status_code == 429
-    assert refused.json() == {"code": "QUOTA_EXCEEDED", "reason": "task"}
+    again = _post_task(client, "still the user's own key")
+    assert again.status_code == 202, again.text
     # a run older than the window no longer counts
     engine = create_engine(postgres_url)
     with Session(engine) as db:

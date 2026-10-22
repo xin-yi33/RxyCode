@@ -199,6 +199,7 @@ def _install_quota_gate_from_env() -> None:
         sandbox_fee=DEFAULT_LIMITS.sandbox_fee,
         window_seconds=86400,
         queue_max=int(queue) if queue else None,
+        meter_user_quota=False,
     )
     install_gate(QuotaGate(limits=limits, capacity=RunWorkers()))
 

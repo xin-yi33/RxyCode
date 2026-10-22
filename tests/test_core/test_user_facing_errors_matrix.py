@@ -145,3 +145,9 @@ def test_unknown_errors_map_to_default(raw: str):
 @pytest.mark.parametrize("raw", ["", "   ", None])
 def test_empty_input_matrix(raw):
     assert _map(raw) == ufe.MSG_DEFAULT
+
+
+def test_upstream_403_without_credits_is_the_only_quota_sentence():
+    raw = "Error code: 403 - {'error': {'code': 'insufficient_quota', 'message': 'billing hard limit'}}"
+    assert ufe.to_user_facing_error(raw) == "您没有额度了"
+    assert ufe.to_user_facing_error("Error code: 403 - invalid api key") != "您没有额度了"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 MSG_BUILD_INCOMPLETE = (
     "构建流程未完成，部分步骤未通过验证。请查看任务详情后重试。"
 )
@@ -80,6 +82,24 @@ def to_user_facing_error(raw: str) -> str:
     suffix = f"\n原因：{detail}" if detail else ""
 
     lowered = text.lower()
+
+    # BYOK: our server does not meter the user. Only an upstream 403 that
+    # says the key itself has no credits becomes this sentence.
+    if re.search(r"\b403\b", lowered) and any(
+        mark in lowered
+        for mark in (
+            "insufficient_quota",
+            "insufficient quota",
+            "quota",
+            "billing",
+            "out of credits",
+            "no quota",
+            "余额不足",
+            "额度不足",
+            "额度已用",
+        )
+    ):
+        return "您没有额度了"
 
     if "cancel" in lowered and (
         lowered == "cancelled"

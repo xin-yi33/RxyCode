@@ -36,7 +36,8 @@ const QUOTA_REASON_TEXT: Record<string, string> = {
   concurrency: "你已有任务在运行",
   queue: "排队人数已满，请稍后再试",
   task: "今日任务数已用完",
-  token: "今日额度已用完",
+  token: "您没有额度了",
+  upstream: "您没有额度了",
 }
 
 export function apiErrorText(error: unknown): string {
