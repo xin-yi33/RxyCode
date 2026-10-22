@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-22
+
+### 11:36 CST 🐧📦 Web 手机认证与主题兼容部署
+- 部署目标：VM `192.168.88.128`，公网 `https://rxycode.xyz`。以 Git 基线 `3a8526c8` 加 `AltchaWidget.tsx`、`ui.ts`、`globals.css` 三个隔离修复文件构建；不是整工作区部署。线上 `/opt/rxycode/src` 已同步这三个文件。
+- Web 镜像：旧 `rxycode-web:3a8526c`（image ID `e958976b355710a152844212ed5b00d0ef11eadcd58e06d03dccd84371311027`）；新 `rxycode-web:3a8526c-mobile-auth-theme-20261022`（image ID `1ba6c174359ed8c314756c45207a7bd04384718a86aa387d139a5450f24c342b`）。仅 gateway 使用 `--no-deps` 重建；API、Worker、DB 未更新。`/opt/rxycode/compose.prod.yaml` 解析后仅 `services.gateway.image` 不同，其余配置相同；未修改 `.env` 或密钥。
+- 新前端资源：`assets/index-BahcHKpg.js`、`assets/index-D9GookH7.css`；旧 hashed assets 保留，供已打开的旧标签页使用。最终系统 HTTP GET 两项资源均为 200，SHA-256 均与本地产物及服务器 image 一致。version 接口持续返回 `3a8526c8`，属预期，不代表前端未部署。Playwright APIRequestContext 取 asset 曾报 Node `ENOTFOUND`；浏览器页面实际加载及功能 E2E 成功，该执行器错误不作为产品缺陷，也不能据此证明服务器 DNS 异常。
+- 验证：本轮 fresh 回归 6 passed、6 skipped（环境未安装 WebKit）；typecheck/build 通过，回归测试文件保留。公网 `/login`（3.95s）、`/register`（2.07s）、`/forgot`（1.86s）均完成真实签名 challenge 验证，各自请求 `/api/v1/auth/altcha` 返回 200 JSON；使用非真实 `.invalid` 邮箱做一次无效凭据登录返回 `401 INVALID_CREDENTIALS`，非 captcha 错误，未创建账户、未发邮件。另以带合法 CSRF、空 captcha 的认证请求验证，返回 `400 CAPTCHA_INVALID`，证明认证安全门未绕过；不把缺少 CSRF 时的 `403` 作为 captcha 证据。匿名新 context 在 360/390 移动视口、浏览器 dark 偏好下，light↔dark 全局背景切换并在刷新后保持；模拟 cookie 读写 `SecurityError` 仍可切换且无 pageerror。最终截图已检查：过渡结束后输入卡片背景为白色，深浅主题正确。真实已登录设置页 Topbar 和 Settings 按钮线上操作均通过，最后恢复 light。相关功能 E2E 全部完成；所有浏览器和 QA sidecar 均已关闭。
+- 回滚备份位于 `/opt/rxycode/releases/web-mobile-auth-theme-20261022-01`（含 `compose.prod.before.yaml` 与三个源码文件的 before 备份），旧镜像保留。回滚仅恢复 compose 中 gateway 镜像及上述三个源码文件；不改 `.env` 或数据库。
+- 服务器清理：执行 `yum clean all`、`docker builder prune -af`、dangling image prune；检查容器引用后删除 18 个未引用旧 `rxycode-*` 镜像 tag，保留当前镜像和 `3a8526c` 完整回滚镜像；删除 `/tmp` 下 3 个确认无进程打开的旧传输包（1 tar、2 git bundle）、server `.pytest_cache`、本轮 staging 临时目录，并停止/删除本次 sidecar 验证容器。数据库及全部 named volumes 未动。最终 `df -B1`：available `9032462336`、used `9968783360`（报告 53%）；相较初始 432 MB 可用、98% used，约释放 8 GiB。
+- 完整性/运行状态复核：`/opt/rxycode` 的 `.env`、keyring、`Caddyfile.prod`、`compose.yaml` SHA256 前后完全相同；`.env` 与 keyring 仍为 `600 root:root`。API、3 个 Worker、Postgres、Redis、Minio、SMTP 的容器 ID 与 `StartedAt` 均未变化，只有 gateway 更换容器 ID，当前 healthy。服务器上 3 个修复源码文件与本地逐字节一致。
+- 未完成的本机清理：Windows 批量 Temp/`.pytest_cache` 删除被执行策略拦截，未执行且未绕过；本轮 fresh 回归测试文件须保留，不作为垃圾清理。`D:\agent-demo\rxycode-web-hotfix-20261022-01` 的递归删除亦被执行策略拒绝，目录仍保留；未绕过限制。目录内 `node_modules` 是指向项目依赖的 junction，不是复制目录，勿误删实际依赖。真机 Vivo/iOS 与厂商强制夜间模式未测，不作已验证承诺；建议用户用真机重新打开网址检查。现有 CSS 提示不保证覆盖厂商强制绘制变换。
+
 ## 2026-10-21
 
 ### ~13:25 🐧 Gmail SMTP 打通：MAIL 专用组 + smtp-relay 重指 mihomo

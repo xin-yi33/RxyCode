@@ -2,6 +2,7 @@
 
 /* W9-F3: neutral console palette (replaces the warm beige theme). */
 :root {
+  color-scheme: light;
   --rxy-bg: #ffffff;
   --rxy-sidebar: #f9f9f9;
   --rxy-fg: #0d0d0d;
@@ -22,6 +23,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --rxy-bg: #212121;
   --rxy-sidebar: #171717;
   --rxy-fg: #ececec;

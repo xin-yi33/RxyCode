@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psutil
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -94,9 +95,7 @@ def _run_child(script: str, env: dict[str, str], prefix: str, timeout: float = 1
         check=False,
     )
     assert proc.returncode == 0, proc.stdout[-3000:]
-    line = next(
-        item for item in proc.stdout.splitlines() if item.startswith(prefix)
-    )
+    line = next(item for item in proc.stdout.splitlines() if item.startswith(prefix))
     return json.loads(line.removeprefix(prefix))
 
 
@@ -202,9 +201,7 @@ def _seed(postgres_url: str, tag: str) -> tuple[str, str]:
     with Session(engine) as db:
         db.add(User(id=f"user-{tag}", github_id=f"gh-{tag}", kind="github"))
         db.add(Organization(id=f"org-{tag}", tenant_id=tenant))
-        db.add(
-            Project(id=f"project-{tag}", tenant_id=tenant, name="app", repo_config={})
-        )
+        db.add(Project(id=f"project-{tag}", tenant_id=tenant, name="app", repo_config={}))
         db.add(
             SessionRow(
                 id=session_id,
@@ -248,6 +245,8 @@ def test_w7_c02_contract(postgres_url: str, tmp_path: Path):
     journal_dir = tmp_path / "journal-contract"
     command = (
         "Add-Content -LiteralPath 'c02-approve.txt' -Value 'once' -Encoding utf8"
+        if os.name == "nt"
+        else "printf 'once' >> c02-approve.txt"
     )
     target = workdir / "c02-approve.txt"
     base_env = {
@@ -338,6 +337,8 @@ def test_w7_c02_negative(postgres_url: str, tmp_path: Path):
     command = (
         "Add-Content -LiteralPath 'c02-side.txt' -Value 'once' -Encoding utf8; "
         f"Start-Sleep -Seconds 30  # {marker}"
+        if os.name == "nt"
+        else f"printf 'once' >> c02-side.txt; sleep 30  # {marker}"
     )
     target = workdir / "c02-side.txt"
     call_id = "call_" + uuid.uuid4().hex
@@ -355,16 +356,12 @@ def test_w7_c02_negative(postgres_url: str, tmp_path: Path):
     }
     leaked: list[dict] = []
     try:
-        proc = _spawn(
-            _SHELL_WORKER, _child_env({**base_env, "C02_WORKER": "w-c02-n"})
-        )
+        proc = _spawn(_SHELL_WORKER, _child_env({**base_env, "C02_WORKER": "w-c02-n"}))
         deadline = time.time() + 60
         while time.time() < deadline and not target.exists():
             if proc.poll() is not None:
                 out = proc.stdout.read() if proc.stdout is not None else ""
-                raise AssertionError(
-                    f"worker exited before the side effect:\n{out[-3000:]}"
-                )
+                raise AssertionError(f"worker exited before the side effect:\n{out[-3000:]}")
             time.sleep(0.2)
         assert target.exists()
         proc.kill()
@@ -493,6 +490,10 @@ time.sleep(120)
 """
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Windows Job Object reaping semantics; POSIX has no CREATE_SUSPENDED/Start-Process equivalent",
+)
 def test_w7_c02_background_survives_command_reaped_on_crash(tmp_path: Path):
     """A detached background process outlives the command but not the worker.
 
@@ -520,9 +521,7 @@ def test_w7_c02_background_survives_command_reaped_on_crash(tmp_path: Path):
             ("shell_executor", _BG_SHELL_WORKER),
             ("native_backend", _BG_NATIVE_WORKER),
         ):
-            env = _child_env(
-                {"C02_COMMAND": command, "C02_WORKDIR": str(workdir)}
-            )
+            env = _child_env({"C02_COMMAND": command, "C02_WORKDIR": str(workdir)})
             proc = _spawn(script, env)
             try:
                 done = _read_stdout(proc, "BGDONE ", 90).removeprefix("BGDONE ")
@@ -532,9 +531,7 @@ def test_w7_c02_background_survives_command_reaped_on_crash(tmp_path: Path):
                 # The command already returned; the detached child must
                 # still be alive while the worker is alive.
                 deadline = time.time() + 10
-                while time.time() < deadline and not _marker_procs(
-                    marker, ignore_pid=proc.pid
-                ):
+                while time.time() < deadline and not _marker_procs(marker, ignore_pid=proc.pid):
                     time.sleep(0.2)
                 time.sleep(2)
                 live = _marker_procs(marker, ignore_pid=proc.pid)
@@ -553,10 +550,7 @@ def test_w7_c02_background_survives_command_reaped_on_crash(tmp_path: Path):
                     break
                 time.sleep(0.5)
             leaked = _marker_procs(marker, ignore_pid=proc.pid)
-            assert not leaked, (
-                f"{name}: background process survived the worker kill: "
-                f"{leaked}"
-            )
+            assert not leaked, f"{name}: background process survived the worker kill: {leaked}"
     finally:
         for info in _marker_procs(marker):
             try:
@@ -588,6 +582,10 @@ time.sleep(120)
 """
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="CREATE_SUSPENDED is a Windows-only spawn flag; the reaping-job kill window it exercises does not exist on POSIX",
+)
 def test_w7_c02_suspended_newborn_reaped_on_crash(tmp_path: Path):
     """A still-suspended, never-bound child must not outlive the worker.
 
@@ -618,9 +616,7 @@ def test_w7_c02_suspended_newborn_reaped_on_crash(tmp_path: Path):
                 break
             time.sleep(0.5)
         leaked = _marker_procs(marker, ignore_pid=proc.pid)
-        assert not leaked, (
-            f"suspended, never-bound child survived the worker kill: {leaked}"
-        )
+        assert not leaked, f"suspended, never-bound child survived the worker kill: {leaked}"
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -671,9 +667,7 @@ def test_w7_c02_reaping_handle_published_last(monkeypatch):
 
     outcome_a: dict[str, int] = {}
     thread_a = threading.Thread(
-        target=lambda: outcome_a.setdefault(
-            "handle", manager.reaping_job_handle()
-        ),
+        target=lambda: outcome_a.setdefault("handle", manager.reaping_job_handle()),
         daemon=True,
     )
     observations: list[tuple[int, bool]] = []
@@ -685,9 +679,7 @@ def test_w7_c02_reaping_handle_published_last(monkeypatch):
     thread_b = threading.Thread(target=probe, daemon=True)
     try:
         thread_a.start()
-        assert assign_entered.wait(timeout=15), (
-            "thread A never entered self-assignment"
-        )
+        assert assign_entered.wait(timeout=15), "thread A never entered self-assignment"
         thread_b.start()
         # Keep A parked a full second: on the raced ordering B returns
         # instantly with the half-published state; with publish-last it

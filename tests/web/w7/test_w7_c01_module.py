@@ -55,6 +55,10 @@ def _extract_command(page_text: str) -> str:
     return match.group(0)
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="PowerShell write-verb battery: on POSIX the gate hands unknown verbs to bash, so Windows cmdlets are unexecutable by construction",
+)
 def test_w7_c01_integration() -> None:
     """Injected content reaches the shell gate and is refused even under full."""
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
@@ -180,7 +184,7 @@ def test_w7_c01_integration() -> None:
         "rm {}",
         "arr=(/etc/x); rm ${arr[0]}",
         "echo x > ${x:-/tmp/rxy_w7c01_pwned.txt}",
-        'X=$\'\\x2fetc\\x2frxy_w7c01_pwned.txt\'; echo x > $X',
+        "X=$'\\x2fetc\\x2frxy_w7c01_pwned.txt'; echo x > $X",
         # Tracked assignments win over builtins/env; quoted text is not an
         # assignment; empty tracked values do not fall back to the env.
         '$PWD = "C:\\Windows"; Set-Content "$PWD\\rxy_w7c01_pwned.txt" x',
@@ -195,9 +199,9 @@ def test_w7_c01_integration() -> None:
         f'copy inside.txt "{PAYLOAD_FILE}"',
         f'xcopy inside.txt "{PAYLOAD_FILE}"',
         'robocopy . "C:\\Windows\\Temp" rxy_w7c01_pwned.txt',
-        'powershell -NoProfile -Command "[IO.File]::WriteAllText(\'C:\\\\Windows\\\\Temp\\\\rxy_w7c01_pwned.txt\',\'x\')"',
+        "powershell -NoProfile -Command \"[IO.File]::WriteAllText('C:\\\\Windows\\\\Temp\\\\rxy_w7c01_pwned.txt','x')\"",
         "Write-Output TEMP=inside.txt; Set-Content $env:TEMP\\rxy_w7c01_pwned.txt x",
-        'echo OUT=inside.txt; echo x > $OUT\\..\\..\\..\\rxy_w7c01_pwned.txt',
+        "echo OUT=inside.txt; echo x > $OUT\\..\\..\\..\\rxy_w7c01_pwned.txt",
         # Redirects past cond-verbs, program-literal redirects, bare drive
         # roots, and %VAR% bindings from ``set`` all stay outside.
         "curl http://a > /etc/rxy_w7c01_pwned.txt",
@@ -205,7 +209,7 @@ def test_w7_c01_integration() -> None:
         "wget http://a > /etc/rxy_w7c01_pwned.txt",
         "openssl enc -in a > /etc/rxy_w7c01_pwned.txt",
         "sed 'p' f > /etc/rxy_w7c01_pwned.txt",
-        'awk \'{print > "/etc/rxy_w7c01_pwned.txt"}\' f',
+        "awk '{print > \"/etc/rxy_w7c01_pwned.txt\"}' f",
         "sort -o /etc/rxy_w7c01_pwned.txt f",
         "gpg -o /etc/rxy_w7c01_pwned.txt f",
         "openssl enc -out /etc/rxy_w7c01_pwned.txt",
@@ -242,8 +246,8 @@ def test_w7_c01_integration() -> None:
         # Interpreter write targets from runtime state are unverifiable.
         "python -c \"import os; open(os.environ['TEMP'],'w').write('x')\"",
         "python -c \"open(__import__('sys').argv[1],'w')\"",
-        'node -e "fs.writeFileSync(process.env.T,\'x\')"',
-        'python -c "import tempfile; open(tempfile.mktemp(),\'w\')"',
+        "node -e \"fs.writeFileSync(process.env.T,'x')\"",
+        "python -c \"import tempfile; open(tempfile.mktemp(),'w')\"",
         # A bare ``X=v`` never binds ``$env:X`` (audit round 12: it is not
         # an env assignment in any dialect) and is dialect-ambiguous for
         # ``$X`` — under the other shell ``$X`` stays empty and the path
@@ -292,11 +296,11 @@ def test_w7_c01_integration() -> None:
         # Navigation alone is read-only — append a write so the
         # escape-joined ``cd`` still exercises the outside-dir refusal.
         "c\\d /etc; Set-Content x.txt y",
-        f'Set-Co\'n\'tent "{PAYLOAD_FILE}" pwned',
+        f"Set-Co'n'tent \"{PAYLOAD_FILE}\" pwned",
         # $'...'/$"..."/backticks/$(...) evaluate at runtime — at command
         # position the executed verb is unverifiable (fail closed).
         "$'\\x72\\x6d' /etc/rxy_w7c01_pwned.txt",
-        "$\"rm\" /etc/rxy_w7c01_pwned.txt",
+        '$"rm" /etc/rxy_w7c01_pwned.txt',
         "`cat f` /etc/rxy_w7c01_pwned.txt",
         "$(cat f) /etc/rxy_w7c01_pwned.txt",
         "X=1 $'rm' /etc/rxy_w7c01_pwned.txt",
@@ -309,9 +313,7 @@ def test_w7_c01_integration() -> None:
                 config,
             )
         )
-        assert "blocked" in blocked or "rejected" in blocked or "not allowed" in blocked, (
-            blocked
-        )
+        assert "blocked" in blocked or "rejected" in blocked or "not allowed" in blocked, blocked
         assert not PAYLOAD_FILE.exists(), variant
 
     # Env-var expansion that resolves *inside* the workspace then escapes
@@ -368,7 +370,7 @@ def test_w7_c01_integration() -> None:
         "curl http://a",
         "curl -o ok.html http://a",
         "sort f > ok.txt",
-        'awk \'{print > "ok.txt"}\' f',
+        "awk '{print > \"ok.txt\"}' f",
         "gpg -d f",
         "openssl version",
         "iwr http://a",
@@ -387,10 +389,10 @@ def test_w7_c01_integration() -> None:
         # ``as f:`` is a binding colon, not an ``f:\\`` drive root;
         # literal receiver/producer chains inside the workspace stay
         # allowed (audit round 16).
-        'python -c "with open(\'ok\',\'w\') as f: f.write(\'x\')"',
-        'python -c "from pathlib import Path; Path(\'ok\').with_name(\'ok2\').write_text(\'x\')"',
-        'python -c "from pathlib import Path; (Path(\'ok\')/\'x\').unlink()"',
-        'python -c "exec(\'print(1)\')"',
+        "python -c \"with open('ok','w') as f: f.write('x')\"",
+        "python -c \"from pathlib import Path; Path('ok').with_name('ok2').write_text('x')\"",
+        "python -c \"from pathlib import Path; (Path('ok')/'x').unlink()\"",
+        "python -c \"exec('print(1)')\"",
         # Command-position gate (round 20): ``ar``/``rar``/``start`` as
         # arguments or in read modes stay allowed, as do literal
         # invocations and dot-sourcing a literal script.
@@ -437,9 +439,7 @@ def test_w7_c01_integration() -> None:
         "Restart-Service foo",
         "smartctl -a x",
     ):
-        assert not find_bash_disallowed_write_paths(
-            safe_word, config, workdir=str(REPO)
-        ), safe_word
+        assert not find_bash_disallowed_write_paths(safe_word, config, workdir=str(REPO)), safe_word
     # Relative targets resolve against the requested workdir: '..\\x' from
     # the workspace stays inside (allowed here only because tests\\web is a
     # permitted root), but from D:\\ the same command escapes every root.
@@ -466,15 +466,15 @@ def test_w7_c01_integration() -> None:
     # ``f'...{...}'`` must trip the dynamic-source check.
     for post18 in (
         "Set-Content -Path :C:\\rxy_w7c01_out.txt x",
-        'python -c "import os;os.system(f\'-o{os.environ[chr(84)]}\')"',
-        'python -c "import os;os.system(f\'x{os.environ}\')"',
-        "python -c \"import os;os.system(f'-o{os.environ[\\\"T\\\"]}')\"",
+        "python -c \"import os;os.system(f'-o{os.environ[chr(84)]}')\"",
+        "python -c \"import os;os.system(f'x{os.environ}')\"",
+        'python -c "import os;os.system(f\'-o{os.environ[\\"T\\"]}\')"',
         # Bare-name receiver methods — ``p.open('w')`` targets the path
         # bound to ``p``; dest-taking methods check their first arg too.
         "python -c \"from pathlib import Path;import os;p=Path(os.environ['T']);p.open('w')\"",
         "python -c \"import os;p='ok.txt';p2=os.environ['T'];p.rename(p2)\"",
         # f-string interpolation bound to a name then used as a target.
-        'python -c "import os;x=f\'{os.environ[chr(84)]}\';open(x,\'w\')"',
+        "python -c \"import os;x=f'{os.environ[chr(84)]}';open(x,'w')\"",
     ):
         assert find_bash_disallowed_write_paths(post18, config, workdir="D:\\"), post18
     # Audit round 19/20: ``& $var`` hides the invoked program from the
@@ -507,7 +507,7 @@ def test_w7_c01_integration() -> None:
     # Audit round 20: a non-literal command slot fails closed instead of
     # being resolved — ``<opaque:…>`` markers name the hidden construct.
     for opaque in (
-        "$cmd='cmd.exe'; & \"$cmd\" /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
+        '$cmd=\'cmd.exe\'; & "$cmd" /c "echo x > C:\\Windows\\Temp\\w7.txt"',
         "$cmd='cmd.exe'; & ($cmd) /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
         "$cmd=@('cmd.exe'); & $cmd[0] /c \"echo x > C:\\Windows\\Temp\\w7.txt\"",
         "$x='echo x > C:\\Windows\\Temp\\w7.txt'; cmd /c $x",
@@ -555,8 +555,7 @@ def test_w7_c01_integration() -> None:
     for lit_target in (
         "Start-Process -FilePath cmd.exe -ArgumentList "
         "'/c echo x > C:\\Windows\\Temp\\w7.txt' -Wait",
-        "Start-Process cmd.exe -ArgumentList "
-        "'/c','echo x > C:\\Windows\\Temp\\w7.txt'",
+        "Start-Process cmd.exe -ArgumentList '/c','echo x > C:\\Windows\\Temp\\w7.txt'",
         "rar a C:\\Windows\\Temp\\w7.rar README.md",
         "ar rcs C:\\Windows\\Temp\\w7.a obj.o",
         '& "C:\\Program Files\\WinRAR\\rar.exe" a C:\\Windows\\Temp\\w7.rar f',
@@ -568,9 +567,7 @@ def test_w7_c01_integration() -> None:
         "sudo rar a C:\\Windows\\Temp\\w7.rar f",
         "tar cf C:\\Windows\\Temp\\w7.tar a",
     ):
-        assert find_bash_disallowed_write_paths(
-            lit_target, config, workdir="D:\\"
-        ), lit_target
+        assert find_bash_disallowed_write_paths(lit_target, config, workdir="D:\\"), lit_target
     # Audit round 21: shell-keyword/CMD-grammar command slots hide the
     # executed program — ``if``/``do``/``!`` slots fail closed.
     for dyn_slot in (
@@ -581,21 +578,16 @@ def test_w7_c01_integration() -> None:
         "! $x /c y",
         "if exist a (%X% C:\\Windows\\Temp\\v.txt)",
     ):
-        hits = find_bash_disallowed_write_paths(
-            dyn_slot, config, workdir=str(REPO)
-        )
+        hits = find_bash_disallowed_write_paths(dyn_slot, config, workdir=str(REPO))
         assert "<opaque:variable-command>" in hits, (dyn_slot, hits)
     # Path-qualified and quoted programs still reach verb detection, and
     # a read-mode handler branch may not swallow a redirect that follows
     # it — ``tar -tf a > out`` writes ``out``.
     for qualified in (
-        "& 'C:/Windows/System32/curl.exe' -o C:\\Windows\\Temp\\bad.txt "
-        "https://example.com",
-        "& 'C:/Windows/System32/cmd.exe' /d /c '%X% "
-        "C:\\Windows\\Temp\\victim.txt'",
+        "& 'C:/Windows/System32/curl.exe' -o C:\\Windows\\Temp\\bad.txt https://example.com",
+        "& 'C:/Windows/System32/cmd.exe' /d /c '%X% C:\\Windows\\Temp\\victim.txt'",
         "C:/tools/rar.exe a C:\\Windows\\Temp\\w7.rar f",
-        '"C:/Program Files/Git/usr/bin/tar.exe" -cf '
-        "C:\\Windows\\Temp\\w7.tar a",
+        '"C:/Program Files/Git/usr/bin/tar.exe" -cf C:\\Windows\\Temp\\w7.tar a',
         "/usr/bin/rm -rf /etc/x",
         "tar -tf archive.tar > C:\\Windows\\Temp\\listing.txt",
         "tar -xOf archive.tar member > C:\\Windows\\Temp\\member.txt",
@@ -608,9 +600,7 @@ def test_w7_c01_integration() -> None:
         "Start-BitsTransfer -Source http://a -Destination C:\\Windows\\x",
         "Start-Job { rm C:\\Windows\\x }",
     ):
-        assert find_bash_disallowed_write_paths(
-            qualified, config, workdir=str(REPO)
-        ), qualified
+        assert find_bash_disallowed_write_paths(qualified, config, workdir=str(REPO)), qualified
     # Mutating invocations from an outside workdir still refuse — the
     # start directory itself is the marker.
     for mut_out in (
@@ -618,9 +608,7 @@ def test_w7_c01_integration() -> None:
         "cargo build",
         "Start-Process cmd.exe -ArgumentList '/c echo x > ok.txt'",
     ):
-        hits = find_bash_disallowed_write_paths(
-            mut_out, config, workdir="C:\\Windows\\Temp"
-        )
+        hits = find_bash_disallowed_write_paths(mut_out, config, workdir="C:\\Windows\\Temp")
         assert hits, mut_out
         assert any("C:\\Windows\\Temp" in h for h in hits), (mut_out, hits)
     # Control-flow keywords and path-shaped data stay allowed inside the
@@ -641,9 +629,7 @@ def test_w7_c01_integration() -> None:
         "cmd /c dir 2>&1",
         "tar -tf ok.tar 2>NUL",
     ):
-        assert not find_bash_disallowed_write_paths(
-            ok_cmd, config, workdir=workdir
-        ), ok_cmd
+        assert not find_bash_disallowed_write_paths(ok_cmd, config, workdir=workdir), ok_cmd
     # Read-mode invocations mutate nothing — they stay allowed even when
     # the start directory sits outside the whitelist.
     for ro_out in (
@@ -657,9 +643,9 @@ def test_w7_c01_integration() -> None:
         "dir",
         "echo hi",
     ):
-        assert not find_bash_disallowed_write_paths(
-            ro_out, config, workdir="C:\\Windows\\Temp"
-        ), ro_out
+        assert not find_bash_disallowed_write_paths(ro_out, config, workdir="C:\\Windows\\Temp"), (
+            ro_out
+        )
     # ``-xOf``/``--to-stdout`` stream the archive to stdout — the operand
     # is a read, abbreviated or not. The workdir is the whitelisted
     # fixture dir: an outside workdir now refuses every mutating opener.
@@ -689,9 +675,7 @@ def test_w7_c01_integration() -> None:
         "7z x a.zip",
         "git clone https://x/y",
     ):
-        hits = find_bash_disallowed_write_paths(
-            outside, config, workdir="C:\\Windows"
-        )
+        hits = find_bash_disallowed_write_paths(outside, config, workdir="C:\\Windows")
         assert hits, outside
         assert any("C:\\Windows" in h for h in hits), (outside, hits)
     # A trailing ``cd`` into the workspace does not launder the write —
@@ -700,21 +684,17 @@ def test_w7_c01_integration() -> None:
         "echo x > a.txt; cd " + str(REPO),
         "tar -xf a.tar; cd " + str(REPO),
     ):
-        hits = find_bash_disallowed_write_paths(
-            started_outside, config, workdir="C:\\Windows"
-        )
+        hits = find_bash_disallowed_write_paths(started_outside, config, workdir="C:\\Windows")
         assert hits, started_outside
         assert any("C:\\Windows" in h for h in hits), (started_outside, hits)
     # Read-only commands produce no mutating opener — still allowed.
     for readonly in ("dir", "echo hi"):
-        assert not find_bash_disallowed_write_paths(
-            readonly, config, workdir="C:\\Windows"
-        ), readonly
+        assert not find_bash_disallowed_write_paths(readonly, config, workdir="C:\\Windows"), (
+            readonly
+        )
     # The same relative writes from inside the workspace stay allowed.
     for rel_ok in ("echo x > ok.txt", "Set-Content sub\\ok.txt x"):
-        assert not find_bash_disallowed_write_paths(
-            rel_ok, config, workdir=workdir
-        ), rel_ok
+        assert not find_bash_disallowed_write_paths(rel_ok, config, workdir=workdir), rel_ok
 
     # Audit round 22
     # ``>|`` noclobber overrides and ``>&FILE``/``>>&FILE`` stdout+stderr
@@ -728,15 +708,11 @@ def test_w7_c01_integration() -> None:
         "printf x >& C:/Windows/Temp/a.txt",
         "ls >&/c/Windows/Temp/a.txt",
     ):
-        assert find_bash_disallowed_write_paths(
-            redir_op, config, workdir=workdir
-        ), redir_op
+        assert find_bash_disallowed_write_paths(redir_op, config, workdir=workdir), redir_op
     # ``2>&1``/``>&2`` duplicate a descriptor — not file targets — and a
     # plain ``|`` pipe is unaffected by the ``>|`` rewrite.
     for fd_dup in ("cmd /c dir 2>&1", "echo x >&2", "echo a | sort > ok.txt"):
-        assert not find_bash_disallowed_write_paths(
-            fd_dup, config, workdir=workdir
-        ), fd_dup
+        assert not find_bash_disallowed_write_paths(fd_dup, config, workdir=workdir), fd_dup
     assert find_bash_disallowed_write_paths(
         "echo a | Set-Content C:\\Windows\\x", config, workdir=workdir
     )
@@ -746,16 +722,12 @@ def test_w7_c01_integration() -> None:
         "tar -cf C:\\Windows\\Temp\\audit.tar --to-stdout --files-from=/dev/null",
         "tar -cOf C:\\Windows\\Temp\\a.tar x",
     ):
-        assert find_bash_disallowed_write_paths(
-            tar_o_write, config, workdir=workdir
-        ), tar_o_write
+        assert find_bash_disallowed_write_paths(tar_o_write, config, workdir=workdir), tar_o_write
     for tar_o_read in (
         "tar -xOf C:\\Windows\\Temp\\in.tar m",
         "tar --to-stdout -xf ok.tar",
     ):
-        assert not find_bash_disallowed_write_paths(
-            tar_o_read, config, workdir=workdir
-        ), tar_o_read
+        assert not find_bash_disallowed_write_paths(tar_o_read, config, workdir=workdir), tar_o_read
     # Carrier payloads: plain words are not script paths and the carrier
     # is only as mutating as its payload — read-only payloads stay
     # allowed even from an outside workdir.
@@ -774,21 +746,17 @@ def test_w7_c01_integration() -> None:
         "powershell -File x.ps1",
         "Start-Process cmd.exe -ArgumentList '/c echo x > ok.txt'",
     ):
-        assert find_bash_disallowed_write_paths(
-            carrier_mut, config, workdir="C:\\Windows\\Temp"
-        ), carrier_mut
+        assert find_bash_disallowed_write_paths(carrier_mut, config, workdir="C:\\Windows\\Temp"), (
+            carrier_mut
+        )
     # Start-Process arguments follow PowerShell quoting: single-quoted is
     # always literal, ``$``/backtick make double quotes dynamic, and
     # unquoted ``$``/``(``/``)``/backtick evaluate.
-    for stp_lit in (
-        "Start-Process python.exe -ArgumentList '-c print(1)'",
-    ):
-        assert not find_bash_disallowed_write_paths(
-            stp_lit, config, workdir=workdir
-        ), stp_lit
-        assert not find_bash_disallowed_write_paths(
-            stp_lit, config, workdir="C:\\Windows\\Temp"
-        ), stp_lit
+    for stp_lit in ("Start-Process python.exe -ArgumentList '-c print(1)'",):
+        assert not find_bash_disallowed_write_paths(stp_lit, config, workdir=workdir), stp_lit
+        assert not find_bash_disallowed_write_paths(stp_lit, config, workdir="C:\\Windows\\Temp"), (
+            stp_lit
+        )
     for stp_dyn in (
         "$x='cmd.exe'; Start-Process -FilePath $x "
         "-ArgumentList '/c echo x > C:\\Windows\\Temp\\w7.txt' -Wait",
@@ -796,9 +764,7 @@ def test_w7_c01_integration() -> None:
         "Start-Process (Get-Item x) -Wait",
         "Start-Process cmd -ArgumentList '/c %X% C:\\Windows\\Temp\\v.txt'",
     ):
-        assert find_bash_disallowed_write_paths(
-            stp_dyn, config, workdir=workdir
-        ), stp_dyn
+        assert find_bash_disallowed_write_paths(stp_dyn, config, workdir=workdir), stp_dyn
     # Navigation is not a write: resolvable cd/pushd/popd targets only
     # move the tracked directory; a write outside the whitelist is
     # refused per event, wherever it actually ran.
@@ -815,9 +781,9 @@ def test_w7_c01_integration() -> None:
         "cd C:\\Windows\\Temp; echo hi",
         "pushd C:\\Windows; dir; popd",
     ):
-        assert not find_bash_disallowed_write_paths(
-            nav_read_in, config, workdir=workdir
-        ), nav_read_in
+        assert not find_bash_disallowed_write_paths(nav_read_in, config, workdir=workdir), (
+            nav_read_in
+        )
     for nav_write in (
         "cd C:\\Windows; Set-Content x.txt y",
         "cd C:\\Windows\\Temp; Set-Content rxy_w7c01_pwned.txt pwned",
@@ -826,9 +792,7 @@ def test_w7_c01_integration() -> None:
         "pushd C:\\Windows; echo x > a.txt; popd",
         "CDPATH=/; cd tmp; echo x > rxy_w7c01_pwned.txt",
     ):
-        assert find_bash_disallowed_write_paths(
-            nav_write, config, workdir=workdir
-        ), nav_write
+        assert find_bash_disallowed_write_paths(nav_write, config, workdir=workdir), nav_write
     hits = find_bash_disallowed_write_paths(
         "echo x > a.txt; cd " + str(REPO), config, workdir="C:\\Windows\\Temp"
     )
@@ -845,9 +809,7 @@ def test_w7_c01_integration() -> None:
         "Set-Content " + workdir + "\\sub\\x.txt y",
         "cp .\\a.txt " + workdir + "\\b.txt",
     ):
-        assert not find_bash_disallowed_write_paths(
-            abs_ok, config, workdir=workdir
-        ), abs_ok
+        assert not find_bash_disallowed_write_paths(abs_ok, config, workdir=workdir), abs_ok
     # Even from an outside workdir, navigation into the whitelist makes
     # the following write legal.
     assert not find_bash_disallowed_write_paths(
@@ -866,9 +828,7 @@ def test_w7_c01_integration() -> None:
         "Set-Content -Path:C:\\Windows\\Temp\\x.txt x",
         "dd if=a of=C:\\Windows\\Temp\\x.bin",
     ):
-        assert find_bash_disallowed_write_paths(
-            abs_bad, config, workdir=workdir
-        ), abs_bad
+        assert find_bash_disallowed_write_paths(abs_bad, config, workdir=workdir), abs_bad
 
     # Audit round 24
     # ``Start-Process -WorkingDirectory`` (and cmd ``start /d``) relocate
@@ -888,20 +848,15 @@ def test_w7_c01_integration() -> None:
         + "\" -ArgumentList '/c echo x > ok.txt'",
         'start /d "' + workdir + '" cmd /c "echo x > ok.txt"',
     ):
-        assert not find_bash_disallowed_write_paths(
-            child_ok, config, workdir=workdir
-        ), child_ok
+        assert not find_bash_disallowed_write_paths(child_ok, config, workdir=workdir), child_ok
     for child_bad in (
         "Start-Process -FilePath cmd.exe -WorkingDirectory "
         "C:\\Windows\\Temp -ArgumentList '/c echo x > child.txt'",
         "Start-Process -RedirectStandardOutput C:\\Windows\\Temp\\w7.log"
         " -FilePath cmd.exe -ArgumentList '/c echo hi' -Wait",
-        "Start-Process -FilePath notepad.exe -RedirectStandardError"
-        " C:\\Windows\\Temp\\e.log",
+        "Start-Process -FilePath notepad.exe -RedirectStandardError C:\\Windows\\Temp\\e.log",
     ):
-        assert find_bash_disallowed_write_paths(
-            child_bad, config, workdir=workdir
-        ), child_bad
+        assert find_bash_disallowed_write_paths(child_bad, config, workdir=workdir), child_bad
     assert "<opaque:start-process>" in find_bash_disallowed_write_paths(
         "Start-Process -WorkingDirectory $d -FilePath cmd.exe",
         config,
@@ -909,8 +864,7 @@ def test_w7_c01_integration() -> None:
     )
     # ``-RedirectStandardInput`` only reads the file.
     assert not find_bash_disallowed_write_paths(
-        "Start-Process notepad.exe -RedirectStandardInput"
-        " C:\\Windows\\Temp\\in.txt",
+        "Start-Process notepad.exe -RedirectStandardInput C:\\Windows\\Temp\\in.txt",
         config,
         workdir=workdir,
     )
@@ -922,16 +876,14 @@ def test_w7_c01_integration() -> None:
     # an allowed parent-side redirect must not be refused just because
     # the child dir is outside the whitelist.
     for sp_ok in (
-        'Start-Process -FilePath cmd.exe -WorkingDirectory '
+        "Start-Process -FilePath cmd.exe -WorkingDirectory "
         'C:\\Windows\\Temp -RedirectStandardOutput "'
         + workdir
         + "\\ok.log\" -ArgumentList '/c dir'",
         "Start-Process -FilePath cmd.exe -WorkingDirectory "
         "C:\\Windows\\Temp -ArgumentList '/c dir'",
     ):
-        assert not find_bash_disallowed_write_paths(
-            sp_ok, config, workdir=workdir
-        ), sp_ok
+        assert not find_bash_disallowed_write_paths(sp_ok, config, workdir=workdir), sp_ok
     assert "C:\\Windows\\Temp" in find_bash_disallowed_write_paths(
         "Start-Process -FilePath cmd.exe -WorkingDirectory "
         "C:\\Windows\\Temp -ArgumentList '/c echo x > child.txt'",
@@ -952,13 +904,10 @@ def test_w7_c01_integration() -> None:
     for hd_ok in (
         "bash -c 'cat <<EOF\n# echo hi > /etc/x\nEOF'",
         "cat <<EOF\necho hi > /etc/x\nEOF",
-        "python - <<'PY'\n# echo hi > /etc/not-really-written\n"
-        "print('ok')\nPY",
+        "python - <<'PY'\n# echo hi > /etc/not-really-written\nprint('ok')\nPY",
         "grep x <<-EOF\n\trm -rf /etc\n\tEOF",
     ):
-        assert not find_bash_disallowed_write_paths(
-            hd_ok, config, workdir=workdir
-        ), hd_ok
+        assert not find_bash_disallowed_write_paths(hd_ok, config, workdir=workdir), hd_ok
     for hd_bad in (
         "bash <<EOF\necho x > /etc/x\nEOF",
         "sh <<'EOF'\nrm -rf C:/Windows/x\nEOF",
@@ -967,15 +916,12 @@ def test_w7_c01_integration() -> None:
         "xargs rm <<EOF\nx\nEOF",
         "cat <<EOF | sh\necho x > /etc/x\nEOF",
     ):
-        assert find_bash_disallowed_write_paths(
-            hd_bad, config, workdir=workdir
-        ), hd_bad
+        assert find_bash_disallowed_write_paths(hd_bad, config, workdir=workdir), hd_bad
     # A dynamic child dir for ``start /d``/``-WorkingDirectory``/
     # ``-wd`` (``%VAR%``, ``!VAR!``, ``$``, backtick, unquoted ``(``)
     # fails closed.
     assert "<opaque:start-process>" in find_bash_disallowed_write_paths(
-        'cmd /v:on /c "set W7_WD=C:\\Windows\\Temp & '
-        'start /d !W7_WD! cmd /c echo x > child.txt"',
+        'cmd /v:on /c "set W7_WD=C:\\Windows\\Temp & start /d !W7_WD! cmd /c echo x > child.txt"',
         config,
         workdir=workdir,
     )
@@ -995,9 +941,7 @@ def test_w7_c01_integration() -> None:
         "nice -n 5 grep x <<EOF\nrm -rf /etc\nEOF",
         "env FOO=1 sort <<EOF\nb\na\nEOF",
     ):
-        assert not find_bash_disallowed_write_paths(
-            wrap_ok, config, workdir=workdir
-        ), wrap_ok
+        assert not find_bash_disallowed_write_paths(wrap_ok, config, workdir=workdir), wrap_ok
     for wrap_bad in (
         "env bash <<EOF\necho x > /etc/x\nEOF",
         "timeout 5 sh <<EOF\nrm -rf C:/Windows/x\nEOF",
@@ -1006,38 +950,28 @@ def test_w7_c01_integration() -> None:
         "env xargs rm <<EOF\nx\nEOF",
         "env <<EOF\nrm -rf /etc\nEOF",
     ):
-        assert find_bash_disallowed_write_paths(
-            wrap_bad, config, workdir=workdir
-        ), wrap_bad
+        assert find_bash_disallowed_write_paths(wrap_bad, config, workdir=workdir), wrap_bad
 
     # Audit round 27
     # Wrapper-led heredocs classify by ALL tokens up to ``<<`` — an
     # unknown wrapper option can neither masquerade as the owner nor
     # swallow the real command.
     for w27_bad in (
-        "env -C "
-        + workdir
-        + " bash <<EOF\necho x > C:/Windows/Temp/w7-audit.txt\nEOF",
-        "timeout -k 1 5 bash <<EOF\n"
-        "echo x > C:/Windows/Temp/w7-audit.txt\nEOF",
-        "timeout -s TERM 5 bash <<EOF\n"
-        "echo x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "env -C " + workdir + " bash <<EOF\necho x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "timeout -k 1 5 bash <<EOF\necho x > C:/Windows/Temp/w7-audit.txt\nEOF",
+        "timeout -s TERM 5 bash <<EOF\necho x > C:/Windows/Temp/w7-audit.txt\nEOF",
         "ionice -c 2 -n 0 bash <<EOF\necho x > /etc/x\nEOF",
         "sudo -E -H bash <<EOF\necho x > /etc/x\nEOF",
         "taskset -c 0-2 <<EOF\nx\nEOF",
     ):
-        assert find_bash_disallowed_write_paths(
-            w27_bad, config, workdir=workdir
-        ), w27_bad
+        assert find_bash_disallowed_write_paths(w27_bad, config, workdir=workdir), w27_bad
     for w27_ok in (
         "taskset -c 0-2 cat <<EOF\nhello\nEOF",
         "env -C " + workdir + " cat <<EOF\nhi\nEOF",
         "timeout -k 1 5 cat <<EOF\nhi\nEOF",
         "stdbuf -oL grep x <<EOF\nrm -rf /etc\nEOF",
     ):
-        assert not find_bash_disallowed_write_paths(
-            w27_ok, config, workdir=workdir
-        ), w27_ok
+        assert not find_bash_disallowed_write_paths(w27_ok, config, workdir=workdir), w27_ok
 
     # W7-C01 regression (nested quotes)
     # A ``'`` inside a double-quoted python ``-c`` payload is literal shell
@@ -1046,28 +980,21 @@ def test_w7_c01_integration() -> None:
     # writes are allowed; the same payloads outside the whitelist, and
     # top-level wedged-quote evasions, stay blocked.
     for wq_ok in (
-        "python -c \"import pathlib; pathlib.Path(r'"
-        + workdir
-        + "\\x.txt').write_text('1')\"",
-        'python -c "open(rb\'' + workdir + "\\x.bin','wb')\"",
+        "python -c \"import pathlib; pathlib.Path(r'" + workdir + "\\x.txt').write_text('1')\"",
+        "python -c \"open(rb'" + workdir + "\\x.bin','wb')\"",
         "python -c \"import os,pathlib; pathlib.Path(r'"
         + workdir
         + "\\slow.pid').write_text(str(os.getpid()))\"",
     ):
-        assert not find_bash_disallowed_write_paths(
-            wq_ok, config, workdir=workdir
-        ), wq_ok
+        assert not find_bash_disallowed_write_paths(wq_ok, config, workdir=workdir), wq_ok
     for wq_bad in (
-        "python -c \"import pathlib; pathlib.Path("
-        "r'C:\\Windows\\Temp\\x.txt').write_text('1')\"",
+        "python -c \"import pathlib; pathlib.Path(r'C:\\Windows\\Temp\\x.txt').write_text('1')\"",
         "python -c \"open(r'C:\\Windows\\x','w')\"",
         "r'm' /etc/rxy_w7c01_pwned.txt",
         'r"m" /etc/rxy_w7c01_pwned.txt',
         "r''m /etc/rxy_w7c01_pwned.txt",
     ):
-        assert find_bash_disallowed_write_paths(
-            wq_bad, config, workdir=workdir
-        ), wq_bad
+        assert find_bash_disallowed_write_paths(wq_bad, config, workdir=workdir), wq_bad
 
     unknown = asyncio.run(
         orchestrator.execute_tool(

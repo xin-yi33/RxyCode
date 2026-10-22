@@ -31,6 +31,10 @@ export function AltchaWidget({ onVerify }: { onVerify: (payload: string) => void
       const detail = (event as CustomEvent<AltchaState>).detail
       if (detail?.state === "verified" && detail.payload) {
         onVerify(detail.payload)
+      } else {
+        // The PoW token is single-use and must not survive a reset, expiry,
+        // retry, or any other transition away from the verified state.
+        onVerify("")
       }
     }
     el.addEventListener("statechange", onState)
@@ -40,10 +44,9 @@ export function AltchaWidget({ onVerify }: { onVerify: (payload: string) => void
   return (
     <altcha-widget
       ref={ref}
-      challengeurl="/api/v1/auth/altcha"
+      challenge="/api/v1/auth/altcha"
       auto="onload"
-      hidefooter
-      hidelogo
+      configuration='{"hideFooter":true,"hideLogo":true}'
       style={{ "--altcha-max-width": "100%" }}
     />
   )

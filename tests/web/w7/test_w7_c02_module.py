@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -25,11 +26,12 @@ for _path in (REPO, _SERVER, _WORKER, _RUNNER):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from rxycode_server.api.auth import AuthRecord, _hash_token  # noqa: E402
+from rxycode_server.api.auth import _hash_token  # noqa: E402
 from rxycode_server.events.store import append_event  # noqa: E402
 from rxycode_server.main import create_app  # noqa: E402
 from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
 from rxycode_server.persistence.models import (  # noqa: E402
+    AuthSession,
     Organization,
     Outbox,
     Project,
@@ -54,9 +56,7 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _redis_start() -> None:
     _docker("rm", "-f", _REDIS)
-    started = _docker(
-        "run", "-d", "--name", _REDIS, "-p", "127.0.0.1:56390:6379", "redis:7"
-    )
+    started = _docker("run", "-d", "--name", _REDIS, "-p", "127.0.0.1:56390:6379", "redis:7")
     assert started.returncode == 0, started.stderr
     deadline = time.time() + 30
     while time.time() < deadline:
@@ -110,9 +110,7 @@ def _child_env(extra: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _sse_events(
-    lines: Iterable[str], raw: list[str]
-) -> Iterator[dict[str, str]]:
+def _sse_events(lines: Iterable[str], raw: list[str]) -> Iterator[dict[str, str]]:
     """Yield only COMPLETE SSE events (blank-line terminated).
 
     Field lines accumulate into a pending frame; the empty line commits
@@ -145,9 +143,7 @@ def _serve_app(app) -> tuple:
     """
     import uvicorn
 
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=0, log_level="warning", access_log=False
-    )
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     ready = threading.Event()
 
@@ -186,9 +182,7 @@ def test_w7_c02_integration(postgres_url: str):
         server, server_thread, port = _serve_app(app)
 
         # Real HTTP transport end-to-end (login + SSE over the socket).
-        client = httpx.Client(
-            base_url=f"http://127.0.0.1:{port}", timeout=httpx.Timeout(60.0)
-        )
+        client = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=httpx.Timeout(60.0))
         csrf = client.get("/api/v1/auth/csrf").json()["csrf_token"]
         headers = {"X-CSRF-Token": csrf, "Origin": ORIGIN, "X-Local-Secret": SECRET}
         assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
@@ -219,11 +213,7 @@ def test_w7_c02_integration(postgres_url: str):
         with Session(engine) as db:
             db.add(User(id="user-c02b", github_id="gh-c02b", kind="github"))
             db.add(Organization(id="org-c02b", tenant_id=tenant_b))
-            db.add(
-                Project(
-                    id="project-c02b", tenant_id=tenant_b, name="b", repo_config={}
-                )
-            )
+            db.add(Project(id="project-c02b", tenant_id=tenant_b, name="b", repo_config={}))
             db.add(
                 SessionRow(
                     id=session_b,
@@ -344,9 +334,7 @@ def test_w7_c02_integration(postgres_url: str):
                     break
                 time.sleep(0.3)
             assert pending, "no pending outbox rows during the Redis outage"
-            assert attempts_seen, (
-                "dispatches did not retry against the paused Redis"
-            )
+            assert attempts_seen, "dispatches did not retry against the paused Redis"
         finally:
             unpause = _docker("unpause", _REDIS)
             assert unpause.returncode == 0, unpause.stderr
@@ -380,11 +368,13 @@ def test_w7_c02_integration(postgres_url: str):
             assert run_row is not None
             assert run_row.status == "succeeded"
             assert run_row.status != "cancelled"
-            final_seq = int(db.scalar(
-                select(RunEvent.seq)
-                .where(RunEvent.run_id == run_a.run_id)
-                .order_by(RunEvent.seq.desc())
-            ))
+            final_seq = int(
+                db.scalar(
+                    select(RunEvent.seq)
+                    .where(RunEvent.run_id == run_a.run_id)
+                    .order_by(RunEvent.seq.desc())
+                )
+            )
         engine.dispose()
         assert last_seen < final_seq, (
             f"connection 1 aborted at seq {last_seen} but the run ended at "
@@ -399,9 +389,7 @@ def test_w7_c02_integration(postgres_url: str):
             for event in events_a + events_b
             if "id" in event and "data" in event
         ]
-        assert len(received) == len(set(received)), (
-            "duplicate payload across connections"
-        )
+        assert len(received) == len(set(received)), "duplicate payload across connections"
         assert sorted(received) == list(range(1, final_seq + 1)), (
             f"gaps: expected 1..{final_seq}, got {sorted(received)}"
         )
@@ -454,9 +442,19 @@ def test_w7_c02_integration(postgres_url: str):
 
         # Tenant B must not read run A at all.
         other_token = uuid.uuid4().hex
-        app.state.sessions[_hash_token(SECRET, other_token)] = AuthRecord(
-            user_id="user-c02b", tenant_id=tenant_b, created=time.monotonic()
-        )
+        now = datetime.now(timezone.utc)
+        with Session(engine) as db:
+            db.add(
+                AuthSession(
+                    token_hash=_hash_token(SECRET, other_token),
+                    user_id="user-c02b",
+                    tenant_id=tenant_b,
+                    created_at=now,
+                    expires_at=now + timedelta(days=7),
+                    last_seen_at=now,
+                )
+            )
+            db.commit()
         denied_client = httpx.Client(
             base_url=client.base_url,
             cookies={"rxy_session": other_token},

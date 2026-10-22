@@ -20,7 +20,7 @@ DESIGN = REPO / "docs" / "architecture" / "web-system-design.md"
 CASE = REPO / "docs" / "portfolio" / "rxycode-web-case-study.md"
 
 _STATUSES = ("shipped", "experimental", "planned", "blocked")
-_EVIDENCE_REF = re.compile(r"evidence/web/WEB-W\d-C\d\d")
+_EVIDENCE_REF = re.compile(r"evidence/web/WEB-W\d+-C\d\d")
 _TEST_REF = re.compile(r"tests/(?:web|integration|unit|test_)[\w./-]*\.py")
 # A quantitative claim: digits next to units/suffixes or an explicit count
 # like "48 cards" / "1400 行" / "9165 input tokens". Citations are `[…]` links
@@ -62,9 +62,7 @@ def _citation_targets_exist(line: str) -> bool:
     refs = _BACKTICK.findall(body) or _BARE_PATH.findall(body)
     if not refs:
         return False
-    return any(
-        (REPO / r.split("::")[0].strip().rstrip("/")).exists() for r in refs
-    )
+    return any((REPO / r.split("::")[0].strip().rstrip("/")).exists() for r in refs)
 
 
 def _readme_web_section() -> str:
@@ -150,8 +148,7 @@ def test_w7_c06_negative() -> None:
                 f"{path.name}:{lineno} uncited metric claim: {line.strip()[:100]}"
             )
             assert _citation_targets_exist(line), (
-                f"{path.name}:{lineno} cites no artifact that exists on disk: "
-                f"{line.strip()[:100]}"
+                f"{path.name}:{lineno} cites no artifact that exists on disk: {line.strip()[:100]}"
             )
     # The README matrix itself must not smuggle uncited numbers either.
     for cells in _matrix_rows():

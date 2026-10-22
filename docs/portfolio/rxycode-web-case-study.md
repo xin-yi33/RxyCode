@@ -8,7 +8,7 @@
 
 ## 规模与工作量（均可核查）
 
-- 48 张卡（W0×4, W1×5, W2×7, W3×7, W4×7, W5×6, W6×6, W7×6），每张独立 commit + `evidence/web/WEB-W*` 证据目录（证据: `docs/plans/opus5-plan/rxycode -web/phases/`）。
+- 48 张卡（W0×4, W1×5, W2×7, W3×7, W4×7, W5×6, W6×6, W7×6），每张独立 commit + `evidence/web/WEB-W*` 证据目录（证据: `evidence/web/`）。
 - drain worker 单文件约 2400 行，承担认领/放置闸/沙箱 spawn/租约看门狗/投影/账本/终态（证据: `packages/rxycode-worker/src/rxycode_worker/drain.py`）。
 - W7-C05 单卡经历 17 轮独立审计、累计 63 条发现全部修复（r1-r16 逐轮计数 8+7+5+5+5+3+2+3+3+3+3+3+4+4+4+1），终判 `VERDICT: NO_REMAINING_PROBLEMS`；全程同一会话 `gpt-6.1-sol` high 复审（证据: `evidence/web/WEB-W7-C05/self-audit.md`、`evidence/web/WEB-W7-C05/NOTES.md`）。
 - 部署栈 9 个服务（postgres/redis/minio/reposync/migrate/api/worker/webbuild/gateway），全部端口绑定 loopback（证据: `infra/compose/compose.yaml`、`tests/web/w7/test_w7_c05_unit.py`）。

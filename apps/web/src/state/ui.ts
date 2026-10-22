@@ -56,12 +56,22 @@ const THEME_COOKIE = "rxy_theme"
 
 function readTheme(): ThemeName {
   if (typeof document === "undefined") return "light"
-  const match = document.cookie.match(/(?:^|;\s*)rxy_theme=(dark|light)\b/)
-  return match ? (match[1] as ThemeName) : "light"
+  try {
+    const match = document.cookie.match(/(?:^|;\s*)rxy_theme=(dark|light)\b/)
+    return match ? (match[1] as ThemeName) : "light"
+  } catch {
+    return "light"
+  }
 }
 
 function persistTheme(theme: ThemeName): void {
-  document.cookie = `${THEME_COOKIE}=${theme};path=/;samesite=lax;max-age=31536000`
+  if (typeof document === "undefined") return
+  try {
+    document.cookie = `${THEME_COOKIE}=${theme};path=/;samesite=lax;max-age=31536000`
+  } catch {
+    // Cookie persistence is best-effort; keep the in-memory theme responsive
+    // when the browser denies cookie access. Do not fall back to localStorage.
+  }
 }
 
 export const useUi = create<UiState>()((set, get) => ({

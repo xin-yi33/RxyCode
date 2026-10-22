@@ -436,19 +436,19 @@ no running code path; `blocked` names its blocker.
 | Persisted approvals/questions + cross-day resume (API surface; the deployed public worker has no approval-answer channel — confirm_all runs fail honestly at run_timeout) | shipped | evidence/web/WEB-W2-C06 | tests/web/w2/test_w2_c06_unit.py |
 | React workbench: login, sessions, diff review, PTY, workbench | shipped | evidence/web/WEB-W3-C06 | tests/web/w3/test_w3_c06_module.py |
 | Local Full runner + device pairing + emergency stop | shipped | evidence/web/WEB-W4-C06 | tests/web/w4/test_w4_c06_module.py |
-| Email-code auth + ALTCHA PoW + per-IP/per-mailbox rate ceilings | shipped | CHANGELOG_v1.4.4 (W9) | tests/web/w9/test_rate_and_device.py |
-| Single-device login lock + 409 takeover modal | shipped | CHANGELOG_v1.4.4 (W9) | tests/web/w9/test_rate_and_device.py |
-| BYOK key vault (AES-256-GCM) + provider discovery + composer model picker | shipped | CHANGELOG_v1.4.4 (W10) | tests/web/w9 (byok suites) |
-| Session workspace file list/download API + panel | shipped | CHANGELOG_v1.4.4 (W12) | tests/web/w9/test_session_files.py |
-| Device bridge: `rxycode connect` + invoke + approval inbox | shipped | CHANGELOG_v1.4.4 (W13, live E2E on Windows) | — |
+| Email-code auth + ALTCHA PoW + per-IP/per-mailbox rate ceilings | shipped | evidence/web/WEB-W9-C01 | tests/web/w9/test_rate_and_device.py, tests/web/w9/test_email_codes.py |
+| Single-device login lock + 409 takeover modal | shipped | evidence/web/WEB-W9-C01 | tests/web/w9/test_rate_and_device.py |
+| BYOK key vault (AES-256-GCM) + provider discovery + composer model picker | shipped | evidence/web/WEB-W10-C01 | tests/web/w9/test_byok_api.py, tests/web/w9/test_byok_crypto.py |
+| Session workspace file list/download API + panel | shipped | evidence/web/WEB-W12-C01 | tests/web/w9/test_session_files.py |
+| Device bridge: `rxycode connect` + invoke + approval inbox | shipped | evidence/web/WEB-W13-C01 | tests/web/w4/test_w4_c05_module.py |
 | Cloud sandbox control plane; tenant fs isolation shipped in the deployed per-run sandbox (net isolation is standalone-path only — the deployed turn needs DB/LLM egress) | shipped | evidence/web/WEB-W5-C02 | tests/web/w5/test_w5_c02_unit.py |
 | Reproducible agent evals + baseline compare | shipped | evidence/web/WEB-W7-C03 | tests/web/w7/test_w7_c03_unit.py |
 | OpenTelemetry spans + per-run cost ledger | shipped | evidence/web/WEB-W7-C04 | tests/web/w7/test_w7_c04_unit.py |
 | Compose deploy (two-step: `up -d` + repo-seed into `repo-src`) + HTTPS gateway + confined turns | shipped | evidence/web/WEB-W7-C05 | tests/web/w7/test_w7_c05_module.py |
 | Security review corpus (auth/injection/leak sweeps) | shipped | evidence/web/WEB-W7-C01 | tests/web/w7/test_w7_c01_unit.py |
-| Public demo full-stack browser E2E | shipped: manual browser E2E on the live site (visitor shell, login modal, BYOK CRUD, device lock takeover, cancel, file panel) | docs/OPS-LOG.md | manual verification |
-| Anonymous visitor cloud run over HTTP | refused by design: visitors get the app shell, but sending a task requires login | — | — |
-| Hosted public demo URL | shipped: [rxycode.xyz](https://rxycode.xyz) — small community VM, early development | — | deploy your own via infra/compose |
+| Public demo full-stack browser E2E | shipped: manual browser E2E on the live site (visitor shell, login modal, BYOK CRUD, device lock takeover, cancel, file panel) | evidence/web/WEB-W10-C02, docs/deploy/OPS-LOG.md | tests/web/w9/test_e2e.py |
+| Anonymous visitor cloud run over HTTP | blocked: visitors get the app shell, but sending a task requires login | — | — |
+| Hosted public demo URL | shipped: [rxycode.xyz](https://rxycode.xyz) — small community VM, early development | evidence/web/WEB-W10-C02, docs/deploy/OPS-LOG.md | tests/web/w9/test_version.py |
 
 Deploy it yourself: `docs/deploy/web-runbook.md` (bring-up, migrations,
 upgrade/rollback, boundaries). User guide: `docs/product/web-user-guide.md`.
