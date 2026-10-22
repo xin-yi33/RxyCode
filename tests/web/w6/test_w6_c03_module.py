@@ -105,15 +105,17 @@ def test_w6_c03_integration() -> None:
         )
         assert preview_hit["status"] != "ok"
         assert read_storage(session_id=str(preview["session_id"]), key="rxy-marker")["value"] in ("", None)
+        from rxycode_runner.browser.session_manager import HANDOFF_PORT
+
         framed = urllib.request.urlopen(
-            f"http://127.0.0.1:47321/browser/{agent['session_id']}",
+            f"http://127.0.0.1:{HANDOFF_PORT}/browser/{agent['session_id']}",
             timeout=5,
         )
         assert framed.headers["X-Frame-Options"] == "DENY"
         assert framed.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
         framed.close()
         evil = urllib.request.Request(
-            f"http://127.0.0.1:47321/sessions/{agent['session_id']}/authorize",
+            f"http://127.0.0.1:{HANDOFF_PORT}/sessions/{agent['session_id']}/authorize",
             data=b"",
             method="POST",
             headers={"Origin": "http://evil.example", "X-Handoff-Token": "stolen"},
@@ -318,6 +320,7 @@ def _user_clicks_handoff(session_id: str, source: str, action: object) -> dict[s
 def _click_same_origin_handoff(session_id: str) -> dict[str, object]:
     """Click the page the app route links to. That page posts its own token."""
     from rxycode_runner.browser.session_manager import (
+        HANDOFF_PORT,
         close_handoff_page,
         present_handoff,
         run_on_handoff_page,
@@ -326,7 +329,7 @@ def _click_same_origin_handoff(session_id: str) -> dict[str, object]:
     try:
         presented = present_handoff(
             agent_session_id=session_id,
-            url=f"http://127.0.0.1:47321/browser/{session_id}",
+            url=f"http://127.0.0.1:{HANDOFF_PORT}/browser/{session_id}",
         )
         assert presented["status"] == "open", presented
         return run_on_handoff_page(agent_session_id=session_id, action=_click_granted)

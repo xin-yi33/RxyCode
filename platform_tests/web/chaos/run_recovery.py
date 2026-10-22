@@ -484,7 +484,10 @@ def scenario_worker_kill_during_approval(url: str, workdir: Path) -> dict:
     tenant, run = _seed(url, "s1", "confirm_all")
     wd = Path(tempfile.mkdtemp(prefix="w7c02-s1-", dir=workdir))
     journal_dir = Path(tempfile.mkdtemp(prefix="w7c02-s1j-", dir=workdir))
-    command = "Add-Content -LiteralPath 'c02-approve.txt' -Value 'once' -Encoding utf8"
+    exe = "python" if os.name == "nt" else "python3"
+    command = (
+        f"{exe} -c \"from pathlib import Path; Path('c02-approve.txt').write_text('once', encoding='utf-8')\""
+    )
     target = wd / "c02-approve.txt"
     base_env = {
         "C02_URL": url,
