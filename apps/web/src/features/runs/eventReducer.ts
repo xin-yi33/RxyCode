@@ -128,6 +128,13 @@ function str(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value)
 }
 
+// CLI 进度文案。它们会进 activity，不能写进「思考过程」。
+function isStatusLine(text: string): boolean {
+  return /^(Analyzing your request|Thinking\.\.\.|思考中|模型输出中|Generating\.\.\.)/i.test(
+    text.trim(),
+  )
+}
+
 function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
@@ -251,11 +258,23 @@ export function reduceEvents(
       }
       case "assistant.delta": {
         const text = str(payload.text)
+        const channel = str(payload.channel)
+        if (channel === "reasoning") {
+          // 跟 CLI 一样：思考过程只收模型思维链。子代理的 intermediate
+          // reasoning 不进主时间线。snapshot 是整段替换，否则按片段拼接。
+          if (payload.intermediate === true || !text) return
+          const last = view.timeline[view.timeline.length - 1]
+          if (last && last.kind === "thinking") {
+            last.text = payload.snapshot === true ? text : last.text + text
+          } else {
+            view.timeline.push({ kind: "thinking", seq: event.seq, text })
+          }
+          return
+        }
         if (payload.intermediate === true) {
-          // intermediate 仍驱动顶部“正在…”状态行，同时累积进“思考过程”块
-          // （连续的 intermediate 段并成一块；被打断则开新块，保持事件顺序）。
           view.activity = text
-          if (!text) return
+          // 进度条（Analyzing / Thinking... (round N) / 思考中）不是思维链。
+          if (!text || channel === "status" || isStatusLine(text)) return
           const last = view.timeline[view.timeline.length - 1]
           if (last && last.kind === "thinking") {
             last.text += text
@@ -563,6 +582,8 @@ export function reduceEvents(
       }
       case "assistant.delta": {
         const text = str(payload.text)
+        const channel = str(payload.channel)
+        if (channel === "reasoning" || channel === "status") return
         if (payload.intermediate === true) projection.intermediate.push(text)
         else if (!sealed) projection.answer += text
         return

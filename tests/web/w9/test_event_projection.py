@@ -135,6 +135,42 @@ def test_w9_b3_tool_started_projection() -> None:
     assert "exit_code" not in done and "duration_ms" not in done
 
 
+def test_reasoning_is_a_thought_and_progress_is_status() -> None:
+    """The thought block is the model chain. Progress text is not appended to it."""
+    thought = drain._projection_rows(
+        "event/reasoning_snapshot",
+        {"text": "先看文件", "snapshot": False, "intermediate": False},
+        {},
+        run_id="r",
+    )
+    assert thought == [
+        (
+            "assistant.delta",
+            {
+                "text": "先看文件",
+                "intermediate": False,
+                "channel": "reasoning",
+                "snapshot": False,
+            },
+        )
+    ]
+    status = drain._projection_rows(
+        "event/progress",
+        {"text": "Analyzing your request..."},
+        {},
+        run_id="r",
+    )
+    assert status[0][1]["channel"] == "status"
+    assert status[0][1]["intermediate"] is True
+    emit, captured = _emitter()
+    emit(_Note("event/progress", text="Thinking... (round 1)"))
+    emit(_Note("event/reasoning_snapshot", text="再改测试", snapshot=False, intermediate=False))
+    emit.flush()
+    deltas = [payload for kind, payload in captured if kind == "assistant.delta"]
+    assert [item["channel"] for item in deltas] == ["status", "reasoning"]
+    assert deltas[1]["text"] == "再改测试"
+
+
 def test_w9_b3_tool_started_title_fallback_and_truncation() -> None:
     rows = drain._projection_rows(
         "event/tool_begin",

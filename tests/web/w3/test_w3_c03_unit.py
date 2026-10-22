@@ -9,16 +9,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 REDUCER = REPO / "apps" / "web" / "src" / "features" / "runs" / "eventReducer.ts"
-_BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
 _SCRATCH = Path(r"C:\Users\Administrator\AppData\Local\Temp\grok-goal-633d8463e340\implementer")
 
 
 def _bun() -> str:
-    found = shutil.which("bun")
+    from tests.support.pgurl import bun_path
+
+    found = bun_path()
     if found:
         return found
-    if _BUN.exists():
-        return str(_BUN)
     raise FileNotFoundError("bun")
 
 
@@ -42,6 +41,62 @@ def reduce_events(events: list[dict], initial_status: str = "", watermark: int =
     proc = subprocess.run([_bun(), str(driver)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr or proc.stdout
     return json.loads(proc.stdout)
+
+
+def test_w3_c03_thinking_is_the_model_chain() -> None:
+    """Status lines stay out of 思考过程. Reasoning chunks are the thought text."""
+    done = reduce_events(
+        [
+            {
+                "seq": 1,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "Analyzing your request...",
+                    "intermediate": True,
+                    "channel": "status",
+                },
+            },
+            {
+                "seq": 2,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "Thinking... (round 1)",
+                    "intermediate": True,
+                    "channel": "status",
+                },
+            },
+            {
+                "seq": 3,
+                "type": "assistant.delta",
+                "payload": {"text": "思考中...", "intermediate": True, "channel": "status"},
+            },
+            {
+                "seq": 4,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "先看文件",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": False,
+                },
+            },
+            {
+                "seq": 5,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "再改测试",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": False,
+                },
+            },
+        ]
+    )
+    thoughts = [
+        item["text"] for item in done["view"]["timeline"] if item["kind"] == "thinking"
+    ]
+    assert thoughts == ["先看文件再改测试"]
+    assert done["answer"] == ""
 
 
 def test_w3_c03_contract() -> None:

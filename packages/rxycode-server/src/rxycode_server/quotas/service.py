@@ -223,7 +223,7 @@ class QuotaGate:
             text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
             {"key": f"{tenant_id}:{user_id}"},
         )
-        usage = _usage(db, tenant_id, self._limits.window_seconds)
+        usage = _usage(db, tenant_id, self._limits.window_seconds, user_id)
         incoming = _token_count(message)
         limits = self._limits
         if usage.tasks >= limits.tasks:
@@ -340,12 +340,37 @@ def _active_slots(db: Session, tenant_id: str, user_id: str, ttl_seconds: float)
     return held
 
 
-def _usage(db: Session, tenant_id: str, window_seconds: int | None = None) -> _Usage:
+def _owned(payload: object, user_id: str | None) -> bool:
+    """Daily quota is this user's. Another user on the same tenant, including
+    a super account, does not spend this user's tokens or tasks."""
+    if not user_id:
+        return True
+    body = payload if isinstance(payload, dict) else {}
+    quota = body.get("quota") if isinstance(body.get("quota"), dict) else {}
+    return str(quota.get("user_id") or "") == user_id
+
+
+def _usage(
+    db: Session,
+    tenant_id: str,
+    window_seconds: int | None = None,
+    user_id: str | None = None,
+) -> _Usage:
     if window_seconds is not None:
-        # WEB-W9-B4: only runs created inside the trailing window count; token
-        # usage is the real usage_records.tokens sum for those runs.
+        # WEB-W9-B4: only this user's runs inside the trailing window count.
+        # Token usage is the real usage_records.tokens sum for those runs.
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
         run_ids = db.scalars(
+            select(Run.id)
+            .join(RunEvent, (RunEvent.run_id == Run.id) & (RunEvent.seq == 1))
+            .where(
+                Run.tenant_id == tenant_id,
+                Run.created_at.isnot(None),
+                Run.created_at >= cutoff,
+                RunEvent.type == "run.created",
+                RunEvent.payload["quota"]["user_id"].astext == user_id,
+            )
+        ).all() if user_id else db.scalars(
             select(Run.id).where(
                 Run.tenant_id == tenant_id,
                 Run.created_at.isnot(None),
@@ -361,12 +386,20 @@ def _usage(db: Session, tenant_id: str, window_seconds: int | None = None) -> _U
             )
             usage.tokens = int(tokens or 0)
         return usage
-    task_count = db.scalar(select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id))
     events = db.scalars(
         select(RunEvent).where(RunEvent.tenant_id == tenant_id, RunEvent.type == "run.created")
     ).all()
-    usage = _Usage(tasks=int(task_count or 0))
-    for event in events:
+    if user_id is None:
+        task_count = db.scalar(
+            select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id)
+        )
+        usage = _Usage(tasks=int(task_count or 0))
+        owned_events = events
+    else:
+        usage = _Usage()
+        owned_events = [event for event in events if _owned(event.payload, user_id)]
+        usage.tasks = len(owned_events)
+    for event in owned_events:
         payload = event.payload if isinstance(event.payload, dict) else {}
         quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
         message = str(payload.get("message") or "")

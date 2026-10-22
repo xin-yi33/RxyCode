@@ -1148,13 +1148,38 @@ def _projection_rows(
                 },
             )
         )
-    elif method in ("event/message_delta", "event/progress"):
+    elif method == "event/message_delta":
         rows.append(
             (
                 "assistant.delta",
                 {
                     "text": str(body.get("text") or ""),
-                    "intermediate": bool(body.get("intermediate")) or method == "event/progress",
+                    "intermediate": bool(body.get("intermediate")),
+                },
+            )
+        )
+    elif method == "event/progress":
+        # Status lines stay off the thought block. The CLI shows these on the
+        # spinner, not as the model's chain of thought.
+        rows.append(
+            (
+                "assistant.delta",
+                {
+                    "text": str(body.get("text") or ""),
+                    "intermediate": True,
+                    "channel": "status",
+                },
+            )
+        )
+    elif method == "event/reasoning_snapshot":
+        rows.append(
+            (
+                "assistant.delta",
+                {
+                    "text": str(body.get("text") or ""),
+                    "intermediate": bool(body.get("intermediate")),
+                    "channel": "reasoning",
+                    "snapshot": bool(body.get("snapshot")),
                 },
             )
         )
@@ -1256,6 +1281,8 @@ class _RunEmit:
         self.delta_rows = 0
         self._delta_parts: list[str] = []
         self._delta_intermediate = False
+        self._delta_channel = ""
+        self._delta_snapshot = False
         self._delta_since = 0.0
         # Confined turns carry no platform credentials: ``emitter`` is the
         # parent's TurnChannel.emit — the row lands on the same event log.
@@ -1311,11 +1338,20 @@ class _RunEmit:
             return
         text = "".join(self._delta_parts)
         intermediate = self._delta_intermediate
+        channel = self._delta_channel
+        snapshot = self._delta_snapshot
         self._delta_parts.clear()
+        self._delta_channel = ""
+        self._delta_snapshot = False
         if self.delta_rows >= _JOURNAL_CAP:
             return
         self.delta_rows += 1
-        self._write("assistant.delta", {"text": text, "intermediate": intermediate})
+        body: dict[str, Any] = {"text": text, "intermediate": intermediate}
+        if channel:
+            body["channel"] = channel
+        if snapshot:
+            body["snapshot"] = True
+        self._write("assistant.delta", body)
 
     def project(self, event_type: str, body: dict[str, Any]) -> None:
         """Write one UI-facing projection row — the event types the web
@@ -1326,14 +1362,21 @@ class _RunEmit:
                 return
             text = str(body.get("text") or "")
             intermediate = bool(body.get("intermediate"))
+            channel = str(body.get("channel") or "")
+            snapshot = bool(body.get("snapshot"))
             now = time.monotonic()
             if self._delta_parts and (
                 intermediate != self._delta_intermediate
+                or channel != self._delta_channel
+                or snapshot
+                or self._delta_snapshot
                 or now - self._delta_since >= _DELTA_MAX_AGE
             ):
                 self.flush()
             if not self._delta_parts:
                 self._delta_intermediate = intermediate
+                self._delta_channel = channel
+                self._delta_snapshot = snapshot
                 self._delta_since = now
             self._delta_parts.append(text)
             if sum(len(part) for part in self._delta_parts) >= _DELTA_MAX_BYTES:
