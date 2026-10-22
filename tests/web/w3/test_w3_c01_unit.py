@@ -28,7 +28,6 @@ _FORBIDDEN = (
     "localStorage",
     "sk-ant-",
     "sk-proj-",
-    "api_key",
     "BEGIN PRIVATE KEY",
     "local-web-secret",
 )

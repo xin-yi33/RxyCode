@@ -58,7 +58,10 @@ def test_w5_c01_contract(tmp_path: Path) -> None:
         script = "\n".join(
             [
                 "import pathlib, socket",
-                f"pathlib.Path({str(marker)!r}).write_text('ran-on-host')",
+                "try:",
+                f"    pathlib.Path({str(marker)!r}).write_text('ran-on-host')",
+                "except OSError:",
+                "    pass",
                 f"pathlib.Path('/tmp/proof.txt').write_text({nonce!r})",
                 "print('NODE=' + socket.gethostname())",
                 f"print('NONCE={nonce}')",

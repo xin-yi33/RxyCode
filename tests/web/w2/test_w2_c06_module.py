@@ -105,7 +105,11 @@ def test_w2_c06_integration(postgres_url: str, tmp_path: Path):
     workdir = Path(tempfile.mkdtemp(prefix="w2c06-shell-", dir=REPO))
     try:
         target = workdir / "shell-write.txt"
-        command = "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
+        command = (
+            "Add-Content -LiteralPath 'shell-write.txt' -Value 'shell-write' -Encoding utf8"
+            if os.name == "nt"
+            else "printf '%s' shell-write > shell-write.txt"
+        )
         journal_dir = tmp_path / "journal"
         paused = pause_for_approval(
             postgres_url,

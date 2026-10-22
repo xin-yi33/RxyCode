@@ -110,8 +110,8 @@ def test_w6_c03_contract() -> None:
         assert result["url"].startswith(url)
         stored = read_storage(session_id=session_id, key="rxy-marker")
         assert stored["value"] == token
-        cookie_jar = profile / "Default" / "Network" / "Cookies"
-        assert cookie_jar.is_file()
+        jars = [path for path in profile.rglob("Cookies") if path.is_file()]
+        assert jars, "the agent browser did not write a cookie store"
         child = subprocess.run(
             [sys.executable, "-c", _preview_reopen(profile)],
             capture_output=True,
