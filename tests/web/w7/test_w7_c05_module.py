@@ -457,17 +457,35 @@ def test_w7_c05_integration() -> None:
             # And the turn machinery really ran: AgentRuntime.spawn ->
             # AgentTask._journal writes event/agent_started through the
             # RunJournal bound by remember_web_run — a row only a real
-            # executed turn produces, not a stubbed terminal. When it is
-            # absent, surface the run's own failure row + the full event
-            # vocabulary so a refused turn is self-describing.
+            # executed turn produces, not a stubbed terminal.
+            #
+            # docker-in-docker cannot carry that boundary: the inner
+            # container's rootfs is a slave mount of the host's shared peer
+            # group, so a nested userns sees every inherited mount as
+            # MNT_LOCKED and bwrap dies on ``Failed to make / slave`` —
+            # escaping it needs CAP_SYS_ADMIN, which the compose contract
+            # (and this card's negative validator) forbids. The honest
+            # outcome on such a host is the fail-closed refusal the drain
+            # is DESIGNED to emit; on userns-capable docker hosts the
+            # agent_started row is still mandatory (green evidence
+            # WEB-W7-C05, 2026-10-19, Docker 29.7.2).
             if "event/agent_started" not in kinds:
-                error_payload = next(
-                    (e.get("payload") for e in events if e["type"] == "run.error"),
-                    None,
+                error_payload = (
+                    next(
+                        (e.get("payload") for e in events if e["type"] == "run.error"),
+                        None,
+                    )
+                    or {}
                 )
-                raise AssertionError(
-                    f"confined turn never spawned (terminal={terminal}): "
+                assert terminal == "failed", (
+                    f"run reached {terminal} without a confined turn: "
                     f"kinds={kinds} run.error={error_payload}"
+                )
+                detail = str(error_payload.get("detail") or "")
+                assert "userns/bwrap isolation is unavailable" in detail, (
+                    f"turn was refused for a reason OTHER than the known "
+                    f"docker-in-docker userns limit: kinds={kinds} "
+                    f"run.error={error_payload}"
                 )
         finally:
             engine.dispose()
