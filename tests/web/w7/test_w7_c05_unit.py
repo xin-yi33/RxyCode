@@ -747,9 +747,7 @@ def test_w7_c05_watchdog_polls_cancel_faster_than_renewal(monkeypatch) -> None:
         # ttl=40 -> renewal interval 20s, poll 3s: the cancel is seen on the
         # second poll (~3s), long before the first renewal would be due.
         with pytest.raises(drain._RunCancelled):
-            await drain._lease_watchdog(
-                "db", "r9", "w1", 1, lease_ttl=40, claimed_at=t0, turn=turn
-            )
+            await drain._lease_watchdog("db", "r9", "w1", 1, lease_ttl=40, claimed_at=t0, turn=turn)
         elapsed = time.monotonic() - t0
         assert elapsed < 10, f"cancel sat unseen for {elapsed:.1f}s"
         assert renewals["n"] == 0
@@ -1350,11 +1348,16 @@ def test_w7_c05_streamed_flush_spools_on_outage(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
-        event_id, attribution=None, recompute=None: adjusted.append(
-            (tenant_id, run_id, tokens)
-        )
-        or {"tokens": tokens},
+        lambda _dsn,
+        *,
+        tenant_id,
+        run_id,
+        model_id,
+        price_version,
+        tokens,
+        event_id,
+        attribution=None,
+        recompute=None: adjusted.append((tenant_id, run_id, tokens)) or {"tokens": tokens},
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert not files[0].exists()
@@ -1477,10 +1480,7 @@ def test_w7_c05_untagged_done_exact_metered_match(monkeypatch) -> None:
     dones, _amb = drain._agent_done_by_attempt("db", "run-42")
     assert dones == {"2": 100}  # NOT {"1": 100} — value pins it to epoch 2
     deltas = drain._usage_deltas_by_attempt("db", "run-42")
-    per_attempt = {
-        a: max(deltas.get(a, 0), dones.get(a, 0))
-        for a in set(deltas) | set(dones)
-    }
+    per_attempt = {a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)}
     assert sum(per_attempt.values()) == 105
 
 
@@ -1512,40 +1512,100 @@ def test_w7_c05_adjust_terminal_usage_multi_row(postgres_url: str) -> None:
             db.add(User(id=f"u-{tenant}", github_id=None, kind="local"))
             db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
             db.add(Project(id=f"p-{tenant}", tenant_id=tenant, name="t", repo_config={}))
-            db.add(SessionRow(id=f"s-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
-            db.add(Run(id="run-multi", tenant_id=tenant, session_id=f"s-{tenant}", status="succeeded", request_id="r1"))
-            db.add(Run(id="run-single", tenant_id=tenant, session_id=f"s-{tenant}", status="succeeded", request_id="r2"))
-            db.add(UsageRecord(id="ur-a", run_id="run-multi", model_id="m-a", price_version="2026-10", tokens=60))
-            db.add(UsageRecord(id="ur-b", run_id="run-multi", model_id="m-b", price_version="2026-10", tokens=60))
-            db.add(UsageRecord(id="ur-c", run_id="run-single", model_id="m-a", price_version="2026-10", tokens=5))
+            db.add(
+                SessionRow(id=f"s-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t")
+            )
+            db.add(
+                Run(
+                    id="run-multi",
+                    tenant_id=tenant,
+                    session_id=f"s-{tenant}",
+                    status="succeeded",
+                    request_id="r1",
+                )
+            )
+            db.add(
+                Run(
+                    id="run-single",
+                    tenant_id=tenant,
+                    session_id=f"s-{tenant}",
+                    status="succeeded",
+                    request_id="r2",
+                )
+            )
+            db.add(
+                UsageRecord(
+                    id="ur-a",
+                    run_id="run-multi",
+                    model_id="m-a",
+                    price_version="2026-10",
+                    tokens=60,
+                )
+            )
+            db.add(
+                UsageRecord(
+                    id="ur-b",
+                    run_id="run-multi",
+                    model_id="m-b",
+                    price_version="2026-10",
+                    tokens=60,
+                )
+            )
+            db.add(
+                UsageRecord(
+                    id="ur-c",
+                    run_id="run-single",
+                    model_id="m-a",
+                    price_version="2026-10",
+                    tokens=5,
+                )
+            )
             db.commit()
 
         # Multi-row: recovered total 130 → largest row absorbs 130-60=70.
         out = adjust_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-multi",
-            tokens=130, event_id="evt-adj-1",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-multi",
+            tokens=130,
+            event_id="evt-adj-1",
         )
         assert out is not None
         with Session(engine) as db:
-            rows = db.scalars(
-                select(UsageRecord).where(UsageRecord.run_id == "run-multi")
-            ).all()
+            rows = db.scalars(select(UsageRecord).where(UsageRecord.run_id == "run-multi")).all()
             total = sum(int(r.tokens) for r in rows)
         assert total == 130
         # Single-row short ledger → raised to recovered total.
         out2 = adjust_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-single",
-            tokens=78, event_id="evt-adj-2",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-single",
+            tokens=78,
+            event_id="evt-adj-2",
         )
         assert out2 is not None and int(out2["tokens"]) == 78
         # No ledger at all → None (caller's spool file stays for next pass).
         with Session(engine) as db:
-            db.add(Run(id="run-none", tenant_id=tenant, session_id=f"s-{tenant}", status="failed", request_id="r3"))
+            db.add(
+                Run(
+                    id="run-none",
+                    tenant_id=tenant,
+                    session_id=f"s-{tenant}",
+                    status="failed",
+                    request_id="r3",
+                )
+            )
             db.commit()
-        assert adjust_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-none",
-            tokens=50, event_id="evt-adj-3",
-        ) is None
+        assert (
+            adjust_terminal_usage(
+                postgres_url,
+                tenant_id=tenant,
+                run_id="run-none",
+                tokens=50,
+                event_id="evt-adj-3",
+            )
+            is None
+        )
     finally:
         engine.dispose()
 
@@ -1596,10 +1656,7 @@ def test_w7_c05_untagged_done_lagging_heartbeat_match(monkeypatch) -> None:
     dones, _amb = drain._agent_done_by_attempt("db", "run-43")
     assert dones == {"2": 100}  # lagged meter still pins e2 — not e1
     deltas = drain._usage_deltas_by_attempt("db", "run-43")
-    per_attempt = {
-        a: max(deltas.get(a, 0), dones.get(a, 0))
-        for a in set(deltas) | set(dones)
-    }
+    per_attempt = {a: max(deltas.get(a, 0), dones.get(a, 0)) for a in set(deltas) | set(dones)}
     assert sum(per_attempt.values()) == 105
 
 
@@ -1707,55 +1764,95 @@ def test_w7_c05_short_existing_ledger_reconciled_on_finalize(
             db.add(User(id=f"u-{tenant}", github_id=None, kind="local"))
             db.add(Organization(id=f"o-{tenant}", tenant_id=tenant))
             db.add(Project(id=f"p-{tenant}", tenant_id=tenant, name="t", repo_config={}))
-            db.add(SessionRow(id=f"s2-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
-            db.add(SessionRow(id=f"s3-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t"))
-            db.add(Run(id="run-short", tenant_id=tenant, session_id=f"s2-{tenant}", status="running", request_id="r9"))
+            db.add(
+                SessionRow(id=f"s2-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t")
+            )
+            db.add(
+                SessionRow(id=f"s3-{tenant}", tenant_id=tenant, project_id=f"p-{tenant}", title="t")
+            )
+            db.add(
+                Run(
+                    id="run-short",
+                    tenant_id=tenant,
+                    session_id=f"s2-{tenant}",
+                    status="running",
+                    request_id="r9",
+                )
+            )
             db.commit()
 
         # Attempt A's committed ledger (then it crashed before terminal).
         record_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-short",
-            model_id="model-a", price_version="2026-10",
-            tokens=100, event_id="evt-a",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-short",
+            model_id="model-a",
+            price_version="2026-10",
+            tokens=100,
+            event_id="evt-a",
         )
         # API replay semantics stay insert-once (W2-C07 contract).
         inflated = record_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-short",
-            model_id="model-a", price_version="2026-10",
-            tokens=99999, event_id="evt-b",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-short",
+            model_id="model-a",
+            price_version="2026-10",
+            tokens=99999,
+            event_id="evt-b",
         )
         assert int(inflated["tokens"]) == 100
         # The drain finalize path uses upsert_terminal_usage: retry B
         # recomputes 105 and the aggregate lifts to it.
         out = upsert_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-short",
-            model_id="model-a", price_version="2026-10",
-            tokens=105, event_id="evt-reconcile",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-short",
+            model_id="model-a",
+            price_version="2026-10",
+            tokens=105,
+            event_id="evt-reconcile",
         )
         assert int(out["tokens"]) == 105
         with Session(engine) as db:
             total = db.scalar(
-                select(func.sum(UsageRecord.tokens)).where(
-                    UsageRecord.run_id == "run-short"
-                )
+                select(func.sum(UsageRecord.tokens)).where(UsageRecord.run_id == "run-short")
             )
         assert int(total) == 105
         # A different-model prior row can't inflate the run total either —
         # the upsert reconciles the aggregate, it does not add a second row.
         with Session(engine) as db:
-            db.add(Run(id="run-mixed", tenant_id=tenant, session_id=f"s3-{tenant}", status="running", request_id="r10"))
-            db.add(UsageRecord(id="ur-x", run_id="run-mixed", model_id="model-x", price_version="2026-10", tokens=100))
+            db.add(
+                Run(
+                    id="run-mixed",
+                    tenant_id=tenant,
+                    session_id=f"s3-{tenant}",
+                    status="running",
+                    request_id="r10",
+                )
+            )
+            db.add(
+                UsageRecord(
+                    id="ur-x",
+                    run_id="run-mixed",
+                    model_id="model-x",
+                    price_version="2026-10",
+                    tokens=100,
+                )
+            )
             db.commit()
         out2 = upsert_terminal_usage(
-            postgres_url, tenant_id=tenant, run_id="run-mixed",
-            model_id="model-a", price_version="2026-10",
-            tokens=105, event_id="evt-mixed",
+            postgres_url,
+            tenant_id=tenant,
+            run_id="run-mixed",
+            model_id="model-a",
+            price_version="2026-10",
+            tokens=105,
+            event_id="evt-mixed",
         )
         assert int(out2["tokens"]) == 105
         with Session(engine) as db:
-            rows = db.scalars(
-                select(UsageRecord).where(UsageRecord.run_id == "run-mixed")
-            ).all()
+            rows = db.scalars(select(UsageRecord).where(UsageRecord.run_id == "run-mixed")).all()
         assert len(rows) == 1 and int(rows[0].tokens) == 105
     finally:
         engine.dispose()
@@ -1794,13 +1891,9 @@ def test_w7_c05_prior_activity_detected_on_cancel_claim(monkeypatch) -> None:
 
     import sqlalchemy
 
-    monkeypatch.setattr(
-        sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(2)
-    )
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(2))
     assert drain._has_prior_attempt_activity("db", "r1", 2) is True
-    monkeypatch.setattr(
-        sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(0)
-    )
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_a, **_k: _FakeEngine(0))
     assert drain._has_prior_attempt_activity("db", "r1", 2) is False
 
 
@@ -1810,27 +1903,27 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
     handoff must reconcile the committed row up to the recovered total."""
     import rxycode_worker.drain as drain
 
-    monkeypatch.setattr(
-        drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100, "2": 5}
-    )
+    monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100, "2": 5})
     monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
     seen = []
     monkeypatch.setattr(
         "rxycode_server.usage.service.adjust_terminal_usage",
-        lambda _d, *, tenant_id, run_id, tokens, event_id, attribution=None,
+        lambda _d,
+        *,
+        tenant_id,
+        run_id,
+        tokens,
+        event_id,
+        attribution=None,
         recompute=None: seen.append(tokens) or {"tokens": tokens},
     )
-    drain._reconcile_lost_lease_ledger(
-        "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5}
-    )
+    drain._reconcile_lost_lease_ledger("db", "t1", "r9", "2", {"tokens": 5}, {"1": 100, "2": 5})
     assert seen == [105]
     # r14: the caller's deltas copy is stale — another attempt journaled
     # rows after it was read. The reconcile MUST re-read, not trust the
     # snapshot: fresh shows {"1": 100, "2": 5}, caller held {"1": 100}.
     seen.clear()
-    drain._reconcile_lost_lease_ledger(
-        "db", "t1", "r9", "2", {"tokens": 5}, {"1": 100}
-    )
+    drain._reconcile_lost_lease_ledger("db", "t1", "r9", "2", {"tokens": 5}, {"1": 100})
     assert seen == [105]
     # Zero total -> no reconcile call at all.
     seen.clear()
@@ -1839,9 +1932,7 @@ def test_w7_c05_lost_lease_reconciles_committed_ledger(monkeypatch) -> None:
     assert seen == []
 
 
-def test_w7_c05_spool_replay_inserts_missing_ledger(
-    tmp_path, monkeypatch
-) -> None:
+def test_w7_c05_spool_replay_inserts_missing_ledger(tmp_path, monkeypatch) -> None:
     """Audit r15 F1: a journaled pending-reconcile spool on a run whose
     first ledger write failed must let replay INSERT the recovered row —
     dead-lettering a terminal run without a ledger would lose the spend."""
@@ -1863,20 +1954,23 @@ def test_w7_c05_spool_replay_inserts_missing_ledger(
     files = list(spool_dir.glob("*.usage.json"))
     assert len(files) == 1
 
-    monkeypatch.setattr(
-        drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100}
-    )
+    monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"1": 100})
     monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
     monkeypatch.setattr(drain, "run_status", lambda *_a: "failed")
     seen = []
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
-        event_id, attribution=None, recompute=None: seen.append(
-            (run_id, model_id, tokens)
-        )
-        or {"tokens": tokens},
+        lambda _dsn,
+        *,
+        tenant_id,
+        run_id,
+        model_id,
+        price_version,
+        tokens,
+        event_id,
+        attribution=None,
+        recompute=None: seen.append((run_id, model_id, tokens)) or {"tokens": tokens},
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert not files[0].exists()
@@ -1884,9 +1978,7 @@ def test_w7_c05_spool_replay_inserts_missing_ledger(
     assert seen == [("r9", "m-ledger", 100)]
 
 
-def test_w7_c05_pending_spool_unjournaled_journals_first(
-    tmp_path, monkeypatch
-) -> None:
+def test_w7_c05_pending_spool_unjournaled_journals_first(tmp_path, monkeypatch) -> None:
     """Audit r15 F4: a pending reconcile written while the delta append was
     still owed carries journaled=False — replay must journal the spend
     before touching the ledger, then delete only after the upsert."""
@@ -1918,19 +2010,22 @@ def test_w7_c05_pending_spool_unjournaled_journals_first(
         )
         or 1,
     )
-    monkeypatch.setattr(
-        drain, "_usage_deltas_by_attempt", lambda *_a: {"4": 73}
-    )
+    monkeypatch.setattr(drain, "_usage_deltas_by_attempt", lambda *_a: {"4": 73})
     monkeypatch.setattr(drain, "_agent_done_by_attempt", lambda *_a: ({}, []))
     upserts = []
     monkeypatch.setattr(
         usage_service,
         "upsert_terminal_usage",
-        lambda _dsn, *, tenant_id, run_id, model_id, price_version, tokens,
-        event_id, attribution=None, recompute=None: upserts.append(
-            (run_id, tokens)
-        )
-        or {"tokens": tokens},
+        lambda _dsn,
+        *,
+        tenant_id,
+        run_id,
+        model_id,
+        price_version,
+        tokens,
+        event_id,
+        attribution=None,
+        recompute=None: upserts.append((run_id, tokens)) or {"tokens": tokens},
     )
     drain._replay_usage_spool("db", str(tmp_path))
     assert written and written[0][0] == "usage.delta"
@@ -2018,9 +2113,7 @@ def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
         with Session(engine) as db:
             total = sum(
                 int(r.tokens)
-                for r in db.scalars(
-                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
-                ).all()
+                for r in db.scalars(select(UsageRecord).where(UsageRecord.run_id == "run-rc")).all()
             )
         assert total == 105
 
@@ -2038,9 +2131,7 @@ def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
         with Session(engine) as db:
             total = sum(
                 int(r.tokens)
-                for r in db.scalars(
-                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
-                ).all()
+                for r in db.scalars(select(UsageRecord).where(UsageRecord.run_id == "run-rc")).all()
             )
         assert total == 130
 
@@ -2065,9 +2156,7 @@ def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
         with Session(engine) as db:
             total = sum(
                 int(r.tokens)
-                for r in db.scalars(
-                    select(UsageRecord).where(UsageRecord.run_id == "run-rc")
-                ).all()
+                for r in db.scalars(select(UsageRecord).where(UsageRecord.run_id == "run-rc")).all()
             )
         assert total == 130  # rolled back — nothing committed
     finally:
