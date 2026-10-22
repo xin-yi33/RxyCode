@@ -453,7 +453,17 @@ def test_w10_security_overview_reauth_sessions(postgres_url: str, monkeypatch: p
 
 
 def test_w10_totp_enroll_confirm_disable(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
+    import base64
+    import json
+    import tempfile
+
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
+    ring = Path(tempfile.mkdtemp(prefix="rxy-totp-")) / "keyring.json"
+    ring.write_text(
+        json.dumps({"active": "k1", "keys": {"k1": base64.b64encode(b"k" * 32).decode()}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RXYCODE_BYOK_KEYRING_FILE", str(ring))
     client, _me = _client(postgres_url, "totp@example.com")
     pyotp = pytest.importorskip("pyotp")
 

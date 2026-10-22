@@ -553,6 +553,7 @@ def _ensure_default_project(db: Session, tenant_id: str) -> str:
         tenant_id=tenant_id,
         name=_DEFAULT_PROJECT_NAME,
         repo_config={},
+        is_default=True,
     )
     db.add(project)
     db.flush()

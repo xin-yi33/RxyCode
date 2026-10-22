@@ -80,8 +80,8 @@ def test_w6_c05_integration(tmp_path: Path) -> None:
                 assert queued.dispatch_status == "pending"
             loaded = load_run(DATABASE, run_id)
             assert loaded["message"] == "scheduled run"
-            assert loaded["permission_profile"] == "default"
-            assert loaded["target_id"] == ""
+            assert loaded["permission_profile"] == "confirm"
+            assert loaded["target_id"] == f"cloud:{tenant}:{ids['project']}"
             assert loaded["session_id"] == ids["session_a"]
         finally:
             engine.dispose()
