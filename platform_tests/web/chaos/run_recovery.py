@@ -565,9 +565,10 @@ def scenario_worker_kill_after_side_effect(url: str, workdir: Path) -> dict:
     journal_dir = Path(tempfile.mkdtemp(prefix="w7c02-s2j-", dir=workdir))
     marker = f"c02marker-s2-{uuid.uuid4().hex[:8]}"
     _MARKERS.append(marker)
+    exe = "python" if os.name == "nt" else "python3"
     command = (
-        "Add-Content -LiteralPath 'c02-side.txt' -Value 'once' -Encoding utf8; "
-        f"Start-Sleep -Seconds 30  # {marker}"
+        f"{exe} -c \"from pathlib import Path; Path('c02-side.txt').write_text('once', encoding='utf-8')\"; "
+        f"sleep 30 # {marker}"
     )
     target = wd / "c02-side.txt"
     call_id = "call_" + uuid.uuid4().hex
