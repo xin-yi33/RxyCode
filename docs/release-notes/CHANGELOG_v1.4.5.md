@@ -408,3 +408,14 @@
 ### 涉及文件
 
 `apps/web/src/features/approvals/QuestionItem.tsx`、`questionOptions.ts`（新）、`questionAnswerGuard.ts`（新）、`apps/web/src/features/runs/eventReducer.ts`、`tools/document_text.py`（新）、`tools/read.py`、`packages/rxycode-worker/src/rxycode_worker/drain.py`、`core/build_workflow.py`、`core/agent_v2.py`、`tests/web/w3/test_w3_question_card.py`（新）、`tests/web/w11/test_w11_attachments_staging.py`（新）、`tests/test_tools/test_read_documents.py`（新）、`tests/test_core/test_build_workflow.py`、`scripts/deploy-web-vm.sh`（新）、`docs/deploy/CLOUD-FIX-20261024-PLAN.md`（新）。
+
+### CI 稳定性修复（PR #24 期间，2026-10-24 后段）
+
+- **w4-c07 间歇失败根因（真实缺陷）**：`devices/pairing.py` 的 `issue()` 用 `secrets.token_urlsafe(18)` 生成配对码——urlsafe 字符集含 `-`，约 1.5% 概率首字符为 `-`；此时 `rxycode-connect connect --code -xYz…` 中 argparse 把 code 值误判为 option 报 `expected one argument`，同 SHA 随机复现。修复三层：
+  - `pairing.py`：配对码首字符不得为 `-`（重抽）；
+  - `capabilities.py` `connect_main`：argv 预处理，凡 `--opt <value>` 中 value 以 `-` 开头且非已知 option 名，折叠为 `--opt=<value>` 再 `parse_args`（覆盖 `--code`/`--device-id` 等所有值参数——用户自起名的 `-` 前缀值同样受保护）；
+  - `test_w4_c07_unit.py`：`--code=<v>` 等号形式传值。
+- **w6-c06 `oauth_states` 缺失**：测试自建 per-worker 库但未跑迁移；补 `upgrade_head(DATABASE)`（`006_auth_and_runs.py` 才建该表）。
+- **w3 登录 flake**：`_login` 60s 导航/默认超时 + 先等 login POST 响应再等 `/app` 路径、失败重试一次并带诊断；URL 匹配改 path 精确匹配防 query 误判。
+- **w6-c03 外网导航 flake**：`example.com` 导航遇 `ERR_NETWORK_*` 重试一次。
+- **pg 测试基建竞争**：`tests/support/pgurl.py` `ensure_container` 统一 "inspect→run" 竞窗——名冲突视为兄弟进程已建、继续就绪探测；w2/w5/w7 conftest 同款内联 `docker run --name` 统一收编；支持 `RXYCODE_PGURL` 外部库。
