@@ -42,7 +42,10 @@ RUN apt-get update -qq \
     && rm -rf /var/lib/apt/lists/*
 
 COPY infra/docker/requirements-web.txt /tmp/requirements-web.txt
-RUN python -m pip install --quiet --no-cache-dir -r /tmp/requirements-web.txt \
+# Optional mirror for slow networks: --build-arg PIP_INDEX_URL=https://…/simple
+ARG PIP_INDEX_URL=""
+RUN python -m pip install --quiet --no-cache-dir \
+    ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r /tmp/requirements-web.txt \
     && rm /tmp/requirements-web.txt
 
 # --- release payload at /repo (same whitelist as api.Dockerfile) -------------

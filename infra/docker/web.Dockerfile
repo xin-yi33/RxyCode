@@ -15,9 +15,11 @@ FROM node:22-slim AS webbuild
 WORKDIR /build
 
 # Lockfile first for layer caching; npm ci fails loudly without it.
+# Optional mirror for slow networks: --build-arg NPM_REGISTRY=https://…
 COPY apps/web/package.json apps/web/package-lock.json /build/apps/web/
 WORKDIR /build/apps/web
-RUN npm ci --no-audit --no-fund
+ARG NPM_REGISTRY=""
+RUN npm ci --no-audit --no-fund ${NPM_REGISTRY:+--registry="$NPM_REGISTRY"}
 
 COPY apps/web /build/apps/web
 # vite.config.ts aliases @desktop/sessionVisualState to this repo-root file —
