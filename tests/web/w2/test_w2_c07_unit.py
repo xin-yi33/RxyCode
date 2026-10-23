@@ -43,7 +43,6 @@ from rxycode_server.runs.service import create_run  # noqa: E402
 ORIGIN = "http://127.0.0.1"
 SECRET = "local-web-secret-value-32bytes!!"
 _MINIO = "rxy-w2c07-minio"
-_S3 = "http://127.0.0.1:59000"
 _ACCESS = "rxycode"
 _SECRET_KEY = "rxy-minio-secret-value"
 _BUCKET = "rxycode-artifacts"
@@ -56,13 +55,15 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _minio() -> dict[str, str]:
     _docker("rm", "-f", _MINIO)
+    # Ephemeral host port — fixed ports raced parallel containers on the
+    # shared CI runner ("address already in use" flakes).
     started = _docker(
         "run",
         "-d",
         "--name",
         _MINIO,
         "-p",
-        "127.0.0.1:59000:9000",
+        "127.0.0.1:0:9000",
         "-e",
         f"MINIO_ROOT_USER={_ACCESS}",
         "-e",
@@ -70,10 +71,14 @@ def _minio() -> dict[str, str]:
         "bitnamilegacy/minio:2025.7.23",
     )
     assert started.returncode == 0, started.stderr
+    bound = _docker("port", _MINIO, "9000/tcp")
+    port = bound.stdout.strip().rsplit(":", 1)[-1]
+    assert bound.returncode == 0 and port.isdigit(), bound.stderr or bound.stdout
+    endpoint = f"http://127.0.0.1:{port}"
     deadline = time.time() + 40
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:59000/minio/health/live", timeout=2) as response:
+            with urllib.request.urlopen(f"{endpoint}/minio/health/live", timeout=2) as response:
                 if response.status == 200:
                     break
         except Exception:
@@ -82,7 +87,7 @@ def _minio() -> dict[str, str]:
         logs = _docker("logs", _MINIO)
         raise RuntimeError(logs.stderr or logs.stdout or "minio did not become ready")
     return {
-        "endpoint": _S3,
+        "endpoint": endpoint,
         "bucket": _BUCKET,
         "access_key": _ACCESS,
         "secret_key": _SECRET_KEY,
