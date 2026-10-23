@@ -217,3 +217,23 @@
 - **修复**：`pty.py` 新增 `_child_env()`——本地 `_PosixPty`/`_WinPty` spawn 时剥离 `COLUMNS`/`LINES`（沙箱路径 `_cloud_env` 本就无此二值）。spawn 出的终端尺寸由内核 PTY winsize 权威回答，与真实终端仿真器语义一致（xterm/ConPTY 不向子进程 env 注入宿主窗口尺寸）。这是真实产品修复，不止为测试：任何带 `COLUMNS`/`LINES` 的环境（tmux/systemd 单元/CI shell）下打开的终端此前都会谎报尺寸。
 - **chaos `_redis_start` 端口竞争**：固定 `-p 127.0.0.1:56390:6379` 在 GHA 上偶发 `failed to set up container networking: driver failed programming external connectivity`（iptables 编程竞争/残留绑定）。改 `-p 127.0.0.1:0:6379` 临时端口 + `docker port` 发现并回写有效 `redis://` URL；场景用 pause/unpause，端口映射不变。
 - **验证**：本机 `tests/web/w3/test_w3_c05_unit.py` 2/2 通过（winpty 路径同样走 `_child_env`）；`ruff` 两文件绿。
+
+## 功能：Web 附件链路 + 产物清单/预览 + 能力契约（UI-2026-10-22 §07/08/09 批）（2026-10-23）
+
+- **API-FILE-01..06 附件暂存**：`attachments`/`preview_jobs` 新表（迁移 `012_files_batch`）+ `Attachment` 生命周期（created/uploading/processing/ready/failed/cancelled/deleted/expired，revision 并发保护、received_bytes 实时进度）。`POST /attachments` 幂等创建（owner+request_id 同意图）、`PUT /content` 有界流式落盘（spool 到临时文件再推 store，内存有界；超限 413、declared≠received 400）、`GET` 状态、`POST /cancel`、`DELETE` 幂等删除。存储抽象 `BlobStore`：S3 私有桶 + FS 回退（`RXYCODE_ATTACHMENTS_ROOT`），key 恒 `tenants/{id}/` 命名空间，FS 路径逃逸拒绝。
+- **API-RUN-01 同事务绑定**：`POST /tasks`、`POST /sessions/{id}/runs` 接受 `attachment_ids`；request_id 幂等摘要纳入有序附件清单（同 key 换文件 409）；`bind_for_run` 在 create_run 事务内校验租户/owner/ready/session/过期，失败整 Run 回滚无半绑；`run.created` 载荷带 `attachments` 清单（id/文件名/size/sha256/object_key），`load_run` 原样回填给 worker。
+- **Worker 导入链**：父进程把绑定附件从受控存储流式拉进 claim 私有暂存目录（sha256 复核），ro_bind 进子沙箱；子进程拷入 `workdir/imports/` 后以 `{path,name}` 描述符走 `dispatch_surface_prompt(..., attachments=)` → 共享 `Session.prompt` 附件管道（`prompt_attachments` 的数量/大小/vision 门控原样生效）。导入失败发 `attachment.import` 持久事件并拒启动，不静默丢附件假成功。
+- **API-WEB-CAP**：`GET /me` 新增 `web_capabilities`（attachments 开关跟随真实 BlobConfig、上限、preview.kinds 诚实标注 pdf/office=false）；`GET /models` 每项带 `input_capabilities`（text/images/files/verified——fallback resolver 对未知 BYOK provider 报 `verified:false` 不装懂）。
+- **FR-WEB-02 稳定提示层**：`RunContext.surface`（服务端设置，`from_authenticated` 拒绝客户端 claimed surface/run_id/密钥字段）为 `web` 时，`AgentV2._active_system_prompt` 在共享 S1 后追加 `core/prompts/web_surface.WEB_SURFACE_APPENDIX`——固定文本、单一消息内追加、不产生第二条 system 消息、跨租户字节一致保住 prefix cache。
+- **API-ART-01/02 清单化**：`Artifact` 增 `filename/relative_path/availability/partial/preview_kind/created_at`；`GET /runs/{id}/artifacts` 返回 envelope `{manifest_status,manifest_revision,next_cursor,artifacts[]}`（运行中 partial、终态 complete），每项带 15 分钟短签 `download_url`；`GET …/artifacts/{id}` 流式下载 + Range（206/Content-Range）+ `Content-Disposition` 安全文件名 + `Accept-Ranges`。worker 在 turn 收尾对工作区做快照 diff，`store_artifact` 登记新增/修改文件（密钥/缓存/未改原上传排除由 diff 白名单负责）。
+- **API-RUN-OBS**：`GET /runs/{id}` 增 `attachment_imports/diagnostics/timings/policy_version` 观测面。
+- **API-PREVIEW-01/02 最小真实实现**：`POST /previews {artifact_id}` 同 sha256 去重复用存活 job；`image/*` kind=image 直接流转原始字节；HTML 与文本族 kind=frontend 内联有界转换（≤8MB 源）为转义 `<pre>` 静态页存入私有桶；不支持类型诚实 `failed` + `preview_unsupported`，不把转换中失败说成 POST 422。`GET /previews/{id}/content` 经会话 cookie 鉴权，转换页以 CSP `sandbox allow-scripts` + nosniff 双墙伺服；job 过期懒标 `expired`。
+- **Composer 附件卡（FILE-01..08）**：选择/粘贴/拖入三种入口，卡上显示文件名/大小/进度环/失败原因，支持取消（AbortController）、移除、失败重试（按契约另建替代记录）；存在未就绪附件时提交被拦截并提示，body 带 `attachment_ids`；`web_capabilities.attachments=false` 时隐藏入口。
+- **产物行 + 预览抽屉**：`ArtifactRows` 挂在每个 run 的 Final 下（终态后轮询停），行内文件名/大小/部分徽章/可用性 + 下载（签名 URL）+ 预览按钮；`PreviewDrawer` 桌面 50/50 右分屏、移动全屏，iframe `sandbox` + `no-referrer`，job 未就绪显示生成中、`failed/expired` 显示诚实原因，Esc/关闭按钮可退。
+- **验证**：`tests/web/w11` 8/8 通过（附件生命周期/租户隔离/413/400/未就绪拒绑/manifest 字段/预览 ready-failed-去重-隔离/CSP/web_capabilities/RunContext/提示追加）；`apps/web` `tsc --noEmit` 绿。
+- **本批修复**：附件 PUT 失败时 `db.rollback()` 会连同 `_fail` 状态标记一起回滚使行滞留 `created`——契约要求 failed 为可查询终态（重试经 API-ATT-01 另建记录），改为先提交失败标记再抛错；`api/previews` 的 `_db` Session 补 `close()` 消除连接泄漏。
+
+## CI 修复：xdist 共享 dist 竞争 + w6 空库缺表（2026-10-23）
+
+- **根因 1（w3_c01/c02 build 竞争）**：`build_web()` 与 `production_web_origin`/`production_origin` 都把 `apps/web/dist` 当共享目录——`--dist loadscope` 下两个 worker 并行 `bun run build`/`vite build`，一方 `rmtree` 撞另一方 rollup 渲染（`ENOENT` chunk → `index.html` 缺失级联）。改为每 worker 独立 `dist-<PYTEST_XDIST_WORKER>` 输出（`vite build --outDir` / `vite preview --outDir`），`_source_digest` 排除全部 `dist*` 目录，`bun install` 用 O_EXCL lockfile 跨 worker 串行（600s 超时 + 陈旧锁回收）。本地非 xdist 仍写 `dist`。
+- **根因 2（w6_c06 `oauth_states` 不存在）**：`cloud_release_journey` 从不建 schema，原先靠同库兄弟测试顺带 migrate；`worker_url` 每 worker 独立库后新库无表。模块级补 `upgrade_head(DATABASE)`。本地验证已越过建表进入 `_minio()` 阶段（该用例需 docker+minio，属 CI/VM 环境）。

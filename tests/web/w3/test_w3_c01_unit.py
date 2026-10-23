@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -42,21 +43,55 @@ def _bun() -> str:
     raise FileNotFoundError("bun")
 
 
+# pytest-xdist fans sibling modules across workers — building into the shared
+# ``dist/`` raced (rmtree under an in-flight rollup write). Every worker gets
+# its own output directory; local serial runs keep the plain ``dist`` name.
+_WORKER = re.sub(r"[^A-Za-z0-9_]", "_", os.environ.get("PYTEST_XDIST_WORKER") or "main")
+
+
+def _dist_dir() -> Path:
+    return WEB / ("dist" if _WORKER == "main" else f"dist-{_WORKER}")
+
+
 def _source_digest() -> str:
     digest = hashlib.sha256()
     for path in sorted(WEB.rglob("*")):
-        if not path.is_file() or "node_modules" in path.parts or "dist" in path.parts:
+        if not path.is_file() or "node_modules" in path.parts:
+            continue
+        if any(part == "dist" or part.startswith("dist-") for part in path.parts):
             continue
         digest.update(str(path.relative_to(WEB)).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
 
+def _bun_install() -> None:
+    """Serialize ``bun install`` across xdist workers with a lockfile."""
+    lock = WEB / ".install.lock"
+    deadline = time.monotonic() + 600
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise RuntimeError("bun install lock did not clear in 600s") from None
+            if lock.stat().st_mtime < time.time() - 600:
+                lock.unlink(missing_ok=True)  # stale holder died mid-install
+                continue
+            time.sleep(1)
+    try:
+        subprocess.run([_bun(), "install"], cwd=WEB, check=True)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def build_web() -> Path:
     """Install and build the shipped Vite app. A second call reuses that dist."""
     package = WEB / "package.json"
     assert package.is_file(), "apps/web/package.json is missing"
-    dist = WEB / "dist"
+    dist = _dist_dir()
     stamp = dist / ".built"
     digest = _source_digest()
     fresh = stamp.is_file() and stamp.read_text(encoding="utf-8") == digest
@@ -64,8 +99,11 @@ def build_web() -> Path:
         return dist
     if dist.exists():
         shutil.rmtree(dist)
-    subprocess.run([_bun(), "install"], cwd=WEB, check=True)
-    subprocess.run([_bun(), "run", "build"], cwd=WEB, check=True)
+    _bun_install()
+    # ``build`` is ``tsc --noEmit && vite build`` — the extra flag lands on vite.
+    subprocess.run(
+        [_bun(), "run", "build", "--outDir", dist.name], cwd=WEB, check=True
+    )
     assert (dist / "index.html").is_file()
     stamp.write_text(digest, encoding="utf-8")
     return dist

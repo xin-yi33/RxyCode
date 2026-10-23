@@ -21,6 +21,12 @@ ensure_container("rxy-w2c01-pg", 55432)
 DATABASE = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 
+# Every xdist worker gets a fresh database — nothing else migrates it, and the
+# release journey below writes oauth_states/users directly.
+from rxycode_server.persistence.migrate import upgrade_head
+
+upgrade_head(DATABASE)
+
 
 def test_w6_c06_contract() -> None:
     """Login starts, a real pytest runs, and the artifact download matches that output."""

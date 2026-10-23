@@ -1,9 +1,22 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+} from "react"
 import { Link, useLocation, useNavigate } from "react-router"
 import { useQueryClient } from "@tanstack/react-query"
 
 import { IconClose, IconSend, IconSpinner, IconStop } from "../../components/icons"
-import { ApiError, createClient, type RunAccepted, type RunSummary } from "../../sdk/client"
+import {
+  ApiError,
+  createClient,
+  type Attachment,
+  type RunAccepted,
+  type RunSummary,
+} from "../../sdk/client"
 import { apiErrorText, isUnauthorized } from "../../sdk/errors"
 import { useUi, type PermissionProfile } from "../../state/ui"
 import { createSecureRequestId } from "../../lib/secureRequestId"
@@ -27,6 +40,26 @@ const PROFILES: { value: PermissionProfile; label: string; hint: string }[] = [
   { value: "confirm", label: "需要确认", hint: "执行有风险的工具前会先征求你的同意" },
   { value: "full", label: "完全自动", hint: "工具不经确认直接执行" },
 ]
+
+// 一张附件卡：本地 File 句柄 + 服务端暂存行。File 对象不可序列化，
+// 不随草稿持久化 —— 刷新后卡片消失是诚实的（文件句柄已失效）。
+type PendingFile = {
+  localId: string
+  file: File
+  attachment: Attachment | null
+  progress: number // 0..1 上传环
+  error: string
+  controller: AbortController
+}
+
+let pendingSeq = 0
+const nextLocalId = () => `pf-${++pendingSeq}`
+
+function formatBytes(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)}MB`
+  if (size >= 1024) return `${Math.ceil(size / 1024)}KB`
+  return `${size}B`
+}
 
 export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const navigate = useNavigate()
@@ -56,6 +89,8 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     (effectiveCatalogModel?.source === "platform" || !effectiveCatalogModel)
   const [sending, setSending] = useState(false)
   const [cancelling, setCancelling] = useState(false)
+  const [files, setFiles] = useState<PendingFile[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState("")
   const [errorLink, setErrorLink] = useState<{ to: string; label: string } | null>(null)
   // "send" | "model" —— 同一个登录提示层，措辞随触发点不同。
@@ -98,6 +133,106 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     setErrorLink(link)
   }
 
+  // ---- 附件（API-FILE-*）：卡片先在本地出现，暂存/上传/绑定的每一步都可观测。
+  const webCaps = auth.me?.web_capabilities
+  const attachmentsEnabled = webCaps?.attachments !== false
+  const maxBytes = webCaps?.attachment_max_bytes ?? 100 * 1024 * 1024
+  const maxPerRun = webCaps?.attachment_max_per_run ?? 10
+  const uploadsBusy = files.some((f) => !f.attachment || f.attachment.state !== "ready")
+  const readyIds = files
+    .filter((f) => f.attachment?.state === "ready")
+    .map((f) => f.attachment!.attachment_id)
+
+  const patchFile = (localId: string, patch: Partial<PendingFile>) => {
+    setFiles((prev) => prev.map((f) => (f.localId === localId ? { ...f, ...patch } : f)))
+  }
+
+  const startUpload = async (entry: PendingFile) => {
+    try {
+      const created = await api.createAttachment({
+        filename: entry.file.name,
+        content_type: entry.file.type || "application/octet-stream",
+        size_bytes: entry.file.size,
+        session_id: sessionId,
+      })
+      patchFile(entry.localId, { attachment: created, error: "" })
+      const done = await api.uploadAttachmentContent(
+        created.attachment_id,
+        entry.file,
+        (received, total) => patchFile(entry.localId, { progress: total ? received / total : 0 }),
+        entry.controller.signal,
+      )
+      patchFile(entry.localId, { attachment: done, progress: 1 })
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "ABORTED") return
+      patchFile(entry.localId, {
+        error: err instanceof ApiError ? err.code : "上传失败",
+      })
+    }
+  }
+
+  const addFiles = (list: FileList | File[]) => {
+    setError("")
+    for (const file of Array.from(list)) {
+      if (files.length >= maxPerRun) {
+        fail(`一次任务最多 ${maxPerRun} 个附件`)
+        return
+      }
+      if (file.size > maxBytes) {
+        fail(`「${file.name}」超过 ${formatBytes(maxBytes)} 上限`)
+        continue
+      }
+      const entry: PendingFile = {
+        localId: nextLocalId(),
+        file,
+        attachment: null,
+        progress: 0,
+        error: "",
+        controller: new AbortController(),
+      }
+      setFiles((prev) => [...prev, entry])
+      void startUpload(entry)
+    }
+  }
+
+  const removeFile = (entry: PendingFile) => {
+    entry.controller.abort()
+    setFiles((prev) => prev.filter((f) => f.localId !== entry.localId))
+    if (entry.attachment?.attachment_id) {
+      void api.deleteAttachment(entry.attachment.attachment_id).catch(() => undefined)
+    }
+  }
+
+  const retryFile = (entry: PendingFile) => {
+    // 失败行在服务端已是终态 —— 重新建一张暂存行，不留孤儿。
+    if (entry.attachment?.attachment_id) {
+      void api.deleteAttachment(entry.attachment.attachment_id).catch(() => undefined)
+    }
+    const controller = new AbortController()
+    patchFile(entry.localId, {
+      error: "",
+      progress: 0,
+      attachment: null,
+      controller,
+    })
+    void startUpload({ ...entry, attachment: null, error: "", progress: 0, controller })
+  }
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = event.clipboardData?.files
+    if (pasted && pasted.length) {
+      event.preventDefault()
+      addFiles(pasted)
+    }
+  }
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer?.files?.length) {
+      event.preventDefault()
+      addFiles(event.dataTransfer.files)
+    }
+  }
+
   const update = (nextText: string) => {
     setError("")
     setErrorLink(null)
@@ -112,6 +247,11 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const submit = async () => {
     const message = text.trim()
     if (sending || active || !message) return
+    if (files.length > 0 && uploadsBusy) {
+      const failed = files.find((f) => f.error)
+      fail(failed ? "附件上传失败：请重试或移除后发送" : "附件还在上传，就绪后才能发送")
+      return
+    }
     if (auth.status === "pending") {
       fail("正在确认登录状态，请稍候…")
       return
@@ -151,6 +291,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
         request_id: rid,
         permission_profile: permission,
         model_ref: effectiveModelRef,
+        attachment_ids: readyIds.length ? readyIds : undefined,
       }
       const accepted = sessionId
         ? await api.createRun(sessionId, body)
@@ -252,7 +393,57 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             "rounded-2xl border border-border bg-card transition-colors " +
             "focus-within:border-muted"
           }
+          onDrop={attachmentsEnabled ? onDrop : undefined}
+          onDragOver={attachmentsEnabled ? (event) => event.preventDefault() : undefined}
         >
+          {files.length > 0 ? (
+            <ul data-attachments className="flex flex-wrap gap-2 px-3 pt-3">
+              {files.map((entry) => {
+                const state = entry.attachment?.state
+                const uploading = !entry.error && state !== "ready"
+                return (
+                  <li
+                    key={entry.localId}
+                    className={
+                      "flex items-center gap-2 rounded-lg border border-border " +
+                      "bg-sidebar px-2.5 py-1.5 text-xs"
+                    }
+                    title={entry.attachment?.reason ?? undefined}
+                  >
+                    <span className="max-w-40 truncate">{entry.file.name}</span>
+                    <span className="text-muted">{formatBytes(entry.file.size)}</span>
+                    {entry.error ? (
+                      <>
+                        <span className="text-failure">失败</span>
+                        <button
+                          type="button"
+                          className="text-muted-ink underline"
+                          onClick={() => retryFile(entry)}
+                        >
+                          重试
+                        </button>
+                      </>
+                    ) : uploading ? (
+                      <span className="text-muted-ink" aria-live="polite">
+                        {Math.round(entry.progress * 100)}%
+                      </span>
+                    ) : (
+                      <span className="text-success">就绪</span>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={`移除 ${entry.file.name}`}
+                      title="移除"
+                      className="rounded p-0.5 text-muted hover:bg-card"
+                      onClick={() => removeFile(entry)}
+                    >
+                      <IconClose size={10} />
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
           <textarea
             ref={areaRef}
             aria-label="消息"
@@ -266,6 +457,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             disabled={sending || active}
             onChange={(event) => update(event.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={attachmentsEnabled ? onPaste : undefined}
           />
           <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
             <select
@@ -291,6 +483,34 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                 </option>
               ))}
             </select>
+            {attachmentsEnabled ? (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  aria-label="选择附件"
+                  onChange={(event) => {
+                    if (event.target.files?.length) addFiles(event.target.files)
+                    event.target.value = ""
+                  }}
+                />
+                <button
+                  type="button"
+                  aria-label="添加附件"
+                  title="添加附件（也可以粘贴或拖入文件）"
+                  disabled={sending || active}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={
+                    "rounded-full border border-border px-3 py-1.5 text-xs " +
+                    "text-muted-ink hover:bg-sidebar disabled:opacity-50"
+                  }
+                >
+                  附件
+                </button>
+              </>
+            ) : null}
             <div className="ml-auto flex items-center gap-2">
               <ModelPicker
                 draftKey={draftKey}

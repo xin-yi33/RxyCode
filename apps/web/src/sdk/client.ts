@@ -21,7 +21,21 @@ export type Me = {
   organization: { id: string; tenant_id: string }
   membership: { role: string }
   default_project_id: string | null
+  web_capabilities?: WebCapabilities
 }
+
+// API-WEB-CAP：服务端真实能力 —— 前端据此隐藏不可兑现的入口。
+export type WebCapabilities = {
+  attachments: boolean
+  attachment_max_bytes?: number
+  attachment_max_per_run?: number
+  preview?: {
+    kinds?: Partial<Record<PreviewKind, boolean>>
+  }
+  surface?: string
+}
+
+export type PreviewKind = "frontend_static" | "frontend_build" | "pdf" | "office" | "image"
 
 export type Project = { id: string; name: string } & Partial<ProjectItem>
 
@@ -62,6 +76,85 @@ export type RunDetail = {
   message: string
   permission_profile: string
   model?: RunModel | null
+  // API-RUN-OBS：观测投影，全部来自持久事件。
+  attachment_imports?: AttachmentImport[]
+  diagnostic?: RunDiagnostic
+  timings?: { phases?: { name: string; elapsed_ms: number }[] }
+  effective_web_policy_version?: string
+}
+
+export type AttachmentImport = {
+  attachment_id: string
+  filename: string
+  size_bytes: number
+  sha256: string
+  status: string
+  reason?: string
+}
+
+export type RunDiagnostic = {
+  kind: string
+  detail: string
+  recoverable: boolean
+}
+
+// ---- 附件暂存（API-FILE-01..06） -------------------------------------------
+
+export type Attachment = {
+  attachment_id: string
+  filename: string
+  content_type: string
+  size_bytes: number
+  sha256: string | null
+  state: "created" | "uploading" | "processing" | "ready" | "failed" | "cancelled" | "deleted" | "expired"
+  stage: "upload" | "process" | null
+  received_bytes: number
+  progress: number
+  error_code: string | null
+  reason: string | null
+  revision: number
+  expires_at: string | null
+  upload_url?: string
+}
+
+// ---- 产物清单（API-ART-01/02） ---------------------------------------------
+
+export type ArtifactItem = {
+  artifact_id: string
+  filename: string
+  relative_path: string
+  availability: "available" | "pending" | "failed" | string
+  partial: boolean
+  preview_kind: PreviewKind | null
+  sha256: string
+  size: number
+  content_type: string
+  expires_at: string
+  download_url: string
+}
+
+export type ArtifactManifest = {
+  run_id: string
+  manifest_status: "complete" | "partial" | string
+  manifest_revision: number
+  next_cursor: string | null
+  artifacts: ArtifactItem[]
+}
+
+// ---- 预览（API-PREVIEW-01/02） -----------------------------------------------
+
+export type PreviewJob = {
+  preview_id: string
+  artifact_id: string
+  run_id: string
+  sha256: string
+  kind: PreviewKind | string
+  status: "queued" | "running" | "ready" | "failed" | "expired" | "cancelled" | string
+  entrypoint: string | null
+  preview_url: string | null
+  error_code: string | null
+  reason: string | null
+  expires_at: string | null
 }
 
 // ---- BYOK（PRD §7.2，api/models.py） ---------------------------------------
@@ -127,6 +220,14 @@ export type ConnectionTestResult = {
   test_status: string
 }
 
+// API-WEB-CAP：模型能吃什么。verified=false 时 provider 未确认，UI 按保守展示。
+export type InputCapabilities = {
+  text: boolean
+  images: boolean
+  files: boolean
+  verified: boolean
+}
+
 export type ModelItem = {
   model_ref: string
   model_id: string
@@ -137,6 +238,7 @@ export type ModelItem = {
   connection_name: string
   source: "byok" | "platform" | string
   status: "available" | "revoked" | "no_key" | string
+  input_capabilities?: InputCapabilities
 }
 
 export type ModelsCatalog = {
@@ -612,6 +714,7 @@ export function createClient() {
       project_id?: string
       // "platform" 哨兵或 "m_…" 目录引用；null/缺省 = 服务端默认链。
       model_ref?: string | null
+      attachment_ids?: string[]
     }): Promise<RunAccepted> {
       return writeJson("/api/v1/tasks", body) as Promise<RunAccepted>
     },
@@ -622,6 +725,7 @@ export function createClient() {
         request_id: string
         permission_profile: "confirm" | "full"
         model_ref?: string | null
+        attachment_ids?: string[]
       },
     ): Promise<RunAccepted> {
       const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/runs`
@@ -1090,13 +1194,92 @@ export function createClient() {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/questions`
       return writeJson(path, body) as Promise<{ status: string }>
     },
-    listArtifacts(runId: string, signal?: AbortSignal): Promise<{
-      artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
-    }> {
-      const path = `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`
-      return readJson(path, signal) as Promise<{
-        artifacts: { artifact_id: string; sha256: string; size: number; content_type: string }[]
-      }>
+    listArtifacts(
+      runId: string,
+      opts: { after?: string; signal?: AbortSignal } = {},
+    ): Promise<ArtifactManifest> {
+      const qs = opts.after ? `?after=${encodeURIComponent(opts.after)}` : ""
+      const path = `/api/v1/runs/${encodeURIComponent(runId)}/artifacts${qs}`
+      return readJson(path, opts.signal) as Promise<ArtifactManifest>
+    },
+    // ---- 附件（API-FILE-01..06）：先暂存、随 run 绑定 ----------------------
+    createAttachment(body: {
+      filename: string
+      content_type?: string
+      size_bytes?: number
+      session_id?: string | null
+      request_id?: string
+    }): Promise<Attachment> {
+      return writeJson("/api/v1/attachments", body) as Promise<Attachment>
+    },
+    // 进度走 XHR upload —— fetch 没有上传进度事件。signal 取消时服务端
+    // 留下 uploading 行，由 cancelAttachment 显式收尾。
+    uploadAttachmentContent(
+      attachmentId: string,
+      file: Blob,
+      onProgress?: (received: number, total: number) => void,
+      signal?: AbortSignal,
+    ): Promise<Attachment> {
+      return fetchCsrfToken().then(
+        (token) =>
+          new Promise<Attachment>((resolve, reject) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open(
+              "PUT",
+              `/api/v1/attachments/${encodeURIComponent(attachmentId)}/content`,
+            )
+            xhr.withCredentials = true
+            xhr.setRequestHeader("content-type", "application/octet-stream")
+            xhr.setRequestHeader("x-csrf-token", token)
+            xhr.responseType = "json"
+            xhr.upload.onprogress = (event) => {
+              if (onProgress) onProgress(event.loaded, event.total || file.size)
+            }
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(xhr.response as Attachment)
+                return
+              }
+              const body = (xhr.response ?? {}) as { code?: string; detail?: string }
+              reject(
+                new ApiError(
+                  xhr.status,
+                  String(body.code ?? body.detail ?? "UNAVAILABLE"),
+                ),
+              )
+            }
+            xhr.onerror = () => reject(new ApiError(0, "UNAVAILABLE"))
+            xhr.onabort = () => reject(new ApiError(0, "ABORTED"))
+            if (signal) {
+              if (signal.aborted) {
+                xhr.abort()
+                return
+              }
+              signal.addEventListener("abort", () => xhr.abort(), { once: true })
+            }
+            xhr.send(file)
+          }),
+      )
+    },
+    getAttachment(attachmentId: string, signal?: AbortSignal): Promise<Attachment> {
+      const path = `/api/v1/attachments/${encodeURIComponent(attachmentId)}`
+      return readJson(path, signal) as Promise<Attachment>
+    },
+    cancelAttachment(attachmentId: string): Promise<Attachment> {
+      const path = `/api/v1/attachments/${encodeURIComponent(attachmentId)}/cancel`
+      return writeJson(path, {}) as Promise<Attachment>
+    },
+    deleteAttachment(attachmentId: string): Promise<void> {
+      const path = `/api/v1/attachments/${encodeURIComponent(attachmentId)}`
+      return writeJson(path, {}, {}, "DELETE").then(() => undefined)
+    },
+    // ---- 预览（API-PREVIEW-01/02） ------------------------------------------
+    createPreview(artifactId: string): Promise<PreviewJob> {
+      return writeJson("/api/v1/previews", { artifact_id: artifactId }) as Promise<PreviewJob>
+    },
+    getPreview(previewId: string, signal?: AbortSignal): Promise<PreviewJob> {
+      const path = `/api/v1/previews/${encodeURIComponent(previewId)}`
+      return readJson(path, signal) as Promise<PreviewJob>
     },
     cancelRun(runId: string): Promise<{ status: string }> {
       const path = `/api/v1/runs/${encodeURIComponent(runId)}/cancel`

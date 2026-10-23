@@ -23,6 +23,9 @@ from playwright.sync_api import expect, sync_playwright
 
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
+# Per-xdist-worker build output — sibling modules share nothing under apps/web.
+_WORKER = re.sub(r"[^A-Za-z0-9_]", "_", os.environ.get("PYTEST_XDIST_WORKER") or "main")
+_DIST = WEB / ("dist" if _WORKER == "main" else f"dist-{_WORKER}")
 SERVER_SRC = REPO / "packages" / "rxycode-server" / "src"
 CADDYFILE = REPO / "infra" / "compose" / "Caddyfile.prod"
 if str(SERVER_SRC) not in sys.path:
@@ -106,7 +109,7 @@ def production_web_origin() -> str:
         errors="replace",
     )
     subprocess.run(
-        [node, str(vite), "build"],
+        [node, str(vite), "build", "--outDir", _DIST.name],
         cwd=WEB,
         check=True,
         timeout=180,
@@ -121,7 +124,10 @@ def production_web_origin() -> str:
         port = int(probe.getsockname()[1])
     origin = f"http://127.0.0.1:{port}"
     server = subprocess.Popen(
-        [node, str(vite), "preview", "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
+        [
+            node, str(vite), "preview", "--outDir", _DIST.name,
+            "--host", "127.0.0.1", "--port", str(port), "--strictPort",
+        ],
         cwd=WEB,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
@@ -1209,7 +1215,7 @@ def test_theme_topbar_and_settings_entry_points_follow_selected_theme(
 
 def test_production_css_uses_legacy_safe_syntax(production_web_origin: str) -> None:
     assert production_web_origin.startswith("http://127.0.0.1:")
-    css_files = sorted((WEB / "dist" / "assets").glob("*.css"))
+    css_files = sorted((_DIST / "assets").glob("*.css"))
     assert css_files, "production build must emit an asset stylesheet"
     css = "\n".join(path.read_text(encoding="utf-8") for path in css_files)
     forbidden = [

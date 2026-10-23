@@ -30,6 +30,7 @@ from rxycode_server.attachments.store import blob_config_from_env
 from rxycode_server.devices.gateway import Registry, build_router
 from rxycode_server.notifications.service import router as product_router
 from rxycode_server.previews.proxy import PreviewProxy
+from rxycode_server.api.previews import router as artifact_previews_router
 from rxycode_server.previews.proxy import build_router as preview_router
 
 _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
@@ -160,6 +161,7 @@ def create_app(
     app.include_router(sse_router)
     app.include_router(approvals_router)
     app.include_router(artifacts_router)
+    app.include_router(artifact_previews_router)
     app.include_router(files_router)
     app.include_router(version_router)
     app.include_router(product_router)

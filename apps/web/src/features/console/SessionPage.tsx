@@ -3,8 +3,15 @@ import { useQuery } from "@tanstack/react-query"
 import { useParams } from "react-router"
 
 import { Button } from "../../components/ui/button"
-import { createClient, type RunSummary } from "../../sdk/client"
+import {
+  createClient,
+  type ArtifactItem,
+  type PreviewJob,
+  type RunSummary,
+} from "../../sdk/client"
 import { isUnauthorized } from "../../sdk/errors"
+import { PreviewDrawer } from "../preview/PreviewDrawer"
+import { ArtifactRows } from "../runs/ArtifactRows"
 import { RunTimeline } from "../runs/RunTimeline"
 import { isActiveRunStatus } from "../runs/status"
 import { Composer } from "./Composer"
@@ -12,7 +19,13 @@ import { SessionFiles } from "./SessionFiles"
 
 const api = createClient()
 
-function RunCard({ run }: { run: RunSummary }) {
+function RunCard({
+  run,
+  onPreview,
+}: {
+  run: RunSummary
+  onPreview: (artifact: ArtifactItem) => void
+}) {
   // W9-F4: 用户消息气泡、状态行、工具/审批/问题/Final 全部由 RunTimeline
   // 渲染 —— 这里不再画重复的状态行。模型行回显提交时的解析快照
   // （FR-17）；历史 run 没有记录就如实标注，不用当前选择补写过去。
@@ -32,6 +45,7 @@ function RunCard({ run }: { run: RunSummary }) {
         ) : null}
       </p>
       <RunTimeline run={run} />
+      <ArtifactRows runId={run.run_id} status={run.status} onPreview={onPreview} />
     </article>
   )
 }
@@ -40,6 +54,25 @@ export function SessionPage() {
   const { sessionId = "" } = useParams()
   const [older, setOlder] = useState<RunSummary[]>([])
   const [cursor, setCursor] = useState<string | null | undefined>(undefined)
+  const [preview, setPreview] = useState<{ title: string; job: PreviewJob | null } | null>(null)
+  const previewPoll = useQuery({
+    queryKey: ["preview-job", preview?.job?.preview_id],
+    enabled: Boolean(
+      preview?.job &&
+        (preview.job.status === "queued" || preview.job.status === "running"),
+    ),
+    queryFn: ({ signal }) => api.getPreview(preview!.job!.preview_id, signal),
+    refetchInterval: 1_000,
+  })
+  const liveJob = (previewPoll.data as PreviewJob | undefined) ?? preview?.job ?? null
+  const openPreview = (artifact: ArtifactItem) => {
+    const title = artifact.filename || artifact.relative_path
+    setPreview({ title, job: null })
+    void api
+      .createPreview(artifact.artifact_id)
+      .then((job) => setPreview({ title, job }))
+      .catch(() => setPreview(null))
+  }
   const session = useQuery({
     queryKey: ["session", sessionId],
     queryFn: ({ signal }) => api.getSession(sessionId, signal),
@@ -122,10 +155,16 @@ export function SessionPage() {
       <ol className="flex-1 space-y-8 pb-6">
         {ordered.map((run) => (
           <li key={run.run_id} id={`run-${run.run_id}`}>
-            <RunCard run={run} />
+            <RunCard run={run} onPreview={openPreview} />
           </li>
         ))}
       </ol>
+      <PreviewDrawer
+        job={liveJob}
+        title={preview?.title ?? ""}
+        open={preview !== null}
+        onClose={() => setPreview(null)}
+      />
       <div className="sticky bottom-0 -mx-4 space-y-2 bg-background">
         {archived ? null : (
           <>

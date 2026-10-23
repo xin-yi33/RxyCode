@@ -86,7 +86,7 @@ async def put_content(attachment_id: str, request: Request) -> dict:
         db = _db(request)
         store = _store(request)
         try:
-            return service.receive_content(
+            result = service.receive_content(
                 db,
                 store,
                 tenant_id=record.tenant_id,
@@ -95,11 +95,17 @@ async def put_content(attachment_id: str, request: Request) -> dict:
                 stream=spool,
                 expected_bytes=expected,
             )
+            db.commit()
+            return result
         except service.AttachmentError as exc:
-            db.rollback()
+            # The service marks the row failed/cancelled before raising —
+            # persist that truth instead of rolling it back to "created".
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
             raise _map(exc) from exc
         finally:
-            db.commit()
             db.close()
             _close(request)
 

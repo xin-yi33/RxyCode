@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -26,6 +27,9 @@ from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
+# Per-xdist-worker build output — sibling modules share nothing under apps/web.
+_WORKER = re.sub(r"[^A-Za-z0-9_]", "_", os.environ.get("PYTEST_XDIST_WORKER") or "main")
+_DIST = WEB / ("dist" if _WORKER == "main" else f"dist-{_WORKER}")
 
 
 def _json(route, status: int, payload: object) -> None:
@@ -241,7 +245,7 @@ def production_origin():
         pytest.skip("Node.js and installed apps/web Vite dependencies are required")
 
     subprocess.run(
-        [node, str(vite), "build"],
+        [node, str(vite), "build", "--outDir", _DIST.name],
         cwd=WEB,
         check=True,
         timeout=240,
@@ -255,7 +259,10 @@ def production_origin():
         port = int(probe.getsockname()[1])
     origin = f"http://127.0.0.1:{port}"
     server = subprocess.Popen(
-        [node, str(vite), "preview", "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
+        [
+            node, str(vite), "preview", "--outDir", _DIST.name,
+            "--host", "127.0.0.1", "--port", str(port), "--strictPort",
+        ],
         cwd=WEB,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
