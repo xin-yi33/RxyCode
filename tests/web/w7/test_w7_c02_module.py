@@ -47,7 +47,7 @@ ORIGIN = "http://127.0.0.1"
 SECRET = "local-web-secret-value-32bytes!!"
 _REDIS = "rxy-w7c02-redis"
 _STREAM = "rxycode:w7c02"
-REDIS_URL = "redis://127.0.0.1:56390/0"
+REDIS_URL = ""  # set by _redis_start once the ephemeral port is known
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -55,9 +55,16 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _redis_start() -> None:
+    # Ephemeral host port — a fixed bind raced stale containers on CI
+    # (driver failed programming external connectivity / address in use).
+    global REDIS_URL
     _docker("rm", "-f", _REDIS)
-    started = _docker("run", "-d", "--name", _REDIS, "-p", "127.0.0.1:56390:6379", "redis:7")
+    started = _docker("run", "-d", "--name", _REDIS, "-p", "127.0.0.1:0:6379", "redis:7")
     assert started.returncode == 0, started.stderr
+    mapped = _docker("port", _REDIS, "6379/tcp").stdout.strip()
+    port = mapped.rsplit(":", 1)[-1]
+    assert port.isdigit(), f"docker port returned {mapped!r}"
+    REDIS_URL = f"redis://127.0.0.1:{port}/0"
     deadline = time.time() + 30
     while time.time() < deadline:
         if _docker("exec", _REDIS, "redis-cli", "ping").stdout.strip() == "PONG":

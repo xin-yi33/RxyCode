@@ -237,3 +237,29 @@
 
 - **根因 1（w3_c01/c02 build 竞争）**：`build_web()` 与 `production_web_origin`/`production_origin` 都把 `apps/web/dist` 当共享目录——`--dist loadscope` 下两个 worker 并行 `bun run build`/`vite build`，一方 `rmtree` 撞另一方 rollup 渲染（`ENOENT` chunk → `index.html` 缺失级联）。改为每 worker 独立 `dist-<PYTEST_XDIST_WORKER>` 输出（`vite build --outDir` / `vite preview --outDir`），`_source_digest` 排除全部 `dist*` 目录，`bun install` 用 O_EXCL lockfile 跨 worker 串行（600s 超时 + 陈旧锁回收）。本地非 xdist 仍写 `dist`。
 - **根因 2（w6_c06 `oauth_states` 不存在）**：`cloud_release_journey` 从不建 schema，原先靠同库兄弟测试顺带 migrate；`worker_url` 每 worker 独立库后新库无表。模块级补 `upgrade_head(DATABASE)`。本地验证已越过建表进入 `_minio()` 阶段（该用例需 docker+minio，属 CI/VM 环境）。
+
+## 对话型任务 grounding 死锁 + 主机 NO_PROXY 崩溃（2026-10-23）
+
+两处均为实机复现确认，不是推测。
+
+### 1. `/full` 对“无可交付物”的对话回合必然失败
+
+- **复现**：`/full 你好` 连续两次稳定失败（20.6s / 26.5s），返回「最终回答未能通过校验，内容与已验证结果不一致」。捕获到的内部 issue 为 `Synthesizer produced no grounded claims; Synthesis answer contains text outside its claim manifest`。
+- **根因（与“validator 太严”的初判不同）**：planner 把问候语标成 `effect=read`；`build_grounding_sources()` 有意跳过 supporting effect（[`validation/final_output.py`](../../validation/final_output.py) 原 96 行），于是 **sources 为空**。synthesizer 拿不到任何可引用证据，只能返回 `[Build incomplete: No completed tasks to synthesize.]`；verifier 再以“无 grounded claim”判失败。叶任务实际 `status=passed`、`result_len=237`、`evidence=1`，却因为 effect 分类被整体排除——**通过的任务无法产出答案**，是死锁而非偶然。
+- **修复**：新增 `_is_conversational_only(tree)`——当所有叶任务均为 supporting effect（read/verify/check/none/explain/search/query/analysis）且状态为 passed/cancelled 时，grounding 契约不适用，改以“答案非空”为通过条件，metrics 打 `conversational_only=1`。
+- **安全性未放宽**：只要树里存在 `write`/`danger`/`auto` 叶任务，仍走严格逐字 claim 校验。补测覆盖：空答案仍 fail、write 任务无证据仍 fail、auto 任务无 claim 仍 fail、正常 grounded 答案仍 pass。
+- **synthesizer 兜底**：sources 为空但存在 passed 叶任务时，不再吐内部占位文案，改为用叶结果让模型自然作答；模型不可用时退回叶结果原文。彻底无结果时才给中文提示。
+- **验证**：修复后 `/full 你好` 返回真实问候语，`verify_grounded_synthesis` 复算 issues 为空。`tests/test_validation/test_conversational_only_grounding.py` 16 项新增；`tests/` 下 grounded/grounding/final_output/side_effect/synthesis 相关回归 252 passed。
+
+### 2. 主机 `NO_PROXY` 含裸 `[::1]` 导致模型客户端无法构造
+
+- **复现**：本机 `NO_PROXY` 以 `[::1]` 结尾时，`ChatOpenAI(...)` 在构造阶段抛 `httpx.InvalidURL: Invalid port: ':1]'`，`AgentV2()` 直接崩溃——任何模型请求都发不出去，与网络和密钥无关。
+- **根因**：httpx 把每个 `NO_PROXY` 条目交给 `httpx._utils.URLPattern` 解析，**带方括号但不带端口的 IPv6 字面量**（`[::1]`）不是合法 URL pattern。特征已用矩阵锁定：`[::1]` 必崩；裸 `::1` 正常；`[::1]:8080`（带端口）正常；无 IPv6 正常。Clash / v2rayN / Proxifier / 企业 MDM 常写入这种形式，对 curl 和浏览器合法，只有 httpx 拒绝。
+- **修复**：新增 `utils/proxy_env.py`（纯标准库），把 `[<ipv6>]` 改写为等价的裸 IPv6，并在包导入时（`__init__.py` 的 `_sanitize_proxy_env()`，早于任何 provider 层）执行。幂等、不抛异常、干净环境为 no-op。
+- **验证**：同一脏环境下 `NO_PROXY` 由 `...,meter.arc-bench.com,[::1]` 变为 `...,meter.arc-bench.com,::1`，`AgentV2()` 正常构造。`tests/test_utils/test_proxy_env.py` 16 项通过。
+
+
+## CI 修复：w7_c02 redis 定端口竞争（2026-10-23）
+
+- 与 chaos suite 同型：`-p 127.0.0.1:56390:6379` 固定绑定在 py3.11 job 上撞残留/并发映射（`address already in use`，rc=125）。改临时端口 `-p 127.0.0.1:0:6379` + `docker port` 发现，`REDIS_URL` 由 `_redis_start` 回写真实 URL。py3.12 同用例已过，py3.11 侧属环境竞争非产品缺陷。
+- 另收拢并行侧的 w9 byok 测试对齐（committed BYOK-only 策略 vs 陈旧断言：`test_platform_allowlisted_uses_env`→`test_platform_allowlist_cannot_enable_env_gateway` 等）+ w9 conftest 补 `RXYCODE_PGURL` 外部库通道。
