@@ -57,6 +57,7 @@ import socket
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -4302,6 +4303,90 @@ def _shared_seed(state_root: Path, staging_parent: Path, root: str, tag: str) ->
     return str(seed)
 
 
+#: Staged attachment names keep the user's Unicode spelling (CJK, accents,
+#: spaces, emoji); only characters that can break a path or an archive are
+#: folded. The cap keeps the extension so the read tool can still detect the
+#: document type.
+_ATTACHMENT_NAME_LIMIT = 180
+_ATTACHMENT_FALLBACK_NAME = "attachment.bin"
+_ATTACHMENT_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_ATTACHMENT_SEPARATOR_RE = re.compile(r"[/\\]")
+_ATTACHMENT_FORBIDDEN_CHARS = frozenset(':?*"<>|')
+_ATTACHMENT_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", "clock$", "conin$", "conout$"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+
+
+def _safe_attachment_filename(filename: str) -> str:
+    """Sanitize one attachment filename without losing Unicode.
+
+    The old ASCII-only re.sub(r"[^A-Za-z0-9._ -]", "_", ...) reduced every CJK
+    character to "_", so 实验报告-第3章 HDFS分布式文件系统_阮心一.docx reached
+    the workspace as ____-_3_ HDFS___________.docx. The model could list the
+    file but could not connect it to the user's words and never read it.
+
+    Only unsafe parts are neutralized: path separators, NUL/control
+    characters, characters Windows cannot store in a name, leading/trailing
+    dots or spaces, dot-only names and reserved device names. Everything else
+    (CJK, accents, emoji, spaces) is kept in NFC form.
+    """
+    raw = unicodedata.normalize("NFC", str(filename or ""))
+    base = _ATTACHMENT_SEPARATOR_RE.sub("_", raw)
+    base = _ATTACHMENT_CONTROL_RE.sub("_", base)
+    base = "".join("_" if _is_unsafe_filename_char(ch) else ch for ch in base).strip()
+    base = base.rstrip(" .")
+    if base in {"", ".", ".."}:
+        return _ATTACHMENT_FALLBACK_NAME
+    stem, dot, suffix = base.rpartition(".")
+    if not dot:
+        stem, suffix = base, ""
+    extension = f".{suffix}" if suffix else ""
+    if len(extension) > 32:
+        extension = extension[:32]
+    room = _ATTACHMENT_NAME_LIMIT - len(extension)
+    if room < 1:
+        return _ATTACHMENT_FALLBACK_NAME
+    if len(stem) > room:
+        stem = stem[:room].rstrip(" .")
+    candidate = f"{stem}{extension}".strip()
+    if not candidate or candidate in {".", ".."}:
+        return _ATTACHMENT_FALLBACK_NAME
+    if candidate.split(".", 1)[0].strip().casefold() in _ATTACHMENT_RESERVED_NAMES:
+        candidate = "_" + candidate
+    return candidate
+
+
+def _is_unsafe_filename_char(ch: str) -> bool:
+    return ch in _ATTACHMENT_FORBIDDEN_CHARS or unicodedata.category(ch) == "Cc"
+
+
+def _is_plain_attachment_name(name: str) -> bool:
+    """True when name is a single safe path component (no separators/NUL)."""
+    if not name or len(name) > 255 or name in {".", ".."}:
+        return False
+    return not any(ch in name for ch in ("/", "\\", "\x00", "\n", "\r", "\t"))
+
+
+def _attachment_dir_key(attachment_id: str) -> str:
+    """Stable directory component for one attachment id (never escapes att_dir)."""
+    key = re.sub(r"[^A-Za-z0-9._-]", "_", str(attachment_id or ""))[:64]
+    return key.strip(" .") or "attachment"
+
+
+def _unique_attachment_name(directory: Path, name: str) -> str:
+    """Collision-safe name inside directory; never overwrites an earlier file."""
+    if not (directory / name).exists():
+        return name
+    stem, extension = os.path.splitext(name)
+    for counter in range(2, 1000):
+        candidate = f"{stem} ({counter}){extension}"
+        if not (directory / candidate).exists():
+            return candidate
+    return f"{stem} ({uuid.uuid4().hex[:8]}){extension}"
+
+
 class _AttachmentImportError(Exception):
     """A bound attachment could not be fetched or verified — the run cannot
     honor its declared input and must settle failed, never guess."""
@@ -4343,9 +4428,15 @@ def _stage_attachments(att_dir: Path, manifest: list[dict[str, Any]]) -> list[di
         }
         try:
             digest = hashlib.sha256()
-            safe = re.sub(r"[^A-Za-z0-9._ -]", "_", filename).strip() or "attachment.bin"
-            target = att_dir / attachment_id / safe
-            target.parent.mkdir(parents=True, exist_ok=True)
+            # Keep the user's Unicode filename; neutralize only separators,
+            # control characters and traversal. ASCII-only stripping used to
+            # turn "实验报告-第3章 ….docx" into "____-_3_ …", which the model
+            # could list but never match to the user's request.
+            safe = _safe_attachment_filename(filename)
+            target_dir = att_dir / _attachment_dir_key(attachment_id)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            safe = _unique_attachment_name(target_dir, safe)
+            target = target_dir / safe
             written = 0
             with store.open_read(object_key) as src, open(target, "wb") as dst:
                 while True:
@@ -4360,7 +4451,14 @@ def _stage_attachments(att_dir: Path, manifest: list[dict[str, Any]]) -> list[di
                     f"attachment {attachment_id} sha256 mismatch"
                 )
             record["size_bytes"] = written
-            staged.append({"attachment_id": attachment_id, "filename": filename})
+            staged.append(
+                {
+                    "attachment_id": attachment_id,
+                    "filename": filename,
+                    "stored_name": safe,
+                    "dir": target_dir.name,
+                }
+            )
             records.append(record)
         except Exception as exc:
             record["status"] = "failed"
@@ -4380,7 +4478,58 @@ def _stage_attachments(att_dir: Path, manifest: list[dict[str, Any]]) -> list[di
     return records
 
 
-#: Workspace subtrees that never count as run deliverables — caches, tool
+def _import_prompt_attachments(
+    workdir: Path, attachments_src: str
+) -> list[dict[str, Any]]:
+    """Copy parent-staged attachments into the turn workspace (imports/).
+
+    The parent staged one directory per attachment id with the Unicode filename
+    preserved (see _safe_attachment_filename); stored_name records the exact
+    staged name so a collision suffix ("name (2).ext") survives the handoff, and
+    dir carries the already-sanitized directory component. Older staging dirs
+    without stored_name fall back to re-deriving the same safe name from
+    filename.
+
+    A missing staged file raises (the caller logs and fails the run) - the model
+    must never receive a silently empty attachment set.
+    """
+    manifest = json.loads(
+        (Path(attachments_src) / "attachments.json").read_text(encoding="utf-8")
+    )
+    imported: list[dict[str, Any]] = []
+    for item in manifest.get("attachments") or []:
+        attachment_id = str(item.get("attachment_id") or "")
+        filename = str(item.get("filename") or "attachment.bin")
+        dir_name = str(item.get("dir") or "")
+        if not _is_plain_attachment_name(dir_name):
+            dir_name = _attachment_dir_key(attachment_id)
+        source_dir = Path(attachments_src) / dir_name
+        candidates: list[str] = []
+        stored_name = str(item.get("stored_name") or "")
+        if _is_plain_attachment_name(stored_name):
+            candidates.append(stored_name)
+        derived = _safe_attachment_filename(filename)
+        if derived not in candidates:
+            candidates.append(derived)
+        source_file: Path | None = None
+        for candidate in candidates:
+            candidate_path = source_dir / candidate
+            if candidate_path.is_file() and not candidate_path.is_symlink():
+                source_file = candidate_path
+                break
+        if source_file is None:
+            raise FileNotFoundError(
+                f"staged attachment missing: {attachment_id or filename}"
+            )
+        destination_dir = workdir / "imports" / dir_name
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / source_file.name
+        shutil.copy2(source_file, destination)
+        imported.append({"path": str(destination), "name": filename})
+    return imported
+
+
+#: Workspace subtrees that never count as run deliverables - caches, tool
 #: internals, imported user files, VCS metadata, dependency dirs.
 _ARTIFACT_EXCLUDED_PREFIXES = (
     ".data",
@@ -5511,21 +5660,7 @@ async def run_sandboxed_turn() -> int:
     attachments_src = os.environ.get("RXYCODE_TURN_ATTACHMENTS_SRC", "").strip()
     if attachments_src:
         try:
-            staged = json.loads(
-                (Path(attachments_src) / "attachments.json").read_text(encoding="utf-8")
-            )
-            for item in staged.get("attachments") or []:
-                attachment_id = str(item.get("attachment_id") or "")[:64]
-                filename = str(item.get("filename") or "attachment.bin")
-                safe = re.sub(r"[^A-Za-z0-9._ -]", "_", filename).strip() or "attachment.bin"
-                src_file = Path(attachments_src) / attachment_id / safe
-                if not src_file.is_file() or src_file.is_symlink():
-                    raise FileNotFoundError(f"staged attachment missing: {attachment_id}")
-                dst_dir = workdir / "imports" / attachment_id
-                dst_dir.mkdir(parents=True, exist_ok=True)
-                dst = dst_dir / safe
-                shutil.copy2(src_file, dst)
-                prompt_attachments.append({"path": str(dst), "name": filename})
+            prompt_attachments = _import_prompt_attachments(workdir, attachments_src)
         except Exception:
             _LOG.warning("run %s: attachment import into workspace failed", run_id, exc_info=True)
             raise

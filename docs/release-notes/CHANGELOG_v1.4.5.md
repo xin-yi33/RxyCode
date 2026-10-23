@@ -364,3 +364,40 @@
 - **生产实测延迟**：`sandbox_probed` 块内耗时 8.5s → **33ms**（-99.6%），claim→prompt 派发 14.1s → **3.9s**（-72%）。剩余 ~3.4s 为 child python 启动+imports+agent 组装，非本次范围。
 - CI `52e6c7a8` 全绿（Windows ConPTY boot timeout 系 runner 负载 flake，重跑即过）；web-ci 绿。
 - 线上 UI 复验：思考块/任务清单/工具行/产物块均按需求渲染，console 零错误。
+
+
+## 云端 Web 事故修复批：附件读取 / question 卡渲染与单选 / question 恢复崩溃（2026-10-24，本地已验证，待部署）
+
+线上会话 `0e7dab8474874bbaadc443e4d99fd18f`（run `211f0165ba014f3dae77dac8e5626491`，2026-10-23 23:08 CST）暴露四个连在一起的严重问题，用户报告为“上传文件后所有工具调用全部失败 / question 选项应该竖排编号但顺序乱 / 选择后像是所有选项都被提交 / 随后直接异常结束”。逐条取证后确认是**三条独立根因叠加**，均已修复。
+
+### 症状与证据（生产 DB + 事件流 + worker 工作区）
+
+- 上传 `实验报告-第3章 HDFS分布式文件系统_阮心一.docx`：`attachment.import` imported（589856B，sha256 校验通过），但 worker staging 把中文名洗成 `____-_3_ HDFS___________.docx`；`read` 把 docx 当 UTF-8 读成 ZIP 乱码，`vision` 拒绝非图片，模型最终只能向用户提问“文档读取受阻”。
+- 同一 run 里模型发出的 bash 写探针没有产生任何 `tool.*` 事件：被 build-workflow 的“写操作需要开发合同”门静默拒绝（`[blocked: ...]` 只回给模型、不发事件），用户侧看到的就是“工具全失败”。
+- `question.requested` 只发了一次（4 个选项），API access log 只有 **1 次** `POST /questions`，DB `question.resolved` 的 answer 是单值 `state_goal`；因此“所有选项都被提交”不是 API/事件重放，而是旧 UI 的 `{submitting ? "提交中…" : label}` 把**四个按钮同时**改成“提交中…”。
+- 回答后 run 进入 epoch 2 恢复：`event/agent_started` 后立即 `notify.event/error` → `run.error: RuntimeError: 处理未完成... 原因：WorkflowContractError: development requires at least one required check`，run 终态 `failed`。
+- 工作区 checkpoint `cp_932c880e….json` 里持久化的 `build_workflow` 为 `task_kind=development` + `required_checks=[]` + `build_verify=run`：正是被 `promote_to_development()` 强制升级、又被 `_persist_build_workflow()` 落盘、最后在恢复时被 `validate_decision()` 拒绝的形状。
+
+### 根因与修复
+
+**1) 上传文件在云端不可读（apps/web + tools + worker）**
+- 根因：worker `_stage_attachments` 用 `re.sub(r"[^A-Za-z0-9._ -]", "_", filename)` 洗文件名（中文全变 `_`）；`tools/read.py` 对任何文件都按 UTF-8 `errors="replace"` 读，docx/xlsx/pptx 这类 ZIP+XML 容器必然乱码；云端没有文档文本抽取能力。
+- 修复：新增 `tools/document_text.py`（**纯标准库**：zipfile + ElementTree 抽取 .docx/.xlsx/.pptx 及 .odt/.ods/.odp 正文，PDF/旧版 OLE Office/RTF/压缩包/图片给出可操作提示；magic 优先、上限 2MB 文本 + 单 XML 16MB + 5 万 zip 条目，防 zip 炸弹）；`tools/read.py` 增加二进制识别、UTF-16 BOM 文本、抽取结果按 offset/limit 分页；worker `drain.py` 新增 `_safe_attachment_filename`（NFC 保留中文/空格/emoji，只中和路径分隔符、控制字符、Windows 禁用字符、保留名、`..`），staging 目录改为安全 id 目录 + `_unique_attachment_name` 冲突后缀，manifest 增加 `stored_name/dir` 并由 `_import_prompt_attachments` 原样带进 `imports/`（旧 manifest 无 `stored_name` 时回退重算，不静默丢附件）。**未新增任何 pip 依赖**。
+
+**2) question 卡渲染与提交（apps/web）**
+- 修复：`QuestionItem.tsx` 改为垂直 `<ol>` 列表，显式 `1. 2. 3. …` 且严格按 payload 顺序（新 `questionOptions.ts`：不排序、去空白行、完全重复项只保留首个、value 保持字节精确）；提交中**只有被点中那一项**显示 `aria-busy` + “提交中…”，其余选项保留 label；新增同步 ref + 模块级 `questionAnswerGuard.ts`（跨重复挂载/事件重放/双击的 exactly-one-POST 闸门，成功后保持关闭、可重试失败才释放）；折叠行显示 **label** 而非原始 value（`answerLabel`）；`eventReducer.ts` 给 question 项补 `answered` 标记，空 answer 的 `question.resolved` 也会折叠。
+
+**3) question 恢复必崩（core）**
+- 根因：`promote_to_development()` 在没有任何 required check 时仍强制返回 `task_kind=development` 的非法合同；`_upgrade_workflow_before_code_write()` 的三条回退路径都把它落盘；恢复时 `restore_build_workflow()` 无保护地 `workflow_from_checkpoint()` → 异常逃出 turn。
+- 修复：`core/build_workflow.py` — `promote_to_development` 无 required check 时抛 `WorkflowContractError` 拒绝升级；新增 `recover_workflow_decision()`（把非法持久化合同确定性降级成只读合同：保留 goal/workflow_id/revision，清空无效 checks，补齐合法 stage/acceptance，修不好返回 None）；新增 `decision_to_jsonable()`。`core/agent_v2.py` — 升级失败保留非开发合同并记录拒绝原因、不再落盘；`_persist_build_workflow` 落盘前 `validate_decision` 自检；`restore_build_workflow` / `inherit_build_workflow` 捕获并修复/丢弃非法合同、先自愈 checkpoint 再继续 turn；被拒绝的写操作返回可操作的 `[blocked: …]`（提示做只读部分或 question 询问），升级尝试改为**每轮一次**而非永久死锁；checkpoint 里的 int/列表字段做容错解析。
+
+### 本地验证
+
+- `python -m pytest tests/test_core/test_build_workflow.py tests/test_tools/test_read.py tests/test_tools/test_read_documents.py tests/web/w11/test_w11_attachments_staging.py -q` → **114 passed**（含新增：非法合同 persist→restore 不再抛、`promote_to_development` 拒绝、中文名 staging + 冲突后缀 + 路径穿越、docx 抽取、staged docx 立即可被 read 读）。
+- `python -m pytest tests/web/w3/test_w3_question_card.py -q` → **5 passed**（真实 vite 产物 + vite preview + `/api/v1/**` stub：竖排编号与 payload 顺序、点击第 2 项仅 1 次 POST 且 answer=第 2 项 value、只有被点项显示“提交中…”、同步双击只 1 次、text 变体、409 stale 折叠）。
+- `npm --prefix apps/web run typecheck` → exit 0。
+- 部署与云端真机验收结果见后续部署记录（同一条目补充）。
+
+### 涉及文件
+
+`apps/web/src/features/approvals/QuestionItem.tsx`、`questionOptions.ts`（新）、`questionAnswerGuard.ts`（新）、`apps/web/src/features/runs/eventReducer.ts`、`tools/document_text.py`（新）、`tools/read.py`、`packages/rxycode-worker/src/rxycode_worker/drain.py`、`core/build_workflow.py`、`core/agent_v2.py`、`tests/web/w3/test_w3_question_card.py`（新）、`tests/web/w11/test_w11_attachments_staging.py`（新）、`tests/test_tools/test_read_documents.py`（新）、`tests/test_core/test_build_workflow.py`、`scripts/deploy-web-vm.sh`（新）、`docs/deploy/CLOUD-FIX-20261024-PLAN.md`（新）。
