@@ -40,9 +40,11 @@ from tests.support.pgurl import ensure_container, worker_url  # noqa: E402
 
 _PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 ensure_container("rxy-w2c01-pg", 55432)
-_URL = worker_url(_PG_BASE)
-# Older W3 tests import this module and use the shared worker database.
-URL = _URL
+_BASE_URL = worker_url(_PG_BASE)
+# ``URL`` tracks the *current* stack's database: siblings load this module and
+# run ``create_engine(_c02.URL)`` against the same db the api is using. Before
+# the first stack it is the per-worker base db (admin access only).
+URL = _BASE_URL
 SECRET = "local-web-secret-value-32bytes!!"
 
 
@@ -59,20 +61,20 @@ def _make_db() -> tuple[str, str]:
     stack (its uvicorn thread exits asynchronously) can never see this one
     DROP SCHEMA, and a failing stack leaves evidence behind until close."""
     dbname = f"w3c02_{uuid.uuid4().hex[:12]}"
-    engine = create_engine(_URL, isolation_level="AUTOCOMMIT")
+    engine = create_engine(_BASE_URL, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.execute(text(f'CREATE DATABASE "{dbname}"'))
     finally:
         engine.dispose()
-    base, _, _ = _URL.rpartition("/")
+    base, _, _ = _BASE_URL.rpartition("/")
     url = f"{base}/{dbname}"
     upgrade_head(url)
     return dbname, url
 
 
 def _drop_db(dbname: str) -> None:
-    engine = create_engine(_URL, isolation_level="AUTOCOMMIT")
+    engine = create_engine(_BASE_URL, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.execute(
@@ -114,6 +116,8 @@ class _Stack:
     def __init__(self) -> None:
         dist = _mod.build_web()
         self.dbname, self.url = _make_db()
+        global URL
+        URL = self.url  # siblings resolve _c02.URL to the live stack's db
         # BYOK-only policy: task submission needs a user-owned model, which
         # needs a keyring to seal credentials. Scoped to this stack's life.
         self._old_keyring = os.environ.get("RXYCODE_BYOK_KEYRING_FILE")

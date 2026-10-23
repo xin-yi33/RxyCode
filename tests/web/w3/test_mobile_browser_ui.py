@@ -193,6 +193,7 @@ def _new_mobile_context(browser: Browser, width: int, height: int):
         device_scale_factor=2,
         is_mobile=True,
         has_touch=True,
+        locale="zh-CN",
     )
 
 
@@ -542,6 +543,7 @@ def test_model_picker_hides_platform_and_keeps_duplicate_refs_distinct(
         viewport={"width": 320, "height": 640},
         is_mobile=True,
         has_touch=True,
+        locale="zh-CN",
     )
     page = context.new_page()
     _install_api(

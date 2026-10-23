@@ -269,7 +269,8 @@ services:
         python -m pip install --quiet --no-input \
           "fastapi>=0.109" "uvicorn[standard]>=0.27" "sqlalchemy>=2,<2.1" \
           "alembic>=1.17,<2" "psycopg[binary]>=3.2,<4" "httpx>=0.27" \
-          "pydantic>=2" "boto3>=1.34,<2" "cryptography>=42"
+          "pydantic>=2" "boto3>=1.34,<2" "cryptography>=42" \
+          "pyotp>=2.9,<3" "webauthn>=2.0,<3"
         while [ ! -f /boot/.migrate-done ]; do sleep 2; done
         exec python /opt/serve_web.py
 

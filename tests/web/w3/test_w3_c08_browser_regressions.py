@@ -898,6 +898,9 @@ def _new_mobile_page(
         has_touch=True,
         color_scheme=color_scheme,
         ignore_https_errors=ignore_https_errors,
+        # These tests assert zh-CN UI strings (i18n resolves navigator.locale);
+        # pin it so CI runners with en-US locales see the same labels.
+        locale="zh-CN",
     )
     return browser, context, context.new_page()
 
@@ -914,6 +917,7 @@ def _new_desktop_page(browser_type, *, color_scheme: str = "light"):
         is_mobile=False,
         has_touch=False,
         color_scheme=color_scheme,
+        locale="zh-CN",
     )
     return browser, context, context.new_page()
 
