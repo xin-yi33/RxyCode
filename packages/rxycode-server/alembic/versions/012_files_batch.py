@@ -105,12 +105,13 @@ def upgrade() -> None:
             sa.Column("expires_at", sa.String(length=40), nullable=True),
             sa.Column("created_at", sa.String(length=40), nullable=False),
             sa.Column("updated_at", sa.String(length=40), nullable=False),
-            sa.UniqueConstraint(
-                "owner_user_id",
-                "request_id",
-                name="uq_attachments_request",
-                postgresql_where=sa.text("request_id IS NOT NULL AND request_id <> ''"),
-            ),
+        )
+        op.create_index(
+            "uq_attachments_request",
+            "attachments",
+            ["owner_user_id", "request_id"],
+            unique=True,
+            postgresql_where=sa.text("request_id IS NOT NULL AND request_id <> ''"),
         )
         op.create_index("ix_attachments_user", "attachments", ["owner_user_id", "created_at"])
         op.create_index(
