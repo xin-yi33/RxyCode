@@ -340,7 +340,7 @@ def _minio() -> dict[str, str]:
             docker, "run", "-d", "--name", name, "-p", "127.0.0.1:0:9000",
             "-e", f"MINIO_ROOT_USER={_ACCESS}",
             "-e", f"MINIO_ROOT_PASSWORD={_SECRET_KEY}",
-            "bitnamilegacy/minio:2025.7.23", "server", "/data",
+            "bitnamilegacy/minio:2025.7.23",
         ],
         capture_output=True,
         text=True,
