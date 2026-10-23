@@ -396,7 +396,14 @@
 - `python -m pytest tests/test_core/test_build_workflow.py tests/test_tools/test_read.py tests/test_tools/test_read_documents.py tests/web/w11/test_w11_attachments_staging.py -q` → **114 passed**（含新增：非法合同 persist→restore 不再抛、`promote_to_development` 拒绝、中文名 staging + 冲突后缀 + 路径穿越、docx 抽取、staged docx 立即可被 read 读）。
 - `python -m pytest tests/web/w3/test_w3_question_card.py -q` → **5 passed**（真实 vite 产物 + vite preview + `/api/v1/**` stub：竖排编号与 payload 顺序、点击第 2 项仅 1 次 POST 且 answer=第 2 项 value、只有被点项显示“提交中…”、同步双击只 1 次、text 变体、409 stale 折叠）。
 - `npm --prefix apps/web run typecheck` → exit 0。
-- 部署与云端真机验收结果见后续部署记录（同一条目补充）。
+### 部署与云端真机验收（2026-10-24 02:05 CST，镜像 tag `cloudfix-aba79b60-01`）
+
+- 代码提交 `feat/rxycode-web` `aba79b60`；部署源 = 本地工作树 tar（含既有 WIP overlay，与线上既有行为一致）+ 150 条 dirty 文件 sha256 manifest，构建目录 `/home/ruanxinyi/cloudfix/build-cloudfix-aba79b60-01`。
+- 三镜像同 tag 上线：api `660b6c31f593` / worker `b1fa0586fe6d` / web `4b83814de2a7`；api+worker 镜像内 `RXYCODE_BUILD_COMMIT=aba79b609b230e27ce7c17a6644e5e6422fdafc9`。compose.prod.yaml 4 处 image pin 与 .env `RXYCODE_IMAGE_TAG` 统一改写（此前 api/web=`web-dfb6f356`、worker=`web-52e6c7a8`、.env 为过期 `3a8526c` 的漂移一并修掉）；migrate 幂等（head `012_files_batch` 不变）；api/3 workers/gateway 全部 healthy；`/api/v1/version` 返回新 commit，csrf 200。备份 `/opt/rxycode/backups/cloudfix-cloudfix-aba79b60-01-20261024-015758/`，DB dump `/opt/rxycode/backups/pre-cloudfix/rxycode-20261023T173435Z.sql.gz`。首次 deploy 尝试在 preflight 安全中止（无变更：render 的 migrate pin 指向不存在的旧 tag 被误判为回滚目标）；脚本已改为按“运行中容器实际镜像”判定回滚目标。
+- 公网隧道插曲：部署后公网出现 Cloudflare 1033/530，VM 本机 curl 网关 8080 为 200；`systemctl restart cloudflared` 后公网恢复 200（非应用故障）。
+- **真机验收 A（上传 → 云端读取）**：run `13d02c1a40b749a1aa2922fee79b6d99`（session `8bfdccf91e914553b54720221af71ccb`）。上传 `实验报告-第3章 HDFS分布式文件系统_测试.docx`：`attachment.import` 的 filename 完整保留中文；`read` 返回 `[extracted text of … (docx)]` + 12 行正文；run `succeeded`，最终答案正确总结 HDFS/NameNode/DataNode 并给出第 3 章标题；无 `run.error`，浏览器 console/page error 为空。截图 `D:/agent-demo/rxycode-web-hotfix-20261023/evidence-A-upload-read.png`。
+- **真机验收 B（question 卡 + 单选 + 恢复）**：run `d9d8c580b5434ff9aaa6d48d1f05cc70`（session `140d19f1d3cd4826bb4a56550324c4f4`）。question.requested 4 选项；DOM 为垂直 `<ol><li>` 且按 payload 顺序（a11y：选项 1/2/3/4，截图 `evidence-B-question-before.png`）。点击第 2 项：网络仅 **1 次** `POST .../questions`（200），DB `question.resolved` answer=`proofread` 单值；卡片折叠为“你的回答：**2 校对格式**”（label 而非 raw value）。epoch 2 恢复不再抛 `WorkflowContractError`/无 `run.error`，resumed turn 正常 `read` docx 并继续，run 终态 `succeeded`（143 events）；console 零 error。截图 `evidence-B-question-answered.png`、`evidence-B-final.png`。
+- 验收用的临时 ops 会话已撤销、`device_locks` 已恢复原值（未改用户密码/既有会话）；旧镜像保留可回滚（`deploy-web-vm.sh rollback`）。
 
 ### 涉及文件
 

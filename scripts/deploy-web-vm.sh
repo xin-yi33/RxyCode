@@ -378,6 +378,165 @@ do_build() {
   docker images --format '{{.Repository}}:{{.Tag}}  {{.ID}}  {{.Size}}' | grep -E "^rxycode-(api|worker|web):$tag" || true
   say "manifest: $mf"
 }
-# @@APPEND@@
+# --- status / deploy / verify / rollback ------------------------------------
+
+MUTATED=0
+BACKUP_DIR=""
+
+deploy_guard() {
+  local rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ "$MUTATED" -eq 1 ] && [ "${AUTO_ROLLBACK:-1}" = "1" ]; then
+    warn "deploy failed (rc=$rc); AUTO-ROLLBACK from $BACKUP_DIR"
+    restore_files "$BACKUP_DIR" || warn "restore_files failed"
+    recreate_service api "" 300 || warn "api rollback recreate failed"
+    recreate_service worker "$WORKER_REPLICAS" 420 || warn "worker rollback recreate failed"
+    recreate_service gateway "" 180 || warn "gateway rollback recreate failed"
+    dump_failure_logs "$BACKUP_DIR/failure-logs" || true
+    warn "auto-rollback finished — verify manually before any retry"
+  fi
+  exit "$rc"
+}
+
+do_status() {
+  local port
+  step "status"
+  compose ps || true
+  say ""
+  say "image pins (rendered):"
+  compose_images | sed 's/^/  /' || true
+  say ""
+  say "alembic head: $(alembic_head)"
+  port="$(http_port)"
+  say "gateway host port: $port"
+  say "version: $(version_json "$port")"
+  say ""
+  say "local rxycode images:"
+  docker images --format '{{.Repository}}:{{.Tag}}  {{.ID}}  {{.Size}}' \
+    | grep -E '^rxycode-(api|worker|web):' | head -20 || true
+}
+
+do_deploy() {
+  local tag="${1:-}" dir="" mf commit commit8 before_head port free cur img pair
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) dir="$2"; shift 2;;
+      *) die "unknown deploy argument: $1";;
+    esac
+  done
+  [ -n "$tag" ] || die "usage: deploy <tag>"
+  require_root
+  require_tag "$tag"
+  mf="$MANIFEST_DIR/$tag-DEPLOY-MANIFEST.txt"
+  [ -f "$mf" ] || die "missing build manifest $mf (build with --manifest first)"
+  commit="$(manifest_value "$mf" head)"
+  [ -n "$commit" ] || die "manifest $mf lacks head="
+  commit8="$(manifest_value "$mf" head_short)"
+  [ -n "$commit8" ] || commit8="$(printf '%s' "$commit" | cut -c1-8)"
+  for pair in api worker web; do
+    docker image inspect "rxycode-$pair:$tag" >/dev/null 2>&1 \
+      || die "image missing on VM: rxycode-$pair:$tag (run build first)"
+  done
+  free="$(free_kb)"
+  [ "$free" -ge "$MIN_FREE_KB_DEPLOY" ] \
+    || die "only $free KB free, need >= $MIN_FREE_KB_DEPLOY KB"
+  # Rollback target = the images the CURRENT api/worker/gateway containers run.
+  # The compose render also includes the one-shot migrate pin, which .env may
+  # leave stale; that pin is not a rollback target and must not block a deploy.
+  cur="$(for svc in api worker gateway; do
+           for id in $(container_ids "$svc"); do
+             docker inspect -f '{{.Config.Image}}' "$id" 2>/dev/null || true
+           done
+         done | sort -u)"
+  [ -n "$cur" ] || die "cannot resolve the running api/worker/gateway images — refusing to deploy without a rollback target"
+  for img in $cur; do
+    docker image inspect "$img" >/dev/null 2>&1 \
+      || die "running container image missing (rollback would be impossible): $img"
+  done
+
+  BACKUP_DIR="$(new_backup_dir "$tag")"
+  snapshot_state "$BACKUP_DIR"
+  before_head="$(alembic_head)"
+  MUTATED=1
+  trap deploy_guard EXIT
+
+  step "rewrite compose image pins -> $tag"
+  rewrite_pins "$tag"
+  assert_rendered_pins "$tag"
+
+  step "run one-shot migrations on rxycode-api:$tag"
+  compose run --rm --no-deps -T migrate
+  migrate_head_gate "$before_head"
+
+  recreate_service api "" 300 || die "api did not become healthy"
+  recreate_service worker "$WORKER_REPLICAS" 420 || die "workers did not become healthy"
+  recreate_service gateway "" 180 || die "gateway did not become healthy"
+
+  port="$(http_port)"
+  say "gateway host port: $port"
+  wait_api_http "$port" 180 || die "api http is not reachable through the gateway"
+  assert_version_commit "$port" "$commit"
+
+  write_record "$BACKUP_DIR" "$tag" "$commit"
+  MUTATED=0
+  trap - EXIT
+  say ""
+  say "DEPLOY OK tag=$tag commit=$commit8 record=$BACKUP_DIR/deploy.txt"
+  do_verify || true
+}
+
+do_verify() {
+  local port ids n i ok=1
+  step "verify"
+  compose ps || true
+  for svc in api worker gateway; do
+    ids="$(container_ids "$svc")"
+    n=$(printf '%s\n' "$ids" | grep -c . || true)
+    [ "$n" -ge 1 ] || { warn "$svc has no container"; ok=0; continue; }
+    for i in $ids; do
+      if ! service_healthy "$i"; then warn "$svc container $i is not healthy"; ok=0; fi
+    done
+  done
+  port="$(http_port)"
+  wait_api_http "$port" 60 || ok=0
+  say "version: $(version_json "$port")"
+  [ "$ok" -eq 1 ] || die "verify failed"
+  say "VERIFY OK"
+}
+
+do_rollback() {
+  local dir="${1:-}" port
+  require_root
+  if [ -z "$dir" ]; then
+    dir="$(ls -1dt "$BACKUP_ROOT"/cloudfix-* 2>/dev/null | head -1 || true)"
+  fi
+  [ -n "$dir" ] && [ -d "$dir" ] || die "no cloudfix backup directory found under $BACKUP_ROOT"
+  step "rollback from $dir"
+  restore_files "$dir"
+  recreate_service api "" 300 || die "api did not become healthy after rollback"
+  recreate_service worker "$WORKER_REPLICAS" 420 || die "workers did not become healthy after rollback"
+  recreate_service gateway "" 180 || die "gateway did not become healthy after rollback"
+  port="$(http_port)"
+  wait_api_http "$port" 180 || die "api http not reachable after rollback"
+  say "ROLLBACK OK from $dir"
+  do_verify || true
+}
+
+main() {
+  local action="${1:-status}"
+  shift || true
+  case "$action" in
+    status) do_status ;;
+    build) do_build "$@" ;;
+    deploy) do_deploy "$@" ;;
+    verify) do_verify ;;
+    rollback) do_rollback "$@" ;;
+    *) die "usage: $0 {status|build <tag> <commit> [--dir DIR] [--manifest FILE]|deploy <tag>|verify|rollback [BACKUP_DIR]}" ;;
+  esac
+}
+
+main "$@"
+
 
 
