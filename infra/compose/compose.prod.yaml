@@ -160,6 +160,12 @@ services:
       RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
       RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
       RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      # Attachment import (W11): staged bytes live in the same object store
+      # the API writes to — workers fetch by manifest object_key.
+      RXYCODE_S3_ENDPOINT: ${RXYCODE_S3_ENDPOINT:-http://minio:9000}
+      RXYCODE_S3_BUCKET: ${RXYCODE_S3_BUCKET:-rxycode-artifacts}
+      RXYCODE_S3_ACCESS_KEY: ${RXYCODE_MINIO_ROOT_USER}
+      RXYCODE_S3_SECRET_KEY: ${RXYCODE_MINIO_ROOT_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,7 +173,7 @@ services:
         condition: service_completed_successfully
 
   gateway:
-    image: rxycode-web:${RXYCODE_IMAGE_TAG:-latest}
+    image: rxycode-web:${RXYCODE_IMAGE_TAG:-byok-draft-persist-20261023-01}
     # Caddyfile.prod is bind-mounted over the image's baked dev Caddyfile —
     # the image CMD path therefore stays valid. (Host bind mounts verified
     # working on this Docker Desktop; the W7 note about them hanging is
