@@ -357,3 +357,10 @@
   - 负 verdict TTL 语义不变（修复后重探代价 ~50ms，自愈窗口保留）。
 - **部署链路修复**：VM dockerd 无法直连 docker.io/pypi.org——三 Dockerfile 增加 `PIP_INDEX_URL`/`NPM_REGISTRY` build-arg（`dfb6f356`），拉取走 tuna/npmmirror；`docker.m.daocloud.io` 作 registry mirror 补 base image；mihomo 7890 代理留给 apt/npm 兜底。**构建磁盘治理**：VM 磁盘 99% 满导致 npm ci ENOSPC——prune 后重建（api 649MB / worker 654MB / web 72MB）。
 - **线上 UI 实测**（真实 BYOK run，`docs/deploy/OPS-LOG.md` 补记）：`rxycode-web:web-dfb6f356` 上 21 个思考块渲染、可展开显示真实推理文本（"Let me start by listing the todo…"）、「任务清单 (3/3)」三项 check 齐全、工具行 完成/失败 状态正确、工作区产物块正常、console 零错误。非推理模型（deepseek-flash）发出的 reasoning delta 也正常入块——该模型走 OpenCode Go 时按 LiteLLM 通道回传 thought 文本。
+
+## 二次部署：探针修复上线 + 延迟实测确认（2026-10-23）
+
+- `rxycode-worker:web-52e6c7a8` 上线（api/web 保持 `web-dfb6f356`）；三 worker 健康，数据卷未动。
+- **生产实测延迟**：`sandbox_probed` 块内耗时 8.5s → **33ms**（-99.6%），claim→prompt 派发 14.1s → **3.9s**（-72%）。剩余 ~3.4s 为 child python 启动+imports+agent 组装，非本次范围。
+- CI `52e6c7a8` 全绿（Windows ConPTY boot timeout 系 runner 负载 flake，重跑即过）；web-ci 绿。
+- 线上 UI 复验：思考块/任务清单/工具行/产物块均按需求渲染，console 零错误。

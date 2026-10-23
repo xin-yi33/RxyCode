@@ -291,3 +291,18 @@
   - 负例：`ATTACHMENT_SIZE_MISMATCH`（声明 98 实发 86 拒收）、`ATTACHMENT_SESSION_MISMATCH`（跨会话重绑拒绝）均如实返回。
   - UI：公网 bundle 已含附件按钮/模型选择器，agent-browser 快照正常、console 0 error。
 - 验收会话经临时 `auth_sessions` 行（operator 铸 token，标注 `ops-acceptance`），验收后已全部 `revoked_at`；未触碰 keyring/密钥/Caddy 配置。`.env` 未改。compose.prod.yaml 远端与 repo 现已同步（worker S3 env + image tag）。
+
+## 2026-10-23 — web-52e6c7a8 (二次同步：overlay 探针修复)
+
+- **部署**：`rxycode-worker:web-52e6c7a8`（api/web 保持 `web-dfb6f356`——仅 worker 镜像含 userns 修复）。migrate 服务用 `RXYCODE_IMAGE_TAG=web-dfb6f356` 独立传参。三 worker 健康，pg/redis/minio 数据卷未动。
+- **镜像构建**：pip 走 tuna mirror（index 0.5s vs pypi.org 死等 40min）、apt/npm 走 mihomo 7890 代理（apt 7.6s）、base image 走 docker.m.daocloud.io retag。dockerd 磁盘 99%→64% 清理后全量重建 ~8min/镜像。
+- **线上 UI 实测**（铸临时 auth_session 验收）：「思考过程 (2 步)」可展开真实推理文本、「任务清单 (3/3)」三 check、工具行/产物块/console 零错——符合需求验收样。
+- **延迟实测**（`GET /api/v1/runs/{id}` timings.phases）：
+
+  | run | sandbox_probed 块 | prompt_dispatched 累计 |
+  |---|---|---|
+  | 修复前 `15d7d3d1` | ~8.5s（9158ms−645ms） | 14.1s |
+  | 修复后 `aa5d8819` | ~33ms（521−488ms） | **3.9s** |
+
+- **根因记录**：生产 worker 容器无 userns overlay 能力 → `overlay_dests` 全负；但探针对每候选先 copytree 后探测（/usr 662MB），负 verdict TTL 过期还会周期性重付。`_overlay_preflight` 一条 50ms `bwrap --unshare-user /bin/true` 让全负环境直接落缓存；候选改 /etc→/var→/usr 且首个双败即停。
+- **验收临时会话已回收**（auth_sessions + device_locks 清理见 git note）。
