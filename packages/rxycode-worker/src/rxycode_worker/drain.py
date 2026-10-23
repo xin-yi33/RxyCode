@@ -4251,6 +4251,57 @@ def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
     return Path(state_root) / "journals" / str(tenant_id) / str(run_id)
 
 
+def _ovl_seed_fingerprint(root: str) -> str:
+    """Content fingerprint for a shared overlay seed lower: container
+    instance (hostname) + the root's immediate entries' (mtime, size).
+    Docker rewrites /etc/hosts and /etc/resolv.conf on every container
+    start — a restart with the SAME hostname would otherwise serve a
+    stale /etc lower. Top-level scandir only: /etc's volatile files
+    live at the top, and /usr changes come with a new image → new
+    container → new hostname anyway."""
+    digest = hashlib.sha256(socket.gethostname().encode())
+    try:
+        entries = sorted(os.scandir(root), key=lambda entry: entry.name)
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            stat = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        digest.update(f"{entry.name}:{stat.st_mtime_ns}:{stat.st_size};".encode())
+    return digest.hexdigest()[:16]
+
+
+def _shared_seed(state_root: Path, staging_parent: Path, root: str, tag: str) -> str:
+    """Return the shared, content-fingerprinted seed lower for ``root``.
+
+    Seed lowers are host-content, read-only to the overlay, and identical
+    across claims — copying /usr (~660MB) into each claim dir used to cost
+    ~13s of every run's spawn window. Seeds publish atomically (copy to a
+    per-caller staging dir, then rename), so racing claims either see the
+    complete seed or publish it themselves; a crashed copy never leaves a
+    partial seed because the rename is the publish. Stale fingerprint dirs
+    are kept: a still-mounted older seed must never disappear under a live
+    overlay."""
+    base = state_root / ".ovl-seeds" / socket.gethostname()
+    seed = base / f"{tag}-seed-{_ovl_seed_fingerprint(root)}"
+    if seed.is_dir():
+        return str(seed)
+    base.mkdir(parents=True, exist_ok=True)
+    staging = staging_parent / f"{tag}-seed-staging"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    shutil.copytree(root, staging, symlinks=True)
+    try:
+        os.rename(staging, seed)
+    except OSError:
+        # A racing publisher won — its seed is complete (rename is
+        # atomic); discard our copy and use theirs.
+        shutil.rmtree(staging, ignore_errors=True)
+    return str(seed)
+
+
 class _AttachmentImportError(Exception):
     """A bound attachment could not be fetched or verified — the run cannot
     honor its declared input and must settle failed, never guess."""
@@ -6503,6 +6554,10 @@ async def execute_run(
         # gets a plain host copy as the lower so apt still gets a
         # private writable /etc (audit W8-r6); dests failing BOTH probe
         # shapes are skipped and stay honestly read-only.
+        # Seed lowers are shared per container instance + content
+        # fingerprint (``_shared_seed``): read-only to the overlay,
+        # identical across claims, published atomically under
+        # ``state_root/.ovl-seeds`` instead of re-copied per run.
         for root, kind in overlay_dests(provider.state_root).items():
             tag = root.strip("/") or "root"
             upper = ovl_root / f"{tag}-upper"
@@ -6511,12 +6566,7 @@ async def execute_run(
             work.mkdir(parents=True, exist_ok=True)
             lower = ""
             if kind == "seed":
-                seed = ovl_root / f"{tag}-seed"
-                if not seed.is_dir():
-                    shutil.copytree(
-                        root, seed, symlinks=True, dirs_exist_ok=True
-                    )
-                lower = str(seed)
+                lower = _shared_seed(provider.state_root, ovl_root, root, tag)
             overlays.append((str(upper), str(work), root, lower))
         phase_mark("sandbox_probed")
         # Deliverable diff baseline — files already here are inputs or prior
@@ -7165,6 +7215,21 @@ async def run_forever(cfg: WorkerConfig) -> None:
         cfg.poll_seconds,
         cfg.lease_ttl,
     )
+    # Prewarm the overlay probe + shared seeds so the first claimed run
+    # does not pay the multi-second bwrap probe and the ~660MB /usr
+    # seed copy inside its spawn window (production measured ~13s).
+    # state_root derives exactly like UsernsSandboxProvider's default:
+    # workspaces_root/.sandboxes.
+    try:
+        from rxycode_runner.sandbox.userns import overlay_dests
+
+        _state_root = Path(cfg.workspaces_root) / ".sandboxes"
+        for _root, _kind in overlay_dests(_state_root).items():
+            if _kind == "seed":
+                _tag = _root.strip("/") or "root"
+                _shared_seed(_state_root, _state_root, _root, _tag)
+    except Exception:
+        _LOG.debug("overlay prewarm skipped", exc_info=True)
     while True:
         did = False
         try:

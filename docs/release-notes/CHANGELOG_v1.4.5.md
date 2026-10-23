@@ -330,3 +330,20 @@
 - 三镜像 `rxycode-{api,worker,web}:web-fa366863` 上线 rxyprod；alembic head 应用至 `012_files_batch`。
 - **infra**：`compose.prod.yaml` worker 块补 `RXYCODE_S3_*`（与 api 同源 `${RXYCODE_MINIO_ROOT_*}`）——此前 worker 无对象存储配置，`_stage_attachments` 落 FS 后端读不到 API 暂存字节，附件 run 必败（生产首个附件 run `fa1713ec` 实测 `attachment.import FileNotFoundError`）。修复后 MinIO 拉取+sha256 校验实测通过。
 - **真实 BYOK 验收**：DeepSeek 连接真 token 跑通——文件创建 run succeeded（80.9s）、附件导入+模型实读回标记、工作区产物登记+签名下载返回真实字节、cancel→cancelled 终态；`ATTACHMENT_SIZE_MISMATCH`/`ATTACHMENT_SESSION_MISMATCH` 负例如实。证据见 `docs/deploy/OPS-LOG.md` 末节。
+
+## 时间线 UX：可展开思考块 + 任务清单（2026-10-23）
+
+- **思考块（Thought）**：`「处理过程（N 步）」`只计步不展示的旧块改为可展开的思考项——`assistant.delta channel=reasoning` 的思维链文本累积进 `thinking.text`（上限 60KB 保留尾部），标题行 chevron 点击展开原文；运行中且为流尾时显示「正在思考…」微光。语义与 OpenTUI `streamReducer` 对齐：`intermediate`（子代理）丢弃、`THOUGHT_PLACEHOLDERS` 占位文案（"思考中..."等 liveness）不进文本、`snapshot=true` 为累计快照→替换而非追加、新思考片在工具/正文事件后另起一块。契约说明：思维链文本本就在 run_events 事件流中（`ReasoningSnapshot` 恒发，`write_reasoning` 的 INVARIANT 注释），此前前端只渲染步数是**展示层选择**而非安全边界——本次按产品需求显性展示，非推理模型（如 deepseek-flash）无 CoT 时块内可能只有 liveness 过滤后的空态（此时块不渲染，等同 TUI 行为）。
+- **任务清单（Tasks）**：`plan.updated`/`todo.updated` 事件合并进唯一 `tasks` 时间线块——`todo.updated` 按 `todo_id` 覆盖状态（pending/in_progress/completed/cancelled 图标），`plan.updated`（design 计划步骤）同块合并（id 前缀 `plan-N` 不冲突）。标题显示 `（done/total）` 进度，默认展开可收起。
+- 测试：`tests/web/w3/test_w3_c03_unit.py` 契约更新（思维链进入 text 断言 + placeholder/snapshot 语义用例 + tasks 归并用例），本地 5/5；本地真实栈 Playwright 实测：思考块默认收起→展开见原文（"快排/分治"推理文本）、任务清单 3 项状态图标 + （3/3）计数、console 零错误。
+
+## 延迟优化：overlay seed 共享缓存 + worker 预热（2026-10-23）
+
+- **诊断**：run 启动窗口内 `sandbox_probed` 前主要耗时是 overlay "seed" 下层的**每次 run 全量 copytree**——`/usr` 实测容器内 9.4s + rmtree 1.1s（/usr ~662MB, /var 6.7MB, /etc 768KB）。探针本身有 `state_root` 级缓存（`overlay_dests`），但 seed 目录建在 per-claim `ovl_root` 内、用完即删 → 每个 run 都重拷。
+- **修复**（`rxycode_worker/drain.py`）：seed 下层改为 `state_root/.ovl-seeds/<hostname>/<tag>-seed-<fp>` 共享缓存——内核 overlay 只读 lower，跨 claim 共享安全；发布走 copy-to-staging + `os.rename` 原子切换，并发 claim 竞态安全（rename 输家丢弃复制品用胜者），崩溃不残留半成品 seed。缓存键 = 容器 hostname + **内容指纹**（源根目录顶层条目 mtime/size 的 sha256）——Docker 每次容器启动重写 `/etc/hosts`、`/etc/resolv.conf`，同 hostname 重启不会产生陈旧 /etc lower；/usr 变化随新镜像 → 新容器 → 新 hostname 自然失效。不同指纹的旧 seed 保留不删（仍可能被存活 overlay 挂载引用）。
+- **预热**：`run_forever` 启动时先跑 `overlay_dests`（bwrap 真实探针）+ `_shared_seed`，首个用户 run 不再在 spawn 窗口付 ~10s 拷贝；预热在 drain 循环前、不阻塞已有 run。探针安全语义不变（负 verdict 仍 TTL 缓存、失败不放宽挂载）。
+- 本地 w8 套件 179/179（5 个 Windows 环境 skip：bwrap/AF_UNIX 不可用）、w9 非 e2e 122/122、w7_c05 28/28；`RXYCODE_PGURL` 外部 pg 通道补齐 w7/w8 conftest（与 w9/w11 同模式）。效果待生产实测对比（见部署记录）。
+
+## 测试基建：`RXYCODE_PGURL` 外部 pg 通道补齐 w7/w8（2026-10-23）
+
+- `tests/web/w7/conftest.py`、`tests/web/w8/conftest.py` 的 `_postgres_server` 此前硬编码 docker 容器，本地无 Docker Desktop 时整波 fixture error；接入 `tests.support.pgurl.external_url()`（w9/w11 已有通道），CI 未设该变量行为不变。

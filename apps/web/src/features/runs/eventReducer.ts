@@ -13,13 +13,19 @@ export type RunEvent = {
 export type ToolStatus = "running" | "completed" | "failed"
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "cancelled"
 export type QuestionOption = { label: string; value: string }
+export type TaskEntry = { id: string; title: string; status: string }
 
 export type TimelineItem =
   | { kind: "user"; seq: number; text: string }
   | { kind: "text"; seq: number; text: string }
-  // 处理过程块：只记录推理事件的步数，绝不携带模型思维链文本 ——
-  // 安全契约要求用户可见的只是进度，不是 CoT（v1.4.5 UI 修复）。
-  | { kind: "thinking"; seq: number; steps: number }
+  // 思考块：记录推理步数与思维链文本，前端折叠展示（默认收起，
+  // 点击展开看原文）。文本本身已在事件流里——不再做隐藏假设。
+  | { kind: "thinking"; seq: number; steps: number; text: string }
+  | {
+      kind: "tasks"
+      seq: number
+      items: TaskEntry[]
+    }
   | {
       kind: "tool"
       seq: number
@@ -140,8 +146,27 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
+// 与 OpenTUI streamReducer 相同的占位文案：liveness 心跳不是思维内容，
+// 不进思考块（否则展开看到的是「思考中...」而不是推理）。
+const THOUGHT_PLACEHOLDERS = new Set([
+  "",
+  "…",
+  "...",
+  "思考中...",
+  "思考中…",
+  "Done",
+  "正在思考中...",
+  "已思考完毕",
+])
+
+function isPlaceholderThought(text: string): boolean {
+  return THOUGHT_PLACEHOLDERS.has(text.trim())
+}
+
 // 工具卡展开详情用：对象走 JSON 缩进，字符串原样，超限截断（不落库，仅展示）。
 const DETAIL_CAP = 4000
+// 思考块文本上限：推理可以很长，保留尾部而非撑爆 DOM。
+const THINKING_CAP = 60000
 
 function detail(value: unknown): string | undefined {
   if (value == null) return undefined
@@ -198,6 +223,15 @@ function findQuestion(
 ): Extract<TimelineItem, { kind: "question" }> | undefined {
   for (const item of timeline) {
     if (item.kind === "question" && item.questionId === questionId) return item
+  }
+  return undefined
+}
+
+function findTasks(
+  timeline: TimelineItem[],
+): Extract<TimelineItem, { kind: "tasks" }> | undefined {
+  for (const item of timeline) {
+    if (item.kind === "tasks") return item
   }
   return undefined
 }
@@ -261,13 +295,28 @@ export function reduceEvents(
         const text = str(payload.text)
         const channel = str(payload.channel)
         if (channel === "reasoning") {
-          // 模型思维链永不进时间线 —— 只按事件计步，渲染为安全进度块。
+          // 思维链累积进思考块（折叠展示）。语义与 OpenTUI streamReducer
+          // 对齐：子代理 intermediate 丢弃；liveness 占位文案不是思维内容；
+          // snapshot 是累计快照→替换而非追加；超长保留尾部。
           if (payload.intermediate === true) return
+          if (isPlaceholderThought(text)) return
+          const isSnapshot = payload.snapshot === true
+          const capped =
+            text.length > THINKING_CAP ? "…" + text.slice(-THINKING_CAP) : text
           const last = view.timeline[view.timeline.length - 1]
           if (last && last.kind === "thinking") {
             last.steps += 1
+            last.text = isSnapshot ? capped : last.text + capped
+            if (last.text.length > THINKING_CAP) {
+              last.text = "…" + last.text.slice(-THINKING_CAP)
+            }
           } else {
-            view.timeline.push({ kind: "thinking", seq: event.seq, steps: 1 })
+            view.timeline.push({
+              kind: "thinking",
+              seq: event.seq,
+              steps: 1,
+              text: capped,
+            })
           }
           return
         }
@@ -514,6 +563,28 @@ export function reduceEvents(
       case "question.resolved": {
         const found = findQuestion(view.timeline, str(payload.question_id))
         if (found) found.answer = str(payload.answer)
+        return
+      }
+      case "plan.updated":
+      case "todo.updated": {
+        // 计划/待办行：按 id 合并进唯一的「任务」清单块 —— 模型的
+        // todo 快照每次是全量，worker 已拆成逐项事件，这里按 id 覆盖
+        // 即可保持块内永远是当前真实清单。
+        const id = str(payload.plan_id ?? payload.todo_id)
+        const title = str(payload.title)
+        const status = str(payload.status)
+        let tasks = findTasks(view.timeline)
+        if (!tasks) {
+          tasks = { kind: "tasks", seq: event.seq, items: [] }
+          view.timeline.push(tasks)
+        }
+        const entry = tasks.items.find((it) => it.id === id)
+        if (entry) {
+          if (title) entry.title = title
+          entry.status = status
+        } else if (id) {
+          tasks.items.push({ id, title, status })
+        }
         return
       }
       case "turn.paused": {

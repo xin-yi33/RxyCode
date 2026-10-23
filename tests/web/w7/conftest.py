@@ -58,6 +58,12 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture(scope="session")
 def _postgres_server() -> str:
+    # ``RXYCODE_PGURL`` external postgres channel (same as w8/w9/w11).
+    from tests.support.pgurl import external_url
+
+    external = external_url()
+    if external:
+        return _worker_url(external)
     ready = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
     if ready.returncode == 0:
         return _worker_url(_URL)
