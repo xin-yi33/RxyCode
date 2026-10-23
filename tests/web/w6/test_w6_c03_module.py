@@ -146,6 +146,17 @@ def test_w6_c03_integration() -> None:
             url="https://example.com/",
             selector="a",
         )
+        reason = str(public.get("reason", "")).upper()
+        if public["status"] != "ok" and (
+            "NETWORK" in reason or "TIMEOUT" in reason
+        ):
+            # External reachability/render flake (ERR_NETWORK_CHANGED, slow
+            # first paint on a loaded runner) — retry once, still assert.
+            public = navigate_click(
+                session_id=str(agent["session_id"]),
+                url="https://example.com/",
+                selector="a",
+            )
         assert public["status"] == "ok", public
         shot = snapshot(session_id=str(agent["session_id"]))
         assert shot["status"] == "ok"

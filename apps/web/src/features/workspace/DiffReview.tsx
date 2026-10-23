@@ -35,8 +35,10 @@ export function DiffReview(props: { projectId: string; path: string }) {
   }
   if (!props.path) return null
   if (diff.isError) {
+    // A 409 conflict already surfaced must not be masked by a later diff
+    // refetch erroring under load — the conflict is the actionable signal.
     const denied = diff.error instanceof ApiError && diff.error.status === 403
-    return <p role="alert">{denied ? "拒绝" : "无法读取"}</p>
+    return <p role="alert">{conflict ? "刷新" : denied ? "拒绝" : "无法读取"}</p>
   }
   if (!diff.data) return <p>正在加载</p>
   return (

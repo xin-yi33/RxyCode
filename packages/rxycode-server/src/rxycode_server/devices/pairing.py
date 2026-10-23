@@ -19,7 +19,11 @@ class PairingBook:
         self._codes: dict[str, tuple[str, float, bool]] = {}
 
     def issue(self, tenant_id: str) -> str:
+        # token_urlsafe can emit a leading '-', which argparse would reject when
+        # the code is passed as `--code <value>` on the runner CLI.
         code = secrets.token_urlsafe(18)
+        while code.startswith("-"):
+            code = secrets.token_urlsafe(18)
         self._codes[code] = (tenant_id, self._clock() + self._ttl, False)
         return code
 

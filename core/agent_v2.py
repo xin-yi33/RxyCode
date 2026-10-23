@@ -176,10 +176,13 @@ from RxyCode.RxyCode1_1_0.core.build_workflow import (
     is_documentation_path,
     is_ordinary_text_save,
     assign_workflow_id,
+    decision_to_jsonable,
     parse_decision_text,
     promote_to_development,
+    recover_workflow_decision,
     retarget_contract,
     tests_passed_nonempty,
+    validate_decision,
     workflow_enabled,
     workflow_from_checkpoint,
 )
@@ -954,6 +957,14 @@ _PARENT_BUILD_WORKFLOW: _contextvars.ContextVar[dict | None] = _contextvars.Cont
     "rxycode_parent_build_workflow",
     default=None,
 )
+
+
+def _safe_checkpoint_int(value, default: int = 0) -> int:
+    """Persisted checkpoint metadata is disk data: one bad field must not fail a resume."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class _WorkflowGeneration:
@@ -5970,6 +5981,7 @@ class AgentV2:
         self._workflow_dev_upgrade_attempted = False
         self._workflow_awaiting_approval = False
         self._workflow_pending_contract_note = ""
+        self._workflow_upgrade_refusal = ""
         if getattr(self, "_build_workflow", None) is None and self._restore_unfinished_workflow(goal):
             return
         prompt = (
@@ -6293,11 +6305,12 @@ class AgentV2:
         goal = str(getattr(decision, "goal", "") or "")
         if not goal:
             if decision is not None:
-                self._build_workflow = promote_to_development(decision)
-                self._build_workflow_receipts = {}
-                self._workflow_bump_reasons = []
-                self._persist_build_workflow()
-                self._activate_upgraded_workflow()
+                try:
+                    upgraded = promote_to_development(decision)
+                except WorkflowContractError as exc:
+                    self._refuse_workflow_upgrade(decision, exc)
+                    return
+                self._apply_upgraded_workflow(upgraded)
             return
         prompt = (
             "A code or test write arrived under a contract that does not "
@@ -6321,13 +6334,43 @@ class AgentV2:
                 parsed = retarget_contract(decision, parsed)
             if not self._workflow_development_ready(parsed):
                 parsed = promote_to_development(parsed)
-        except WorkflowContractError:
-            if decision is None:
+        except WorkflowContractError as exc:
+            fallback = None
+            if decision is not None:
+                try:
+                    fallback = promote_to_development(decision)
+                except WorkflowContractError:
+                    fallback = None
+            if fallback is None:
+                self._refuse_workflow_upgrade(decision, exc)
                 return
-            parsed = promote_to_development(decision)
-        self._build_workflow = parsed
+            parsed = fallback
+        self._apply_upgraded_workflow(parsed)
+
+    def _refuse_workflow_upgrade(self, decision, error: Exception) -> None:
+        """Keep the non-development contract and never persist the invalid shape.
+
+        The mutation gate then returns an actionable refusal
+        (:meth:`_workflow_blocked_mutation_result`) instead of stranding the
+        turn: a forced ``development`` contract without a required check can
+        never be persisted or restored.
+        """
+        reason = str(error or "").strip() or (
+            "no required check available for a development contract"
+        )
+        self._workflow_upgrade_refusal = reason
+        self._build_workflow = decision
+        if decision is not None and getattr(decision, "task_kind", "") != "development":
+            self._build_workflow_block = ""
+        else:
+            self._build_workflow_block = reason
+
+    def _apply_upgraded_workflow(self, decision) -> None:
+        """Install a validated development contract and persist it."""
+        self._build_workflow = decision
         self._build_workflow_receipts = {}
         self._workflow_bump_reasons = []
+        self._workflow_upgrade_refusal = ""
         self._persist_build_workflow()
         self._activate_upgraded_workflow()
 
@@ -6442,6 +6485,22 @@ class AgentV2:
         if self._workflow_clarify_open() or self._workflow_design_open():
             return True
         return not any(check.required for check in decision.required_checks)
+
+    def _workflow_blocked_mutation_result(self, name: str) -> str:
+        """Actionable refusal: a blocked write must not be a dead end."""
+        decision = getattr(self, "_build_workflow", None)
+        kind = str(getattr(decision, "task_kind", "") or "missing")
+        refusal = str(getattr(self, "_workflow_upgrade_refusal", "") or "")
+        detail = f" Upgrade was refused: {refusal}." if refusal else ""
+        return (
+            f"[blocked: {name} was not executed; a code or test write needs a "
+            f"development contract with at least one required check, and the "
+            f"current contract is {kind}.{detail} Next step: do the read-only "
+            "part and answer, or call the question tool to ask the user whether "
+            "this should be a development task and which verification command to "
+            "use; writes are retried on their answer. Documentation/prose writes "
+            "and read-only commands stay allowed.]"
+        )
 
     def _workflow_tool_ref(self, call_id: str) -> str:
         getter = getattr(ToolOrchestrator, "get_tool_journal_binding", None)
@@ -6708,6 +6767,22 @@ class AgentV2:
         return getattr(self, "_build_workflow", None) is not None
 
     def _persist_build_workflow(self) -> None:
+        decision = getattr(self, "_build_workflow", None)
+        if decision is not None:
+            try:
+                validate_decision(
+                    decision_to_jsonable(decision),
+                    goal=str(getattr(decision, "goal", "") or ""),
+                )
+            except (WorkflowContractError, TypeError, ValueError) as exc:
+                # Never write a shape the restore path would reject: an invalid
+                # persisted contract is exactly what crashed resumed turns.
+                _logger.error(
+                    "refusing to persist an invalid build-workflow contract: %s",
+                    exc,
+                )
+                self._workflow_upgrade_refusal = str(exc)
+                return
         store = getattr(self, "_checkpoint_store", None)
         document = self.workflow_checkpoint_document()
         if store is None or document is None:
@@ -6771,8 +6846,12 @@ class AgentV2:
             return
         try:
             decision, _parent_receipts = workflow_from_checkpoint(payload)
-        except WorkflowContractError:
-            return
+        except (WorkflowContractError, TypeError, ValueError) as exc:
+            # A parent's invalid contract must not poison the child: inherit a
+            # repaired read-only view, or nothing at all.
+            decision = recover_workflow_decision(payload, error=exc)
+            if decision is None:
+                return
         self._build_workflow = decision
         self._build_workflow_receipts = {}
         self._workflow_bump_reasons = []
@@ -6782,9 +6861,13 @@ class AgentV2:
             self._workflow_generation = shared
             self._workflow_write_generation = int(shared.value)
         else:
-            self._workflow_write_generation = int(payload.get("write_generation") or 0)
+            self._workflow_write_generation = _safe_checkpoint_int(
+                payload.get("write_generation"), 0
+            )
         self._workflow_clarify_answered = bool(payload.get("clarify_answered"))
-        self._workflow_plan_revision = int(payload.get("plan_revision") or 1)
+        self._workflow_plan_revision = max(
+            1, _safe_checkpoint_int(payload.get("plan_revision"), 1)
+        )
         self._workflow_plan_status = str(payload.get("plan_status") or "pending")
         self._workflow_plan_goal = str(payload.get("plan_goal") or decision.goal)
         bound = payload.get("plan_bound_revision")
@@ -6795,27 +6878,83 @@ class AgentV2:
         self._workflow_touched_dirs = {str(item) for item in touched}
 
     def restore_build_workflow(self, payload, *, run_id: str | None = None) -> None:
-        """Resume the same task. A new run id does not mint a new workflow."""
+        """Resume the same task. A new run id does not mint a new workflow.
+
+        Checkpoints are disk data written by an older build: an invalid
+        persisted contract must never fail the resumed turn. Repair it into a
+        read-only contract that keeps the goal identity, or drop it so the turn
+        reclassifies — then continue the tool loop. Never let the contract
+        validation exception escape.
+        """
         del run_id
         if not isinstance(payload, dict):
             return
-        decision, receipts = workflow_from_checkpoint(payload)
+        repaired = False
+        receipts: dict[str, CheckReceipt] = {}
+        try:
+            decision, receipts = workflow_from_checkpoint(payload)
+            self._workflow_upgrade_refusal = ""
+        except (WorkflowContractError, TypeError, ValueError) as exc:
+            recovered = recover_workflow_decision(payload, error=exc)
+            if recovered is None:
+                _logger.error(
+                    "dropping unrepairable persisted build-workflow contract: %s",
+                    exc,
+                )
+                self._build_workflow = None
+                self._build_workflow_receipts = {}
+                self._build_workflow_block = f"persisted contract was invalid: {exc}"
+                self._workflow_upgrade_refusal = str(exc)
+                return
+            _logger.warning(
+                "repaired invalid persisted build-workflow contract %s: %s",
+                recovered.workflow_id,
+                exc,
+            )
+            decision = recovered
+            receipts = {}
+            repaired = True
+            self._build_workflow_block = ""
+            self._workflow_upgrade_refusal = str(exc)
         self._build_workflow = decision
         self._build_workflow_receipts = receipts
-        self._build_workflow_block = ""
-        self._workflow_generation = _WorkflowGeneration(int(payload.get("write_generation") or 0))
-        self._workflow_write_generation = int(self._workflow_generation.value)
+        generation = _safe_checkpoint_int(payload.get("write_generation"), 0)
+        self._workflow_generation = _WorkflowGeneration(generation)
+        self._workflow_write_generation = generation
         self._workflow_clarify_answered = bool(payload.get("clarify_answered"))
-        self._workflow_plan_revision = int(payload.get("plan_revision") or 1)
+        self._workflow_plan_revision = max(
+            1, _safe_checkpoint_int(payload.get("plan_revision"), 1)
+        )
         self._workflow_plan_status = str(payload.get("plan_status") or "pending")
         self._workflow_plan_goal = str(payload.get("plan_goal") or decision.goal)
         bound = payload.get("plan_bound_revision")
-        self._workflow_plan_bound_revision = bound if isinstance(bound, int) else None
+        self._workflow_plan_bound_revision = (
+            bound if isinstance(bound, int) and not isinstance(bound, bool) else None
+        )
         progress = payload.get("stage_progress")
         self._workflow_stage_progress = dict(progress) if isinstance(progress, dict) else {}
-        touched = payload.get("touched_dirs") or []
-        self._workflow_touched_dirs = {str(item) for item in touched}
-        self._load_workflow_instruction_text()
+        touched = payload.get("touched_dirs")
+        self._workflow_touched_dirs = (
+            {str(item) for item in touched}
+            if isinstance(touched, (list, tuple, set))
+            else set()
+        )
+        try:
+            self._load_workflow_instruction_text()
+        except Exception:  # project files are not restore-critical
+            _logger.warning(
+                "failed to reload project instructions for the restored contract",
+                exc_info=True,
+            )
+        if repaired:
+            # Heal the checkpoint so the next attempt restores a valid contract.
+            try:
+                self._persist_build_workflow()
+            except Exception:
+                _logger.warning(
+                    "failed to persist the repaired build-workflow contract",
+                    exc_info=True,
+                )
 
     def _apply_turn_effort(self, mode: str, text: str) -> str:
         """A21: pick this turn's effort. Implicit LLM-build default
@@ -7540,6 +7679,10 @@ class AgentV2:
         """
         await self._ensure_session_loaded()
         self._workflow_active_mode = mode or "build"
+        if resume is None:
+            # One upgrade attempt per turn, not forever: a refused upgrade stays
+            # retryable on a later user turn instead of a permanent dead end.
+            self._workflow_dev_upgrade_attempted = False
         if self._workflow_active_mode != "plan":
             await self._ensure_build_workflow(user_input)
             self._observe_workflow_plan_turn(user_input)
@@ -9017,10 +9160,7 @@ class AgentV2:
             self._remember_tool_outcome(
                 call_id, {"status": "rejected", "executed": False}
             )
-            return (
-                "[blocked: code or test write needs a development contract "
-                "with a required check]"
-            )
+            return self._workflow_blocked_mutation_result(name)
         if mode == "plan" and name not in PLAN_READONLY_TOOL_NAMES:
             self._remember_tool_outcome(
                 call_id, {"status": "rejected", "executed": False}

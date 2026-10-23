@@ -6,6 +6,19 @@
 
 ---
 
+## 2026-10-24
+
+### 02:05 CST 🐧📦📁 云端 Web 四问题修复上线（cloudfix-aba79b60-01）+ 真机验收
+- 代码：`feat/rxycode-web` 提交 `aba79b60`（附件读取 / question 卡 / 单选提交 / question 恢复崩溃，详见 `docs/release-notes/CHANGELOG_v1.4.5.md` 2026-10-24 条目）。部署源 = 本地工作树打 tar（含既有 WIP overlay，与线上既有行为一致）+ 150 条 dirty 文件 sha256 manifest，不重置 WIP。
+- 构建（VM `/home/ruanxinyi/cloudfix/build-cloudfix-aba79b60-01`，脚本 `/opt/rxycode/.ops/deploy-web-vm.sh build`）：`rxycode-api:cloudfix-aba79b60-01` image `660b6c31f593`（649MB）、`rxycode-worker:cloudfix-aba79b60-01` `b1fa0586fe6d`（655MB）、`rxycode-web:cloudfix-aba79b60-01` `4b83814de2a7`（72MB）。api/worker 镜像内 `RXYCODE_BUILD_COMMIT=aba79b609b230e27ce7c17a6644e5e6422fdafc9`、`RXYCODE_BUILD_TIME=2026-10-23T17:50:18Z` 校验通过；manifest 落 `/opt/rxycode/.ops/manifests/cloudfix-aba79b60-01-DEPLOY-MANIFEST.txt`。
+- 部署（脚本 `deploy cloudfix-aba79b60-01`）：备份 `/opt/rxycode/backups/cloudfix-cloudfix-aba79b60-01-20261024-015758/`（compose.prod.yaml/.env before + pins/containers/alembic + deploy.txt）；compose.prod.yaml 四处 rxycode image pin 与 .env `RXYCODE_IMAGE_TAG` 统一改写为新 tag（修掉旧 tag `3a8526c`/worker `52e6c7a8` 漂移）；`compose config` 断言 → 单次 migrate（alembic head 012_files_batch 前后一致）→ api → worker×3 → gateway 健康门均过（api/gateway ~20s，3 worker ~31s）。`/api/v1/version` 返回 `{"commit":"aba79b609b230e27ce7c17a6644e5e6422fdafc9","built_at":"2026-10-23T17:50:18Z"}`，csrf 200。postgres/redis/minio 未重建，未改 schema。
+- 首次 `deploy` 尝试在 preflight 安全中止（无任何变更）：render 里的 migrate pin 仍指 .env 旧 tag `rxycode-api:3a8526c`（镜像不存在）被当成回滚目标。已把回滚目标判定改为“当前 api/worker/gateway 容器实际运行的镜像”，并保留 4-pin 改写断言；修复后重新部署成功。DB 部署前备份：`/opt/rxycode/backups/pre-cloudfix/rxycode-20261023T173435Z.sql.gz`（734KB）。
+- 隧道：部署后公网一度 Cloudflare Error 1033/530，VM 上 `cloudflared.service`（origin `http://127.0.0.1:8080`）连接陈旧；`systemctl restart cloudflared` 后公网 HTTP 200 恢复（本机 curl 网关 8080 一直 200）。非应用故障。
+- **真机验收 A（上传 → 云端口具链）**：会话 `8bfdccf91e914553b54720221af71ccb` / run `13d02c1a40b749a1aa2922fee79b6d99`：浏览器上传 `实验报告-第3章 HDFS分布式文件系统_测试.docx`（37306B）。`attachment.import` filename 保留完整中文；工具卡 `read` 返回 `[extracted text of … (docx)]` + 正文；run `succeeded`，最终答案正确总结 HDFS/NameNode/DataNode 并给出第 3 章标题；无 `run.error`、console 无 error。截图 `D:/agent-demo/rxycode-web-hotfix-20261023/evidence-A-upload-read.png`。
+- **真机验收 B（question 卡 + 单选 + 恢复）**：会话 `140d19f1d3cd4826bb4a56550324c4f4` / run `d9d8c580b5434ff9aaa6d48d1f05cc70`：`question.requested` seq 29 带 4 选项；DOM 为垂直 `<ol><li>`，a11y 依次 `选项 1/2/3/4`（payload 顺序）。点击第 2 项后：网络只有 **1 次** `POST /api/v1/runs/.../questions`（200），DB `question.resolved` answer=`proofread`（单值）；卡片折叠为“文档处理方向 · 你的回答：**2 校对格式**”（label 非 raw value）。epoch 2 恢复无 `WorkflowContractError`、无 `run.error`：resumed turn 正常 `read` 该 docx 并继续，run 终态 `succeeded`（143 events），最终答案给出校对报告。console/page error 均为空。截图 `evidence-B-question-before.png`（竖排编号）、`evidence-B-question-answered.png`、`evidence-B-final.png`。
+- 临时验收身份：api 容器内铸造一条 `auth_sessions`（device_label `lead-acceptance-cloudfix`，token 不落盘）并接管 device lock；验收后已置 `revoked_at`，`device_locks` 已恢复原 token_hash 与 last_seen_at（用户密码/既有会话未动）。
+- 回滚材料：旧镜像 `rxycode-api/web:web-dfb6f356`、`rxycode-worker:web-52e6c7a8` 保留；`/opt/rxycode/backups/cloudfix-*` + `deploy-web-vm.sh rollback [DIR]`。VM 磁盘构建后剩余 ~2.6GB（构建前 prune 了 `web-fa366863` 旧代与 builder cache）。另：VM 备份 cron 仍缺 `backup_pg.sh` +x（本次未修，仅记）。
+
 ## 2026-10-22
 
 ### ~22:08 CST 🐧📦 BYOK-only 前后端分阶段上线（R6）

@@ -75,36 +75,10 @@ def _postgres_server() -> str:
     external = os.environ.get("RXYCODE_PGURL", "").strip()
     if external:
         return _worker_url(external)
-    ready = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
-    if ready.returncode == 0:
-        return _worker_url(_URL)
-    exists = _docker("inspect", _CONTAINER)
-    if exists.returncode == 0:
-        started = _docker("start", _CONTAINER)
-        assert started.returncode == 0, started.stderr
-    else:
-        started = _docker(
-            "run",
-            "-d",
-            "--name",
-            _CONTAINER,
-            "-e",
-            "POSTGRES_HOST_AUTH_METHOD=trust",
-            "-e",
-            "POSTGRES_DB=rxycode",
-            "-p",
-            "127.0.0.1:55439:5432",
-            "postgres:16",
-        )
-        assert started.returncode == 0, started.stderr
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        probe = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
-        if probe.returncode == 0:
-            return _worker_url(_URL)
-        time.sleep(1)
-    logs = _docker("logs", _CONTAINER)
-    raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")
+    from tests.support.pgurl import ensure_container
+
+    ensure_container(_CONTAINER, 55439)
+    return _worker_url(_URL)
 
 
 @pytest.fixture
