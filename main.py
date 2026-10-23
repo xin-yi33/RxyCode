@@ -1,5 +1,6 @@
 """RxyCode CLI and Ink frontend launcher."""
 
+import re
 import sys
 import os
 
@@ -688,6 +689,89 @@ def _resolve_model_label(model):
     return "default"
 
 
+_ENTRY_SURFACES = ("cli", "opentui", "desktop", "web")
+_ELECTRON_PRELOAD = re.compile(
+    r"""(?ix)
+    (?:
+        \bfrom\s+['\"]electron['\"]
+        | \bimport\s+['\"]electron['\"]
+        | \bimport\s*\(\s*['\"]electron['\"]
+        | \brequire\s*\(\s*['\"]electron['\"]
+        | \bfrom\s+['\"][^'\"]*preload[^'\"]*['\"]
+        | \bimport\s+['\"][^'\"]*preload[^'\"]*['\"]
+        | \bimport\s*\(\s*['\"][^'\"]*preload[^'\"]*['\"]
+        | \brequire\s*\(\s*['\"][^'\"]*preload[^'\"]*['\"]
+    )
+    """
+)
+
+
+def core_facade() -> dict[str, type]:
+    """The one Session, AgentRuntime, and ToolOrchestrator for every surface."""
+    from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
+    from RxyCode.RxyCode1_1_0.core.session import Session
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+
+    return {
+        "session": Session,
+        "agent_runtime": AgentRuntime,
+        "tool_orchestrator": ToolOrchestrator,
+    }
+
+
+def core_for_surface(surface: str) -> dict[str, type]:
+    """CLI, OpenTUI, Desktop, and Web initialize this same facade."""
+    if surface not in _ENTRY_SURFACES:
+        raise ValueError(f"unknown surface: {surface}")
+    return core_facade()
+
+
+def browser_entry_status(source: str) -> str:
+    """Reject a browser entry that imports Electron or a preload script."""
+    if _ELECTRON_PRELOAD.search(source):
+        return "BLOCKED"
+    return "OK"
+
+
+class SharedCore:
+    """One AgentRuntime for a task, reused by CLI, OpenTUI, Desktop, and Web."""
+
+    def __init__(self, session: object, spec: object) -> None:
+        self.session = session
+        self.spec = spec
+        self.runtime: object | None = None
+        self.creations = 0
+
+    async def run(self, surface: str, task: str, agent: object) -> object:
+        facade = core_for_surface(surface)
+        runtime_type = facade["agent_runtime"]
+        if self.runtime is None:
+            self.runtime = runtime_type(self.spec, session=self.session)
+            self.creations += 1
+        elif type(self.runtime) is not runtime_type:
+            raise RuntimeError(f"{surface} forked the agent runtime")
+        await dispatch_surface_prompt(
+            surface,
+            self.session,
+            agent,
+            task,
+            mode="build",
+            run_id=f"run-{surface}",
+        )
+        return self.runtime
+
+
+async def dispatch_surface_prompt(surface: str, session: object, agent: object, text: str, **kwargs: object) -> object:
+    """CLI, OpenTUI, Desktop, and Web prompts go through this one Session.prompt."""
+    core_for_surface(surface)
+    return await session.prompt(agent, text, **kwargs)
+
+
+def open_shared_core(session: object, spec: object) -> SharedCore:
+    """Open the single core used by every surface for one task."""
+    return SharedCore(session, spec)
+
+
 class _CaseInsensitiveCommandGroup(click.Group):
     """Resolve registered subcommands without changing option values.
 
@@ -836,6 +920,40 @@ def gui(desktop_dir):
         proc.wait(timeout=5)
 
 
+@cli.command("connect")
+@click.option("--url", required=True, help="Outbound cloud websocket URL.")
+@click.option("--code", default="", help="One-time pairing code.")
+@click.option("--token", default="", help="Device token for a reconnect. Not printed.")
+@click.option("--device-id", required=True)
+@click.option("--os-name", default="", help="Reported OS. Defaults to this machine.")
+@click.option("--capability", multiple=True)
+@click.option("--protocol-version", default="1.1.0")
+@click.option("--heartbeat-seconds", default=15.0, type=float)
+def connect(url, code, token, device_id, os_name, capability, protocol_version, heartbeat_seconds):
+    """Pair this machine with the cloud. The device token is not printed."""
+    import platform
+
+    from rxycode_runner.remote.client import ConnectRejected, run_connect
+
+    if not code and not token:
+        raise click.ClickException("PAIRING_INVALID")
+    reported = os_name or platform.system()
+    capabilities = list(capability) or ["click"]
+    try:
+        run_connect(
+            url=url,
+            pairing_code=code,
+            token=token,
+            device_id=device_id,
+            os_name=reported,
+            capabilities=capabilities,
+            protocol_version=protocol_version,
+            heartbeat_seconds=heartbeat_seconds,
+        )
+    except ConnectRejected as exc:
+        raise click.ClickException(exc.code) from None
+
+
 @cli.command()
 @click.argument("subcommand", default="list")
 @click.argument("name", default="")
@@ -940,6 +1058,20 @@ def _config_model_limits(action: str, model_name: str, *, dry_run: bool = False)
         return
 
     print("model-limits actions: inspect, set-auto")
+
+
+@cli.group("web")
+def web():
+    """Web core facade entry. Device connect is not delivered in this card."""
+
+
+@web.command("connect")
+def web_connect():
+    """Reserved device connect. Not implemented in this card."""
+    raise click.ClickException(
+        "rxycode web connect is not implemented in this card. "
+        "No device session is started."
+    )
 
 
 if __name__ == "__main__":

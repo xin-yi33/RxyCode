@@ -57,6 +57,43 @@ class _MixedChildUsageAgent(_FakeAgent):
 
 
 @pytest.mark.asyncio
+async def test_session_prompt_resume_keeps_permission_mode_override(session_workspace):
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import _permission_mode_override
+
+    class _ResumeAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__("resumed")
+            self.got: dict | None = None
+            self.seen_mode: str | None = "unset"
+
+        async def resume_harness_turn(self, resume: dict) -> str:
+            self.got = resume
+            self.seen_mode = _permission_mode_override.get()
+            return "resumed-answer"
+
+    emitted: list[BaseModel] = []
+    session = Session(
+        session_id="s-resume-pm",
+        workspace_root=session_workspace,
+        emit=emitted.append,
+    )
+    agent = _ResumeAgent()
+    result = await session.prompt(
+        agent,
+        "original",
+        mode="build",
+        run_id="run-resume-pm",
+        permission_mode="full_auto",
+        harness_resume={"checkpoint": {"user_input": "original"}},
+    )
+    assert result.status == "succeeded"
+    assert agent.got == {"checkpoint": {"user_input": "original"}}
+    # A parked turn that resumes under full_auto must keep the mode — the
+    # override drives every gate decision inside the continued loop.
+    assert agent.seen_mode == "full_auto"
+
+
+@pytest.mark.asyncio
 async def test_session_prompt_why_mode_does_not_call_agent(session_workspace):
     emitted: list[BaseModel] = []
     session = Session(

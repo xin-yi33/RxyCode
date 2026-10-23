@@ -1,0 +1,33 @@
+=== WEB-W7-C06 green evidence ===
+2026-10-19, on this checkout (feat/rxycode-web)
+
+--- focused tests ---
+python -m pytest tests/web/w7/test_w7_c06_unit.py tests/web/w7/test_w7_c06_module.py -q
+3 passed in 1.03s   (unit contract + unit negative + module integration)
+
+--- what each test really does ---
+unit contract: parses README's "## 🌐 RxyCode Web" section; every `shipped`
+row must carry an existing evidence/web/WEB-W?-C?? dir AND an existing
+tests/ file; `blocked` rows must name the blocker; >=3 shipped rows; the
+three card docs must exist, be >400 bytes, and be git-trackable
+(git check-ignore must NOT match).
+unit negative: scans docs/portfolio/rxycode-web-case-study.md + the README
+matrix for quantitative claims; each must cite [..](..), 证据:, evidence=,
+TBD, 占位, or BLOCKED — an uncited metric fails. The case study must keep
+at least one honest placeholder (TBD/BLOCKED present).
+module integration: boots the real create_app(mode="cloud") against the
+shared dev Postgres (rxy-w2c01-pg, migrated to head), drives an
+unauthenticated httpx ASGI client — GET /api/v1/me -> 401; GET runs/{id}
+-> 401; GET runs/{id}/events -> 401; POST cancel/steer -> 403; valid
+Origin without CSRF pair -> 403; Origin+CSRF without session -> 401/403;
+forged rxy_session cookie -> 401.
+
+--- honest labels ---
+- Browser E2E (unauthenticated visitor completes a restricted cloud task
+  through a real browser): BLOCKED — apps/web carries no Playwright
+  dependency and no anonymous run HTTP entry exists in the product; the
+  module test asserts the REAL server-side refusal surface instead.
+- Hosted public demo URL: planned — compose is bring-your-own-host.
+
+== audit r5 — FINAL (2026-10-19) ==
+VERDICT: NO_REMAINING_PROBLEMS on commit d5af8602.

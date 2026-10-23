@@ -1,0 +1,4 @@
+pytest tests/web/w6/test_w6_c04_unit.py tests/web/w6/test_w6_c04_module.py tests/contract/test_agent_runtime.py tests/test_appserver/test_agent_workspace_context.py tests/test_subagents/test_task_dispatch.py tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py -q --tb=line
+111 passed, 2 skipped in 7.80s
+SKIPPED tests/test_cache/test_stable_prefix.py:142 no tools registered in global test registry
+SKIPPED tests/test_cache/test_stable_prefix.py:158 no tools registered in global test registry

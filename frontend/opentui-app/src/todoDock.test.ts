@@ -104,11 +104,14 @@ describe("U-F5-4 todo dock", () => {
     expect(lines).toHaveLength(4); // 3 逐条 + 1 汇总补充
   });
 
-  test("U-F5-4-02 Ctrl+T toggles todo and Ctrl+E toggles thinking", () => {
-    expect(keyAction({ ctrl: true, name: "t" })).toBe("todo");
-    expect(keyAction({ ctrl: true, name: "e" })).toBe("thinking");
+  test("U-F5-4-02 Ctrl+T toggles thinking and Ctrl+E toggles todo", () => {
+    // 2026-10-11 换回原始约定：Ctrl+T=思考（与 Ink 版/设计稿一致），Ctrl+E=Todo。
+    expect(keyAction({ ctrl: true, name: "t" })).toBe("thinking");
+    expect(keyAction({ ctrl: true, name: "e" })).toBe("todo");
     expect(keyAction({ ctrl: true, name: "p" })).toBeNull();
-    const leftover = grepSource(/Ctrl\+T.*思考|Ctrl\+T.*thinking/i);
+    // 守卫：禁止再出现 Ctrl+T 直接粘 Todo 标签的绑定文案（"Ctrl+T:Todo"/
+    // "Ctrl+T Todo"/"Ctrl+T=Todo"）。同行后续提到 Todo（如 Ctrl+E:Todo）不算。
+    const leftover = grepSource(/Ctrl\+T\s*[:：=]?\s*Todo/i);
     expect(leftover).toEqual([]);
   });
 
@@ -133,7 +136,7 @@ describe("U-F5-4 todo dock", () => {
     expect(text).toMatch(/\[·\]|\[ \]/);
     expect(text).toContain("[ ]");
     expect(payload.first_event.snapshot?.revision).toBe(opened.revision);
-    const hidden = keyAction({ ctrl: true, name: "t" }) === "todo" ? [] : lines;
+    const hidden = keyAction({ ctrl: true, name: "e" }) === "todo" ? [] : lines;
     expect(hidden).toEqual([]);
     const collapsed = applyTodoUpdated(opened, payload.completed_event);
     expect(todoDockLines(collapsed)).toEqual([]);

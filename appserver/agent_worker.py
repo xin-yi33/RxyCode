@@ -19,7 +19,13 @@ from pydantic import BaseModel
 from .bootstrap import bootstrap_agent
 from .emitter import model_to_notification
 from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
-from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
+from .runtime import (
+    bind_prompt_context,
+    get_bound_tui,
+    install_tui_context_hook,
+    reset_prompt_context,
+    server_run_context,
+)
 
 
 def install_scripted_agent_replies(agent) -> None:
@@ -70,6 +76,33 @@ def install_scripted_agent_replies(agent) -> None:
     agent._raw_stream = stream
     agent._application_cache_namespace = lambda: "rxycode-scripted-agent"
     agent._scripted_replies_installed = True
+    # The build-workflow gate issues a real ``llm.ainvoke`` through
+    # ``_workflow_model_text`` (it deliberately bypasses ``_raw_stream``).
+    # Under a scripted run that call would escape the seam and hit the real
+    # provider.  Answer it through the existing ``_build_workflow_ask`` seam
+    # with a minimal valid ``question`` contract: non-development kinds pass
+    # the completion gate for free, so the scripted reply stays the answer.
+    scripted_decision = json.dumps(
+        {
+            "workflow_id": "wf-scripted",
+            "goal_revision": 1,
+            "contract_revision": 1,
+            "task_kind": "question",
+            "difficulty": "simple",
+            "stage_actions": {
+                "project_docs": "skip",
+                "clarify": "skip",
+                "design": "skip",
+                "build_verify": "skip",
+                "doc_sync": "skip",
+            },
+            "reason": "scripted test run",
+            "acceptance": ["scripted reply returned to the user"],
+            "required_checks": [],
+        },
+        ensure_ascii=False,
+    )
+    agent._build_workflow_ask = lambda _prompt: scripted_decision
 
 
 def bind_worker_todo_sink(emit) -> None:
@@ -272,6 +305,48 @@ def bootstrap_subagent_manager(
     return manager, store
 
 
+def assemble_surface_agent(
+    *,
+    session_id: str,
+    workspace_root: Path,
+    model_name: str | None,
+    emit: Callable[[str, dict[str, Any]], None],
+    approval: Any,
+    question: Any,
+) -> tuple[Any, Any, Any]:
+    """Shared Agent / subagent-manager / broker assembly for every surface.
+
+    Same order as ``AgentWorker._handle_bootstrap``: subagent manager, then
+    the approval and question brokers, then ``bootstrap_agent`` (config,
+    i18n, memory hydrate) and ``configure_agent_workspace``. Only the broker
+    transports differ per surface (stdio pipe, control socket).
+    """
+    manager, store = bootstrap_subagent_manager(
+        session_id=session_id, workspace_root=workspace_root, emit=emit
+    )
+    set_approval_broker(approval)
+    set_question_broker(question)
+    agent = bootstrap_agent(model_name=model_name, session_id=session_id)
+    agent = configure_agent_workspace(
+        agent, session_id=session_id, workspace_root=workspace_root
+    )
+    return agent, manager, store
+
+
+def _subagents_enabled_from_env() -> bool | None:
+    """Read the same validated master switch used to build the manager."""
+    try:
+        try:
+            from ..core.subagents.modes import subagent_config_from_env
+        except ImportError:
+            from RxyCode.RxyCode1_1_0.core.subagents.modes import (
+                subagent_config_from_env,
+            )
+        return bool(subagent_config_from_env().flags.subagents_enabled)
+    except Exception:
+        return None
+
+
 class _PipeApproval(ApprovalBroker):
     """Forward approval requests to the parent appserver over worker stdout."""
 
@@ -330,13 +405,26 @@ def _question_timeout_from_config() -> float | None:
         return None
 
 
+def session_type_for_worker():
+    """Desktop/worker prompts use the same Session class as the other surfaces."""
+    from RxyCode.RxyCode1_1_0.main import core_for_surface
+
+    return core_for_surface("desktop")["session"]
+
+
 class AgentWorker:
     def __init__(self) -> None:
         install_tui_context_hook()
         self._agent: Any | None = None
+        self._stub = False
         self._subagent_manager: Any | None = None
+        # None means the feature state could not be established. A missing
+        # manager is safe only when bootstrap positively observed the master
+        # subagent switch disabled.
+        self._subagents_enabled: bool | None = None
         self._subagent_event_store: Any | None = None
         self._subagent_tasks: set[asyncio.Task[Any]] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._session_id = "worker"
         self._workspace_root = Path.cwd()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
@@ -383,14 +471,28 @@ class AgentWorker:
         ):
             existing.emit = emit
             existing.drain_steers = self._take_steers
+            try:
+                from rxycode_worker.agent_events import bind_run
+            except ImportError:
+                bind_run = None
+            if bind_run is not None:
+                bind_run(session_id, worker=self)
+            self.activate_web_database(session_id)
             return existing
-        session = Session(
+        session = session_type_for_worker()(
             session_id=session_id,
             workspace_root=workspace_root,
             emit=emit,
         )
         self._core_session = session
         session.drain_steers = self._take_steers
+        try:
+            from rxycode_worker.agent_events import bind_run
+        except ImportError:
+            bind_run = None
+        if bind_run is not None:
+            bind_run(session_id, worker=self)
+        self.activate_web_database(session_id)
         return session
 
     def _take_steers(self) -> list[str]:
@@ -590,10 +692,12 @@ class AgentWorker:
 
     async def _handle_bootstrap(self, params: dict[str, Any], request_id: int) -> None:
         stub = bool(params.get("stub", False))
+        self._stub = stub
         workspace = Path(str(params.get("workspace_root", ".")))
         self._workspace_root = workspace.resolve()
-        self._session_id = str(params.get("session_id", "worker"))
+        self.bind_web_session(str(params.get("session_id", "worker")))
         model_id = str(params.get("model_id") or "").strip() or None
+        self._subagents_enabled = _subagents_enabled_from_env()
         self._subagent_manager, self._subagent_event_store = bootstrap_subagent_manager(
             session_id=self._session_id,
             workspace_root=self._workspace_root,
@@ -601,6 +705,7 @@ class AgentWorker:
                 {"jsonrpc": "2.0", "method": method, "params": payload}
             ),
         )
+        self.activate_web_database(self._session_id)
         set_approval_broker(self._approval)
         set_question_broker(self._question)
         # RLI-1: this per-session worker subprocess owns the process, so
@@ -655,12 +760,93 @@ class AgentWorker:
         preconnect = getattr(agent, "_preconnect_provider", None)
         if callable(preconnect):
             try:
-                asyncio.get_running_loop().create_task(preconnect())
+                task = asyncio.get_running_loop().create_task(preconnect())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             except Exception:
                 pass
         schedule = getattr(agent, "_schedule_prewarm", None)
         if callable(schedule):
             schedule()
+
+    def _prepare_suspend_blocker(self) -> str | None:
+        """Return a reason when worker-owned activity makes suspension unsafe.
+
+        Unknown/missing state is treated as busy. The parent independently
+        checks appserver-owned prompts, executions, approvals and schedules.
+        """
+        agent = getattr(self, "_agent", None)
+        if agent is None:
+            return "agent_not_bootstrapped"
+        run_task = getattr(self, "_run_task", None)
+        if run_task is not None and not run_task.done():
+            return "prompt_active"
+        if any(not task.done() for task in getattr(self, "_subagent_tasks", ())):
+            return "subagent_task_active"
+        if getattr(self, "_pending", None):
+            return "approval_or_question_pending"
+        if getattr(self, "_write_failures", None):
+            return "worker_write_failed"
+        if bool(getattr(agent, "_user_turn_active", False)):
+            return "user_turn_active"
+
+        prewarm_task = getattr(agent, "_prewarm_task", None)
+        if prewarm_task is not None and not prewarm_task.done():
+            return "prewarm_active"
+        if any(not task.done() for task in getattr(self, "_background_tasks", ())):
+            return "worker_background_task_active"
+
+        manager = getattr(self, "_subagent_manager", None)
+        if manager is None:
+            if getattr(self, "_subagents_enabled", None) is False:
+                return None
+            return "subagent_state_unavailable"
+        try:
+            tree = manager.get_tree(self._session_id)
+            if tree.list_active():
+                return "child_session_active"
+            if int(manager.active_lease_count) != 0:
+                return "write_lease_active"
+            if tree.list_all():
+                # Child trees and retry request bodies are worker-local today;
+                # the event store is not enough to reconstruct them on boot.
+                return "child_history_not_rehydratable"
+        except Exception:
+            return "subagent_state_unavailable"
+        return None
+
+    async def _handle_prepare_suspend(self, request_id: int) -> None:
+        """Persist quiescent memory before parent-side graceful retirement."""
+        blocker = self._prepare_suspend_blocker()
+        if blocker:
+            raise RuntimeError(f"worker cannot suspend: {blocker}")
+        # Drain only completed-turn output; this never cancels or interrupts
+        # work. Recheck after the await before touching persisted memory.
+        await self._flush_pending_writes()
+        blocker = self._prepare_suspend_blocker()
+        if blocker:
+            raise RuntimeError(f"worker cannot suspend: {blocker}")
+
+        agent = self._agent
+        memory = getattr(agent, "_memory", None)
+        save_session = getattr(memory, "save_session", None) if memory is not None else None
+        if memory is None and self._stub:
+            persisted = True
+        elif callable(save_session):
+            saved = save_session()
+            if inspect.isawaitable(saved):
+                raise RuntimeError("worker session persistence must be synchronous")
+            persisted = True
+        else:
+            raise RuntimeError("worker session persistence is unavailable")
+
+        await self._write_ordered(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"ok": True, "safe": True, "persisted": persisted},
+            }
+        )
 
     async def _handle_prefix_warm(self, params: dict[str, Any], request_id: int) -> None:
         """Join thinking-on prefix prewarm so session/warm is not ctor-only."""
@@ -702,8 +888,9 @@ class AgentWorker:
             )
             return
         text = str(params.get("text", ""))
-        run_id = str(params.get("run_id") or uuid.uuid4().hex)
         session_id = str(params.get("session_id", self._session_id))
+        run_context = server_run_context(session_id, claimed=params)
+        run_id = run_context.run_id
 
         def emit(notification: BaseModel) -> None:
             # Ordering barrier: any buffered stream content is submitted to
@@ -723,7 +910,7 @@ class AgentWorker:
         expanded = bool(params.get("thinking_expanded", self._thinking_expanded))
         self._thinking_expanded = expanded
         tui.set_thinking_expanded(expanded)
-        tokens = bind_prompt_context(session_id, tui)
+        tokens = bind_prompt_context(session_id, tui, run_context=run_context)
         self._active_tui = tui
 
         # C3: batch per-token notifications through a StreamCoalescer
@@ -776,7 +963,9 @@ class AgentWorker:
                     "mode": str(params.get("mode", "build")),
                     "run_id": run_id,
                     "permission_mode": params.get("permission_mode"),
+                    "run_context": run_context,
                 }
+                attachments = params.get("attachments") or []
                 # Keep the worker compatible with lightweight Session doubles
                 # and older integrations while passing the request-local TUI
                 # to the production Session implementation.
@@ -787,17 +976,48 @@ class AgentWorker:
                         for parameter in prompt_signature.parameters.values()
                     )
                 except (TypeError, ValueError):
+                    prompt_signature = None
                     accepts_tui = True
                 if accepts_tui:
                     prompt_kwargs["tui"] = tui
-                accepts_permission_mode = "permission_mode" in prompt_signature.parameters or any(
-                    parameter.kind is inspect.Parameter.VAR_KEYWORD
-                    for parameter in prompt_signature.parameters.values()
+                accepts_permission_mode = prompt_signature is None or (
+                    "permission_mode" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
                 )
                 if not accepts_permission_mode:
                     prompt_kwargs.pop("permission_mode", None)
+                accepts_run_context = prompt_signature is None or (
+                    "run_context" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
+                )
+                if not accepts_run_context:
+                    prompt_kwargs.pop("run_context", None)
+                accepts_attachments = prompt_signature is None or (
+                    "attachments" in prompt_signature.parameters
+                    or any(
+                        parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in prompt_signature.parameters.values()
+                    )
+                )
+                if attachments and not accepts_attachments:
+                    raise ValueError(
+                        "This Session.prompt implementation does not support "
+                        "prompt attachments; update the worker/core integration."
+                    )
+                if accepts_attachments:
+                    prompt_kwargs["attachments"] = attachments
                 install_scripted_agent_replies(self._agent)
-                result = await session.prompt(self._agent, text, **prompt_kwargs)
+                from RxyCode.RxyCode1_1_0.main import dispatch_surface_prompt
+
+                result = await dispatch_surface_prompt(
+                    "desktop", session, self._agent, text, **prompt_kwargs
+                )
                 # turn 结束后才到达的 steer（agent 主循环没来得及 drain）：
                 # 合并为一条消息开一个兜底新回合，避免每条各产出一个
                 # 「最终结果」（多 final_answer 业务 bug，2026-09-23）。
@@ -810,7 +1030,11 @@ class AgentWorker:
                     if not extras:
                         break
                     combined = "\n\n".join(extras)
-                    result = await session.prompt(self._agent, combined, **prompt_kwargs)
+                    steer_kwargs = dict(prompt_kwargs)
+                    steer_kwargs.pop("attachments", None)
+                    result = await dispatch_surface_prompt(
+                        "desktop", session, self._agent, combined, **steer_kwargs
+                    )
                 schedule = getattr(self._agent, "_schedule_prewarm", None)
                 if callable(schedule):
                     schedule()
@@ -1072,7 +1296,7 @@ class AgentWorker:
             cancelled = True
             asyncio.create_task(self._await_cancelled_prompt(run_task))
         elif self._agent is not None:
-            session = Session(
+            session = session_type_for_worker()(
                 session_id=self._session_id,
                 workspace_root=self._workspace_root,
                 emit=lambda _n: None,
@@ -1137,7 +1361,12 @@ class AgentWorker:
                 }
             )
             return
-        result = self._agent.switch_model(model_id)
+        # switch_model does disk I/O (save_history 原子写、load_config、DPAPI
+        # 解密); run it off the worker asyncio loop so a slow disk cannot
+        # freeze the whole worker for seconds.  model/switch stays off
+        # _STDIN_CONCURRENT_METHODS, so the dispatcher still awaits this
+        # handler serially before reading the next stdin message.
+        result = await asyncio.to_thread(self._agent.switch_model, model_id)
         if not isinstance(result, dict):
             result = {"model_id": model_id}
         await self._write_ordered(
@@ -1435,6 +1664,8 @@ class AgentWorker:
         method = str(message.get("method", ""))
         if method == "bootstrap":
             await self._handle_bootstrap(params, int(request_id))
+        elif method == "prepare_suspend":
+            await self._handle_prepare_suspend(int(request_id))
         elif method == "prefix_warm":
             await self._handle_prefix_warm(params, int(request_id))
         elif method == "model/switch":
@@ -1517,10 +1748,80 @@ class AgentWorker:
                     }
                 )
 
+    def bind_web_session(self, session_id: str) -> None:
+        """Record the session id from bootstrap, then attach the web run."""
+        self._session_id = str(session_id or "worker")
+        self.activate_web_database(self._session_id)
+
+    def activate_web_database(self, session_id: str | None = None) -> None:
+        """Bind this worker to the web run stored for its session."""
+        try:
+            from rxycode_worker.agent_events import (
+                bind_run,
+                lookup_web_run,
+                remember_web_run,
+            )
+        except ImportError:
+            return
+        url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+        session_id = str(session_id or getattr(self, "_session_id", "") or "")
+        if not url or not session_id:
+            return
+        try:
+            found = lookup_web_run(url, session_id)
+        except Exception:
+            # A stale/unreachable/unmigrated web database must never take
+            # down the CLI session — the run simply stays unbound.
+            _logger.warning("web run lookup failed; session runs unbound", exc_info=True)
+            return
+        if found is None:
+            return
+        root = found["session_id"] or found["run_id"]
+        try:
+            remember_web_run(
+                url,
+                found["tenant_id"],
+                found["run_id"],
+                parent_id=root,
+                session_id=root,
+            )
+            bind_run(found["run_id"], worker=self, tree_root=root)
+            self._web_run_id = found["run_id"]
+            manager = getattr(self, "_subagent_manager", None)
+            if manager is not None:
+                bind_run(found["run_id"], manager=manager, tree_root=root)
+        except Exception:
+            _logger.warning("web run bind failed; session runs unbound", exc_info=True)
+
+    async def drain_web_commands(self) -> list[dict[str, object]]:
+        """Apply steer and child-cancel rows committed for this run."""
+        try:
+            from rxycode_worker.agent_events import consume_persisted_commands
+        except ImportError:
+            return []
+        url = os.environ.get("RXYCODE_WEB_DATABASE_URL", "")
+        if not str(getattr(self, "_web_run_id", "") or ""):
+            self.activate_web_database()
+        run_id = str(getattr(self, "_web_run_id", "") or "")
+        if not url or not run_id:
+            return []
+        return await consume_persisted_commands(url, run_id)
+
+    async def _watch_web_commands(self) -> None:
+        while True:
+            try:
+                await self.drain_web_commands()
+            except Exception:
+                _logger.warning("web command drain failed", exc_info=True)
+            await asyncio.sleep(0.2)
+
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         pending: set[asyncio.Task[Any]] = set()
         self._ensure_writer()
+        watcher: asyncio.Task[Any] | None = None
+        if os.environ.get("RXYCODE_WEB_DATABASE_URL"):
+            watcher = asyncio.create_task(self._watch_web_commands())
         try:
             while True:
                 line = await loop.run_in_executor(None, sys.stdin.readline)
@@ -1578,6 +1879,10 @@ class AgentWorker:
         except Exception:
             raise
         finally:
+            if watcher is not None:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
             for task in list(self._subagent_tasks):
                 task.cancel()
             await asyncio.gather(*self._subagent_tasks, return_exceptions=True)

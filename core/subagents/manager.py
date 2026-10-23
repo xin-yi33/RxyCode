@@ -22,6 +22,7 @@ All entries share the same fixed execution order:
 from __future__ import annotations
 
 import asyncio
+import importlib
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -42,6 +43,10 @@ from protocol.subagents import (
     WorkspaceMode,
     WorkspaceScope,
 )
+
+
+def _worker_agent_events() -> object:
+    return importlib.import_module("rxycode_worker.agent_events")
 
 from .definitions import AgentDefinitionRegistry
 from .modes import (
@@ -157,6 +162,7 @@ class ChildSessionManager:
     _requests_by_session: dict[str, TaskRequest] = field(default_factory=dict, repr=False)
     _lease_manager: LeaseManager = field(default_factory=LeaseManager, repr=False)
     _book_lock: RLock = field(default_factory=RLock, repr=False)
+    _live_runtimes: dict = field(default_factory=dict, repr=False)
 
     # -- event wiring --------------------------------------------------------
 
@@ -167,6 +173,27 @@ class ChildSessionManager:
     def set_event_store(self, store: EventStore | None) -> None:
         """Attach the authoritative append-only event store for this tree."""
         self._event_store = store
+
+    def _journal_child(self, method: str, session: ChildSession, payload: dict) -> None:
+        """Write the same lifecycle notice into the web run log, when one is active."""
+        try:
+            default_run_journal = _worker_agent_events().default_run_journal
+        except ImportError:
+            return
+        journal = default_run_journal()
+        if journal is None:
+            return
+        root = str(getattr(session, "root_session_id", "") or "")
+        run_matches_session = _worker_agent_events().run_matches_session
+
+        child_id = str(getattr(session, "session_id", "") or "")
+        if not run_matches_session(journal.run_id, root, child_id):
+            return
+        parent = str(getattr(session, "parent_session_id", "") or "") or root
+        try:
+            journal.record(method, str(session.session_id), payload, parent_id=parent)
+        except Exception:
+            return
 
     def _emit(self, event_name: str, payload: dict) -> None:
         session_id = str(payload.get("session_id", ""))
@@ -233,6 +260,13 @@ class ChildSessionManager:
 
     def get_tree(self, root_session_id: str) -> SessionTree:
         """Return the session tree for a Primary session."""
+        try:
+            bind_run = _worker_agent_events().bind_run
+        except ImportError:
+            bind_run = None
+        if bind_run is not None:
+            bind_run(root_session_id, manager=self, tree_root=root_session_id)
+            _worker_agent_events().bind_manager_for_active_run(root_session_id, self)
         return self._tree_for(root_session_id)
 
     def get_session(self, root_session_id: str, session_id: str) -> ChildSession:
@@ -655,6 +689,7 @@ class ChildSessionManager:
                 )
 
         self._emit("child_session/started", {"session_id": session.session_id})
+        self._journal_child("event/agent_started", session, {"status": "running"})
 
         # The manager owns leases for its entire Primary tree.  A child never
         # self-asserts a lease id: requested paths are acquired atomically here
@@ -719,6 +754,11 @@ class ChildSessionManager:
             except Exception:
                 pass
 
+            self._journal_child(
+                "event/agent_done",
+                session,
+                {"status": terminal_status.value},
+            )
             self._emit(f"child_session/{terminal_status.value}", {
                 "session_id": session.session_id,
                 "status": terminal_status.value,

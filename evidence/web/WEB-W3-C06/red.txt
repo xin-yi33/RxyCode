@@ -1,0 +1,10 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_unit.py:102: AssertionError: ApprovalCard.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_unit.py:123: AssertionError: ApprovalCard.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c06_module.py:21: AssertionError: ApprovalCard.tsx is missing
+=========================== short test summary info ===========================
+FAILED tests/web/w3/test_w3_c06_unit.py::test_w3_c06_contract - AssertionError: ApprovalCard.tsx is missing
+FAILED tests/web/w3/test_w3_c06_unit.py::test_w3_c06_negative - AssertionError: ApprovalCard.tsx is missing
+FAILED tests/web/w3/test_w3_c06_module.py::test_w3_c06_integration - AssertionError: ApprovalCard.tsx is missing
+3 failed in 0.89s

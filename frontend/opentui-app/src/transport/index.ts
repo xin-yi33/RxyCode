@@ -20,6 +20,11 @@ export function resetChatTransportForTests(): void {
   cached = null;
 }
 
+/** Inject a stub transport (unit tests only); release via resetChatTransportForTests(). */
+export function __setChatTransportForTests(transport: ChatTransport): void {
+  cached = transport;
+}
+
 export type {
   ChatApiCallbacks,
   ChatTransport,

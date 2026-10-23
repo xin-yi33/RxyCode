@@ -43,7 +43,12 @@ def run_patch(filePath: str, diff: str) -> str:
     additions = max(0, len(new_lines) - len(orig_lines))
     removals = max(0, len(orig_lines) - len(new_lines))
 
-    return f"Patch applied to {file_path}. +{additions} -{removals} lines."
+    from .write import post_write_report
+
+    return (
+        f"Patch applied to {file_path}. +{additions} -{removals} lines."
+        + post_write_report(file_path, patched)
+    )
 
 
 async def run_patch_async(filePath: str, diff: str) -> str:
@@ -52,75 +57,78 @@ async def run_patch_async(filePath: str, diff: str) -> str:
 
 
 def _apply_diff(original: str, diff: str) -> str:
-    """Apply a simple unified diff."""
+    """Apply a unified diff only when every hunk matches the original file."""
+    if not diff.strip():
+        return original
     lines = diff.splitlines()
-    result = []
+    result: list[str] = []
     orig_lines = original.splitlines()
     orig_idx = 0
-    strip_final_newline = False
-
+    final_newline = original.endswith(("\n", "\r"))
+    newline = "\r\n" if "\r\n" in original else "\n"
+    hunks = 0
     i = 0
     while i < len(lines):
         line = lines[i]
-
-        # Skip diff metadata lines (--- / +++ / diff)
-        if line.startswith("---") or line.startswith("+++") or line.startswith("diff "):
+        if line.startswith(("--- ", "+++ ", "diff ", "index ")):
             i += 1
             continue
-
-        # Handle "No newline at end of file" marker
-        if line.startswith("\\ No newline"):
-            strip_final_newline = True
-            i += 1
-            continue
-
-        # Parse hunk header
-        if line.startswith("@@"):
-            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
-            if match:
-                start = int(match.group(1)) - 1
-                # Copy lines before hunk
-                while orig_idx < start and orig_idx < len(orig_lines):
-                    result.append(orig_lines[orig_idx])
-                    orig_idx += 1
-            i += 1
-            continue
-
-        # Context line
-        if line.startswith(" "):
-            if orig_idx < len(orig_lines):
-                result.append(orig_lines[orig_idx])
-                orig_idx += 1
-            i += 1
-            continue
-
-        # Remove line
-        if line.startswith("-"):
-            if orig_idx < len(orig_lines):
-                orig_idx += 1
-            i += 1
-            continue
-
-        # Add line
-        if line.startswith("+"):
-            result.append(line[1:])
-            i += 1
-            continue
-
-        # Skip unknown lines
+        match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+        if match is None:
+            raise ValueError("expected a unified diff @@ hunk header")
+        old_count = int(match.group(2) or 1)
+        new_count = int(match.group(4) or 1)
+        old_start = int(match.group(1))
+        start = old_start if old_count == 0 else old_start - 1
+        if start < orig_idx or start > len(orig_lines):
+            raise ValueError("overlapping or out-of-range patch hunk")
+        result.extend(orig_lines[orig_idx:start])
+        orig_idx = start
+        new_start = int(match.group(3))
+        if new_start != len(result) + (1 if new_count else 0):
+            raise ValueError("patch new-line position does not match preceding hunks")
+        old_used = new_used = 0
+        previous_kind = ""
+        hunks += 1
         i += 1
-
-    # Copy remaining lines
-    while orig_idx < len(orig_lines):
-        result.append(orig_lines[orig_idx])
-        orig_idx += 1
-
-    output = "\n".join(result)
-    if strip_final_newline and output.endswith("\n"):
-        output = output[:-1]
+        while i < len(lines) and not lines[i].startswith("@@"):
+            body = lines[i]
+            if body.startswith("\\ No newline"):
+                if previous_kind in {"+", " "}:
+                    final_newline = False
+                i += 1
+                continue
+            if body.startswith(("diff ", "index ")) or (
+                (old_used, new_used) == (old_count, new_count)
+                and body.startswith(("--- ", "+++ "))
+            ):
+                raise ValueError("one file per edit patch operation")
+            if not body or body[0] not in " +-":
+                raise ValueError("invalid patch hunk line")
+            kind, text = body[0], body[1:]
+            if kind in " -":
+                if orig_idx >= len(orig_lines) or orig_lines[orig_idx] != text:
+                    raise ValueError(f"patch context/removal does not match line {orig_idx + 1}")
+                orig_idx += 1
+                old_used += 1
+            if kind in " +":
+                result.append(text)
+                new_used += 1
+            previous_kind = kind
+            i += 1
+        if (old_used, new_used) != (old_count, new_count):
+            raise ValueError("patch hunk line counts do not match its header")
+    if not hunks:
+        raise ValueError("patch contains no hunks")
+    result.extend(orig_lines[orig_idx:])
+    output = newline.join(result)
+    if final_newline and result:
+        output += newline
     return output
 
 
+# 兼容入口（2026-10-13）：不再注册独立 patch schema。模型使用 edit 的
+# patch operation；run_patch/_apply_diff 是共享补丁实现，并非废弃死代码。
 patch_tool = StructuredTool(
     name="patch",
     description="Apply a unified diff patch to a file. Use standard unified diff format with @@ hunk headers.",

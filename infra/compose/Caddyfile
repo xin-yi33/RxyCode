@@ -1,0 +1,53 @@
+# RxyCode web gateway — terminates TLS (internal CA, self-signed) and routes
+# the built SPA plus the API/SSE/WebSocket surface to the `api` service.
+#
+# Cert handling: `tls internal` issues a "localhost" leaf from Caddy's own
+# internal CA. Browsers will warn until you trust the root cert — export it
+# from the caddy-data volume (see docs/deploy/web-runbook.md §certificates).
+# Swap `tls internal` for `tls /run/certs/cert.pem /run/certs/key.pem` or a
+# real ACME domain for a trusted deployment; keep the rest of this block.
+
+{
+	# Keep the admin API loopback-only inside the container (healthcheck probe).
+	admin 127.0.0.1:2019
+}
+
+https://localhost {
+	tls internal
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Preview-auth seam: sandbox preview pages ride on the app's own
+	# owner-authenticated route (/api/v1/previews/*, rxycode_server
+	# previews.proxy). When RXYCODE_PREVIEW_TOKEN is set in the gateway
+	# environment the gateway additionally requires the caller to send
+	# X-Preview-Token: <token>; when the env is empty the {$VAR} expansion
+	# below collapses to `"" != ""`, i.e. pass-through to app auth.
+	@preview_denied expression `path("/api/v1/previews/*") && "{$RXYCODE_PREVIEW_TOKEN}" != "" && {http.request.header.X-Preview-Token} != "{$RXYCODE_PREVIEW_TOKEN}"`
+	respond @preview_denied 403
+
+	# API, SSE (runs/{id}/events) and WS (terminals/{id}/ws, devices/socket)
+	# all live under /api — one upstream, streaming preserved end to end.
+	@api path /api/*
+	handle @api {
+		reverse_proxy api:8000 {
+			flush_interval -1
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Built SPA (webbuild -> web-dist volume). No compression on the API
+	# handle above so SSE flushes are never buffered.
+	handle {
+		encode zstd gzip
+		root * /srv/www
+		try_files {path} /index.html
+		file_server
+	}
+}

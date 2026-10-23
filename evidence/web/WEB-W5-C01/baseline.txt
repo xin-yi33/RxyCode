@@ -1,0 +1,4 @@
+parent: f6cbd0bd40333b3a9c8246b99a6f7654b141d75a
+branch: feat/rxycode-web
+e2e: no independent UI E2E
+docker: 29.7.2; runc present; runsc not in docker info

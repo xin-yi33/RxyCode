@@ -32,6 +32,7 @@ class ToolRegistry:
         if target_name not in self._tools:
             return False
         self._tools[alias] = self._tools[target_name]
+        self._risks[alias] = self._risks.get(target_name, "write")
         self._aliases.add(alias)
         return True
 

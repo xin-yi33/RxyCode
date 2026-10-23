@@ -1,0 +1,2 @@
+WARNING: Ignoring invalid distribution ~xycode (D:\Anaconda3\Lib\site-packages)
+WARNING: Package(s) not found: rxycode

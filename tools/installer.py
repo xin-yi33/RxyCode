@@ -100,9 +100,11 @@ class ToolInstaller:
         )
         if result.get("error_type") == "timeout":
             return False, "Installation timed out"
+        from ..utils.output_capture import append_capture_hints
+
         if result["success"]:
-            return True, result["stdout"]
-        return False, result["stderr"]
+            return True, append_capture_hints(result["stdout"], result)
+        return False, append_capture_hints(result["stderr"], result)
 
     def search_and_install(self, tool_name: str) -> tuple[bool, str]:
         """Search for and install a tool."""

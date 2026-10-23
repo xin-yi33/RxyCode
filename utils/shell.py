@@ -6,7 +6,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
-import locale
 import math
 import os
 from pathlib import Path
@@ -24,6 +23,10 @@ from ..config.settings import load_config
 from ..core.session_runtime import (
     current_working_directory,
     initial_working_directory,
+)
+from .output_capture import (
+    CAPTURE_READ_CHUNK_BYTES,
+    BoundedOutputCapture,
 )
 
 
@@ -101,6 +104,45 @@ def _failure(
     if resource_limit is not None:
         result["resource_limit"] = resource_limit
     return result
+
+
+async def _read_output_pipe(
+    pipe: asyncio.StreamReader | None,
+    capture: BoundedOutputCapture,
+    stream_name: str,
+) -> None:
+    """Drain one pipe in bounded chunks; collector writes apply backpressure."""
+    if pipe is None:
+        capture.read_error(stream_name, RuntimeError("pipe unavailable"))
+        raise _OutputPipeReadError(stream_name)
+    try:
+        while True:
+            chunk = await pipe.read(CAPTURE_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            capture.feed(stream_name, chunk)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        capture.read_error(stream_name, exc)
+        # A failed read means the child may block forever once this OS pipe
+        # fills. Propagate a fixed message so the executor immediately enters
+        # its existing process-tree cleanup path without exposing exception
+        # text that might contain local paths or output fragments.
+        raise _OutputPipeReadError(stream_name) from None
+    else:
+        capture.end_stream(stream_name)
+
+
+class _OutputPipeReadError(RuntimeError):
+    """Sanitized signal that a subprocess output pipe could not be drained."""
+
+    def __init__(self, stream_name: str) -> None:
+        self.stream_name = stream_name
+        super().__init__(
+            f"[capture_error] subprocess {stream_name} pipe read failed; "
+            "execution status unknown"
+        )
 
 
 def sample_process_tree(pid: int | None) -> tuple[float, int, int, int]:
@@ -281,7 +323,7 @@ def _is_within(candidate: Path, root: Path) -> bool:
 
 
 _PYTHON_C_RE = re.compile(
-    r"""^\s*(?:python3?|py)(?:\.exe)?\s+-c\s+(?P<quote>['"])(?P<code>.*)(?P=quote)\s*$""",
+    r"""^\s*(?:["'](?P<pypath>[^"']+?)["']|(?P<py>\S+?))\s+-c\s+(?P<quote>['"])(?P<code>.*)(?P=quote)\s*$""",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -292,6 +334,8 @@ def direct_python_c_argv(command: str) -> list[str] | None:
     The e14 command ``python -c "from e14_tiny import ..."`` stayed alive
     inside the agent until the tool timeout (60s, and earlier 300s at CPU 0%).
     The same text finishes immediately when ``sys.executable -c`` is used.
+    A quoted or unqualified interpreter *path* (``sys.executable -c "…"``)
+    is honored as-is; bare ``python``/``py`` resolves to this interpreter.
     """
     match = _PYTHON_C_RE.match(command or "")
     if match is None:
@@ -299,7 +343,13 @@ def direct_python_c_argv(command: str) -> list[str] | None:
     code = match.group("code")
     if not code.strip():
         return None
-    return [sys.executable, "-c", code]
+    prog = match.group("pypath") or match.group("py") or ""
+    if re.fullmatch(r"(?i)(?:python3?|py)(?:\.exe)?", prog):
+        return [sys.executable, "-c", code]
+    base = re.split(r"[\\/]", prog)[-1]
+    if re.fullmatch(r"(?i)(?:python3?|py)(?:\.exe)?", base):
+        return [prog, "-c", code]
+    return None
 
 
 class ShellExecutor:
@@ -1124,7 +1174,22 @@ class ShellExecutor:
         from RxyCode.RxyCode1_1_0.core.sandbox.policy import from_config
 
         cfg = load_config()
-        policy = from_config(cfg, workspace_root=(cwd or Path.cwd()))
+        # Track C 自动开关：os_sandbox.enabled 未显式配置时按权限模式
+        # 决定——普通模式开内核沙箱，Full/Full-Auto 解除（回收/急停由
+        # reaping Job 保留）。运行时覆盖值（ContextVar）优先于文件值。
+        try:
+            from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
+                _permission_mode_override,
+            )
+
+            mode = _permission_mode_override.get()
+        except Exception:
+            mode = None
+        if mode is None:
+            mode = (cfg.get("safety") or {}).get("permission_mode")
+        policy = from_config(
+            cfg, workspace_root=(cwd or Path.cwd()), permission_mode=mode
+        )
         if not policy.enabled:
             return None
         wrapped = wrap_command(policy, list(argv), cwd or Path.cwd())
@@ -1150,6 +1215,22 @@ class ShellExecutor:
         else:
             kwargs["start_new_session"] = True
         return kwargs
+
+    def resolved_workdir(self, workdir: str = "") -> Path:
+        """Directory this executor would actually use for *workdir*."""
+        policy = self._execution_policy(workdir)
+        if policy.cwd is not None:
+            return policy.cwd
+        return current_working_directory()
+
+    def build_argv(self, command: str) -> list[str]:
+        """argv this executor would spawn for *command*（shell 探测 + 转换）。
+
+        WEB-W7-C02：runner full 路径复用同一份 argv 构造，保证 full_auto
+        与其它权限模式跑同一个 shell（Windows = PowerShell）。
+        """
+        direct = direct_python_c_argv(command)
+        return direct if direct is not None else self._build_command(command)
 
     def execute(self, command: str, workdir: str = "", timeout: int = DEFAULT_SHELL_TIMEOUT) -> dict:
         # 废弃代码（2026-09-20）：timeout: int = 60  # 旧前台一刀切，禁止再引用。
@@ -1179,10 +1260,8 @@ class ShellExecutor:
         # python -c 不经 PowerShell。agent 里同一条命令会停到 timeout
         # （e14：timeout 60 整段耗尽；更早一次 CPU 0% 停到 300s）。
         # 直接用当前解释器时，同一条命令马上输出 E14_OK。
-        direct = direct_python_c_argv(command)
-        argv = direct if direct is not None else self._build_command(command)
         return await self._execute_controlled(
-            argv,
+            self.build_argv(command),
             workdir=workdir,
             timeout=timeout,
             shell_command=command,
@@ -1253,7 +1332,30 @@ class ShellExecutor:
                 spawn_argv = os_sandbox_pair[1].argv
 
         wrapped_cmd = os_sandbox_pair[1] if os_sandbox_pair is not None else None
+        reaping_handle = 0
+        reaping_bind_needed = False
+        if (
+            wrapped_cmd is None
+            and self.os_name == "win32"
+            and policy.mode != "docker"
+        ):
+            # WEB-W7-C02 资源释放：os_sandbox 未启用时子进程出生即是
+            # 进程级 reaping-only Job（kill-on-close，无限额无限制）
+            # 成员。句柄进程级缓存、worker 死亡时由 OS 关闭触发整树回收——
+            # 按命令关闭会把 agent 有意 Start-Process 的后台进程一并
+            # 杀死。首选继承：worker 已自指派进 Job 时子孙在
+            # CreateProcess 内原子入列，无 suspend/bind 窗口；自指派
+            # 失败才回退逐命令出生即绑定。回收不是安全边界——建/绑/
+            # 自指派失败只警告，命令照常执行。
+            from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                reaping_is_inherited,
+                reaping_job_handle,
+            )
+
+            reaping_handle = reaping_job_handle()
+            reaping_bind_needed = bool(reaping_handle) and not reaping_is_inherited()
         os_job_handle = 0
+        bind_fn = None
         process_kwargs = self._process_kwargs(spawn_cwd, self.os_name)
         if wrapped_cmd is not None and wrapped_cmd.job_plan is not None:
             # v1.4.1 修订（2026-10-07 验收缺陷修）：Windows Job 绑定前移到
@@ -1266,6 +1368,7 @@ class ShellExecutor:
                 open_sandbox_job,
             )
 
+            bind_fn = bind_spawned_process
             os_job_handle = open_sandbox_job(wrapped_cmd)
             if os_job_handle:
                 # subprocess 无 CREATE_SUSPENDED 常量——CREATE_SUSPENDED=0x4
@@ -1273,20 +1376,58 @@ class ShellExecutor:
                 process_kwargs["creationflags"] = process_kwargs.get(
                     "creationflags", 0
                 ) | 0x00000004
+        elif reaping_bind_needed:
+            # 自指派未生效的兜底：CREATE_SUSPENDED 出生即绑定。
+            from RxyCode.RxyCode1_1_0.core.sandbox.manager import (
+                bind_spawned_process as bind_fn,
+            )
+
+            process_kwargs["creationflags"] = process_kwargs.get(
+                "creationflags", 0
+            ) | 0x00000004
+        from rxycode_runner.local.supervisor import (
+            active_supervisor,
+            adopt_suspended,
+            tracking_shell,
+        )
+
+        if tracking_shell() and active_supervisor().stopped:
+            return _failure(
+                "[rejected] emergency_stop",
+                error_type="rejected",
+            )
+        track_this = tracking_shell() and sys.platform == "win32"
+        if track_this:
+            process_kwargs["creationflags"] = process_kwargs.get("creationflags", 0) | 0x00000004
         process: asyncio.subprocess.Process | None = None
-        communicate_task: asyncio.Task | None = None
+        capture_roots = tuple(
+            root for root in (policy.workspace_root, policy.cwd) if root is not None
+        )
+        capture = BoundedOutputCapture(forbidden_roots=capture_roots)
+        capture_complete = False
+        capture_task: asyncio.Future | None = None
+        reader_tasks: list[asyncio.Task] = []
+        process_wait_task: asyncio.Task | None = None
         monitor_task: asyncio.Task | None = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *spawn_argv,
                 **process_kwargs,
             )
+            if track_this and process.pid:
+                adopt_suspended(process.pid)
+                if not os_job_handle and not reaping_bind_needed:
+                    from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
+                        resume_process_main_thread,
+                    )
+
+                    resume_process_main_thread(process.pid)
             if os_job_handle:
                 # root 此刻一行代码未跑（suspended），不存在先发子孙——
-                # 指派即全覆盖，随后恢复主线程。失败即 fail-closed：
+                # 指派即全覆盖，随后恢复主线程。沙箱 Job 失败即 fail-closed：
                 # 清理 suspended root（无子孙可漏），不吞 GetLastError。
                 try:
-                    bind_spawned_process(os_job_handle, process.pid)
+                    bind_fn(os_job_handle, process.pid)
                 except Exception as exc:
                     await self._cleanup_process(process, cidfile)
                     process = None
@@ -1294,11 +1435,47 @@ class ShellExecutor:
                         f"[sandbox_error] {exc}",
                         error_type="sandbox_error",
                     )
+            elif reaping_bind_needed:
+                # reaping-only Job（WEB-W7-C02）不是安全边界：绑定失败只警告、
+                # 恢复主线程照常执行。句柄进程级存活、不在收尾关闭——worker
+                # 死亡时 OS 收句柄触发 kill-on-close；若 root 已入 Job，整树
+                # 连坐回收仍然生效。（worker 已自指派时本分支不执行——子孙
+                # 出生即成员，继承原子生效，无 suspend/bind 窗口。）
+                try:
+                    bind_fn(reaping_handle, process.pid)
+                except Exception as exc:  # noqa: BLE001 - 回收失败不阻塞命令
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "reaping job 绑定失败（%s），命令将无回收保证执行", exc
+                    )
+                    try:
+                        from RxyCode.RxyCode1_1_0.core.sandbox.windows import (
+                            resume_process_main_thread,
+                        )
+
+                        resume_process_main_thread(process.pid)
+                    except Exception:  # noqa: BLE001 - 已告警，命令继续
+                        pass
             # GUI apps as the direct child keep pipes open until the window
             # closes (OpenCode-class hang). Opening Word/Notepad/Typora is
             # intercepted in tools/bash.py via launch_intent.
-            # 废弃代码（2026-09-21）：对打开类命令在这里 communicate() 等到 GUI 退出。
-            communicate_task = asyncio.create_task(process.communicate())
+            # Deprecated 2026-10-11: main-command process.communicate() buffered
+            # both full streams; BoundedOutputCapture replaced it with streaming
+            # bounded previews/artifacts. Never route new command captures back.
+            # Read each stream independently. No communicate()/whole-output
+            # byte buffers are created, and every write is awaited inline by
+            # its reader task so slow storage back-pressures the child.
+            reader_tasks = [
+                asyncio.create_task(
+                    _read_output_pipe(process.stdout, capture, "stdout")
+                ),
+                asyncio.create_task(
+                    _read_output_pipe(process.stderr, capture, "stderr")
+                ),
+            ]
+            process_wait_task = asyncio.create_task(process.wait())
+            capture_task = asyncio.gather(*reader_tasks, process_wait_task)
             if policy.mode in {"host", "workspace"} and (
                 policy.max_memory_mb > 0 or policy.max_processes > 0
             ):
@@ -1306,7 +1483,7 @@ class ShellExecutor:
                     self._monitor_process_tree(process, policy)
                 )
 
-            waiters = {communicate_task}
+            waiters = {capture_task}
             if monitor_task is not None:
                 waiters.add(monitor_task)
             started = time.monotonic()
@@ -1345,8 +1522,14 @@ class ShellExecutor:
                     WATCHDOG_OBSERVE_SECONDS,
                 )
             )
-            await asyncio.sleep(0)
-            if checkpoints and not communicate_task.done():
+            # A completed StreamReader-backed mock needs one scheduling turn
+            # per pipe before gather becomes done; avoid probing psutil for a
+            # process that has already exited during pipe startup.
+            for _ in range(3):
+                if capture_task.done():
+                    break
+                await asyncio.sleep(0)
+            if checkpoints and not capture_task.done():
                 sampler = ProcessTreeSampler(process.pid)
                 sampler.sample()
                 # 废弃代码（2026-09-22）：把启动时的内存和进程数当作仍在工作的基线。
@@ -1355,11 +1538,11 @@ class ShellExecutor:
 
             while True:
                 now = time.monotonic()
-                if communicate_task.done():
+                if capture_task.done():
                     break
                 if now >= deadline:
                     await self._cleanup_process(process, cidfile)
-                    await self._cancel_task(communicate_task)
+                    await self._cancel_task(capture_task)
                     trail = ("\n" + "\n".join(probes)) if probes else ""
                     return _failure(
                         f"[timeout after {timeout}s]{trail}",
@@ -1378,13 +1561,13 @@ class ShellExecutor:
                     violation = monitor_task.result()
                     if violation is not None:
                         await self._cleanup_process(process, cidfile)
-                        await self._cancel_task(communicate_task)
+                        await self._cancel_task(capture_task)
                         return _failure(
                             violation.message(),
                             error_type="resource_limit",
                             resource_limit=violation.resource,
                         )
-                if communicate_task in done:
+                if capture_task in done:
                     break
                 now = time.monotonic()
                 if checkpoints and sampler is not None and now + 0.05 >= checkpoints[0]:
@@ -1392,13 +1575,13 @@ class ShellExecutor:
                     cpu1, rss1, live1, io1 = sampler.sample()
                     if (
                         observe_seconds > 0
-                        and not communicate_task.done()
+                        and not capture_task.done()
                     ):
                         await asyncio.wait(
-                            {communicate_task},
+                            {capture_task},
                             timeout=observe_seconds,
                         )
-                    if communicate_task.done():
+                    if capture_task.done():
                         break
                     cpu2, rss2, live2, io2 = sampler.sample()
                     elapsed = int(time.monotonic() - started)
@@ -1444,7 +1627,7 @@ class ShellExecutor:
                         continue
                     if time.monotonic() + 0.05 >= idle_kill_at:
                         await self._cleanup_process(process, cidfile)
-                        await self._cancel_task(communicate_task)
+                        await self._cancel_task(capture_task)
                         return _failure(
                             "[watchdog idle after "
                             f"{elapsed}s] {note}"
@@ -1457,24 +1640,11 @@ class ShellExecutor:
                         note + "还没到交回模型的检查点，先继续等。"
                     )
 
-            stdout, stderr = await communicate_task
-            # Decode subprocess output as UTF-8 first. Python 3.6+ on Windows
-            # writes UTF-8 to pipes regardless of the console code page, and
-            # locale.getpreferredencoding() commonly returns cp936/gbk on
-            # zh-CN systems — decoding UTF-8 bytes as GBK produced mojibake
-            # (e.g. 测 → 娴嬭瘯). Fall back to the system locale encoding only
-            # when UTF-8 decoding fails.
-            def _decode_output(data: bytes | None) -> str:
-                if not data:
-                    return ""
-                try:
-                    return data.decode("utf-8", errors="strict")
-                except UnicodeDecodeError:
-                    fallback = locale.getpreferredencoding(False) or "utf-8"
-                    return data.decode(fallback, errors="replace")
-
-            stdout_text = _decode_output(stdout)
-            stderr_text = _decode_output(stderr)
+            await capture_task
+            captured = capture.finish()
+            capture_complete = True
+            stdout_text = str(captured["stdout"])
+            stderr_text = str(captured["stderr"])
             # Stable result schema: every outcome carries ``error_type``
             # (None on normal success/exit), so callers can use
             # result["error_type"] without KeyError on success paths.
@@ -1484,16 +1654,36 @@ class ShellExecutor:
                 "exit_code": process.returncode,
                 "success": process.returncode == 0,
                 "error_type": None,
+                **captured,
             }
             if policy.mode == "docker" and process.returncode != 0:
                 detail = stderr_text.strip() or "docker run returned a non-zero exit code"
                 result["stderr"] = f"[docker_sandbox] {detail}"
                 result["error_type"] = "docker_sandbox"
             return result
+        except _OutputPipeReadError as exc:
+            if process is not None:
+                await self._cleanup_process(process, cidfile)
+            for task in reader_tasks:
+                await self._cancel_task(task)
+            await self._cancel_task(process_wait_task)
+            captured = capture.finish()
+            capture_complete = True
+            result = _failure(str(exc), error_type="execution_error")
+            result.update(captured)
+            captured_stderr = str(captured.get("stderr") or "")
+            result["stderr"] = (
+                f"{exc}\n{captured_stderr}" if captured_stderr else str(exc)
+            )
+            result["capture_error"] = (
+                str(captured.get("capture_error") or "")
+                or f"{exc.stream_name} pipe read failed (OSError)"
+            )
+            return result
         except asyncio.CancelledError:
             if process is not None:
                 await self._cleanup_process(process, cidfile)
-            await self._cancel_task(communicate_task)
+            await self._cancel_task(capture_task)
             raise
         except FileNotFoundError as exc:
             if process is not None:
@@ -1508,6 +1698,7 @@ class ShellExecutor:
         except Exception as exc:
             if process is not None:
                 await self._cleanup_process(process, cidfile)
+            await self._cancel_task(capture_task)
             if policy.mode == "docker":
                 return _failure(
                     f"[docker_sandbox] Docker sandbox failed: {exc}; "
@@ -1516,6 +1707,16 @@ class ShellExecutor:
                 )
             return _failure(str(exc), error_type="execution_error")
         finally:
+            await self._cancel_task(capture_task)
+            for task in reader_tasks:
+                await self._cancel_task(task)
+            await self._cancel_task(process_wait_task)
+            if not capture_complete:
+                capture.abort()
+            if process is not None and process.returncode is not None:
+                transport = getattr(process, "_transport", None)
+                if transport is not None:
+                    transport.close()
             await self._cancel_task(monitor_task)
             if os_job_handle:
                 # v1.4.1 沙箱收尾：句柄关闭即 kill-on-close 生效——任何漏网的
@@ -1628,14 +1829,15 @@ class ShellExecutor:
 
         Works even when the root process has already exited while its children
         survive (they may be holding the stdout/stderr pipes open, which is
-        exactly what keeps ``communicate()`` blocked): POSIX kills the process
+        exactly what keeps output readers waiting for EOF): POSIX kills the process
         group (the child was spawned with ``start_new_session=True``, so the
         group outlives the leader), Windows walks the parent chain from the
         recorded pid and kills every descendant.
 
         POSIX: after SIGTERM the whole process group is polled; if any member
         survives the grace period (e.g. it ignores SIGTERM or the root exited
-        early), the group escalates to SIGKILL.
+        early), the group escalates to SIGKILL. This also closes inherited pipe
+        writers that could otherwise keep a bounded reader waiting at EOF.
         """
         pid = process.pid
         if self.os_name == "win32":

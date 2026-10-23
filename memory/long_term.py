@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, get_dated_data_dir
+from RxyCode.RxyCode1_1_0.memory._scope import memory_root
 from RxyCode.RxyCode1_1_0.utils.atomic_file import atomic_write_text
 
 _MEMORY_LOCK = threading.RLock()
@@ -40,12 +41,12 @@ def _find_session_dir(session_id: str) -> Path | None:
     )
     if matches:
         return matches[0]
-    legacy = get_data_dir() / "memory" / "sessions" / session_id
+    legacy = memory_root() / "sessions" / session_id
     return legacy if legacy.exists() else None
 
 
 def _projects_dir() -> Path:
-    d = get_data_dir() / "memory" / "projects" / "global"
+    d = memory_root() / "projects" / "global"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -126,7 +127,7 @@ class LongTermMemory:
     def clear_session(self) -> int:
         """Remove this session's durable files from every dated and legacy root."""
         roots = list((get_data_dir() / "sessions").glob(f"*/memory/{self.session_id}"))
-        roots.append(get_data_dir() / "memory" / "sessions" / self.session_id)
+        roots.append(memory_root() / "sessions" / self.session_id)
         removed = 0
         for root in roots:
             for name in ("context.md", "history.json", "errors.log", "auto_facts.md", "compressed.md"):
@@ -146,7 +147,7 @@ class LongTermMemory:
             for path in (get_data_dir() / "sessions").glob("*/memory/*")
             if path.is_dir()
         }
-        legacy = get_data_dir() / "memory" / "sessions"
+        legacy = memory_root() / "sessions"
         if legacy.exists():
             sessions.update(path.name for path in legacy.iterdir() if path.is_dir())
         return sorted(sessions)

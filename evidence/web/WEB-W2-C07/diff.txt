@@ -1,0 +1,886 @@
+diff --git a/packages/rxycode-server/src/rxycode_server/api/artifacts.py b/packages/rxycode-server/src/rxycode_server/api/artifacts.py
+new file mode 100644
+index 00000000..99b344c5
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/api/artifacts.py
+@@ -0,0 +1,78 @@
++"""Artifact list and download. The tenant comes from the session."""
++
++from __future__ import annotations
++
++from fastapi import APIRouter, HTTPException, Request
++from fastapi.responses import Response
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.api.auth import current_record
++from rxycode_server.artifacts.service import ArtifactForbidden, read_download
++from rxycode_server.persistence.models import Artifact, Run
++
++router = APIRouter()
++
++
++def _rows(database_url: str, run_id: str) -> tuple[str, list[dict[str, object]]] | None:
++    engine = create_engine(database_url, poolclass=NullPool)
++    try:
++        with Session(engine) as db:
++            run = db.get(Run, run_id)
++            if run is None:
++                return None
++            found = db.scalars(select(Artifact).where(Artifact.run_id == run.id)).all()
++            items = [
++                {
++                    "artifact_id": row.id,
++                    "sha256": row.sha256,
++                    "size": int(row.size),
++                    "content_type": row.content_type,
++                }
++                for row in found
++            ]
++            return run.tenant_id, items
++    finally:
++        engine.dispose()
++
++
++@router.get("/api/v1/runs/{run_id}/artifacts")
++def list_artifacts(run_id: str, request: Request) -> dict:
++    record = current_record(request)
++    loaded = _rows(request.app.state.database_url, run_id)
++    if loaded is None:
++        raise HTTPException(status_code=404, detail="RUN_NOT_FOUND")
++    tenant_id, items = loaded
++    if tenant_id != record.tenant_id:
++        raise HTTPException(status_code=403, detail="ARTIFACT_FORBIDDEN")
++    return {"artifacts": items}
++
++
++@router.get("/api/v1/runs/{run_id}/artifacts/{artifact_id}")
++def download_artifact(
++    run_id: str,
++    artifact_id: str,
++    request: Request,
++    expires: str = "",
++    signature: str = "",
++) -> Response:
++    record = current_record(request)
++    state = request.app.state
++    try:
++        body = read_download(
++            state.database_url,
++            tenant_id=record.tenant_id,
++            artifact_id=artifact_id,
++            expires=expires,
++            signature=signature,
++            signing_key=state.secret,
++            s3_endpoint=getattr(state, "s3_endpoint", None),
++            bucket=getattr(state, "s3_bucket", None),
++            access_key=getattr(state, "s3_access_key", None),
++            secret_key=getattr(state, "s3_secret_key", None),
++            run_id=run_id,
++        )
++    except ArtifactForbidden as exc:
++        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
++    return Response(content=body, media_type="application/octet-stream")
+diff --git a/packages/rxycode-server/src/rxycode_server/artifacts/__init__.py b/packages/rxycode-server/src/rxycode_server/artifacts/__init__.py
+new file mode 100644
+index 00000000..7838344e
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/artifacts/__init__.py
+@@ -0,0 +1 @@
++"""Object storage for run artifacts."""
+diff --git a/packages/rxycode-server/src/rxycode_server/artifacts/service.py b/packages/rxycode-server/src/rxycode_server/artifacts/service.py
+new file mode 100644
+index 00000000..83b7502b
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/artifacts/service.py
+@@ -0,0 +1,283 @@
++"""Store a run file in MinIO and hand out a short-lived tenant signature."""
++
++from __future__ import annotations
++
++import hashlib
++import hmac
++import uuid
++from datetime import datetime, timezone
++
++import boto3
++from botocore.config import Config
++from botocore.exceptions import ClientError
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.persistence.models import Artifact, Outbox, Run, RunEvent
++
++_RETENTION_DAYS = 7
++_RETENTION_SECONDS = _RETENTION_DAYS * 24 * 60 * 60
++_MAX_DOWNLOAD_TTL = 900
++
++
++class ArtifactForbidden(Exception):
++    """The caller does not get the object bytes."""
++
++    def __init__(self) -> None:
++        super().__init__("artifact forbidden")
++        self.http_status = 403
++        self.code = "ARTIFACT_FORBIDDEN"
++
++
++def _engine(database_url: str):
++    return create_engine(database_url, poolclass=NullPool)
++
++
++def _client(endpoint: str, access_key: str, secret_key: str):
++    return boto3.client(
++        "s3",
++        endpoint_url=endpoint,
++        aws_access_key_id=access_key,
++        aws_secret_access_key=secret_key,
++        region_name="us-east-1",
++        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
++    )
++
++
++def _safe_name(filename: str) -> str:
++    base = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
++    if base in {"", ".", ".."}:
++        return "artifact.bin"
++    cleaned = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in base)
++    return (cleaned or "artifact.bin")[:120]
++
++
++def _signature(signing_key: str, artifact_id: str, tenant_id: str, expires: int, sha256: str) -> str:
++    message = f"{artifact_id}\n{tenant_id}\n{expires}\n{sha256}".encode()
++    return hmac.new(signing_key.encode(), message, hashlib.sha256).hexdigest()
++
++
++def _parse_expires(expires: int | str) -> int:
++    try:
++        value = int(expires)
++    except (TypeError, ValueError) as exc:
++        raise ArtifactForbidden() from exc
++    if value <= 0:
++        raise ArtifactForbidden()
++    return value
++
++
++def _moment(now: datetime | None) -> datetime:
++    moment = now or datetime.now(timezone.utc)
++    if moment.tzinfo is None:
++        moment = moment.replace(tzinfo=timezone.utc)
++    return moment
++
++
++def _ensure_private_bucket(client, bucket: str) -> None:
++    try:
++        client.head_bucket(Bucket=bucket)
++    except ClientError as exc:
++        code = str(exc.response.get("Error", {}).get("Code", ""))
++        if code not in {"404", "NoSuchBucket", "NotFound"}:
++            raise
++        client.create_bucket(Bucket=bucket)
++    client.put_bucket_lifecycle_configuration(
++        Bucket=bucket,
++        LifecycleConfiguration={
++            "Rules": [
++                {
++                    "ID": "rxycode-artifact-retention",
++                    "Status": "Enabled",
++                    "Filter": {"Prefix": "tenants/"},
++                    "Expiration": {"Days": _RETENTION_DAYS},
++                }
++            ]
++        },
++    )
++    client.put_bucket_acl(Bucket=bucket, ACL="private")
++
++
++def _add_event(db: Session, run: Run, event_type: str, payload: dict) -> None:
++    retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
++    seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
++    run.event_seq = seq
++    event_id = uuid.uuid4().hex
++    db.add(
++        RunEvent(
++            event_id=event_id,
++            run_id=run.id,
++            tenant_id=run.tenant_id,
++            seq=seq,
++            type=event_type,
++            payload=payload,
++            at=datetime.now(timezone.utc),
++        )
++    )
++    db.flush()
++    db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
++
++
++def _owned(db: Session, artifact_id: str, tenant_id: str, run_id: str | None) -> tuple[Artifact, Run]:
++    row = db.get(Artifact, artifact_id)
++    if row is None:
++        raise ArtifactForbidden()
++    run = db.get(Run, row.run_id)
++    if run is None or run.tenant_id != tenant_id:
++        raise ArtifactForbidden()
++    if run_id is not None and run.id != run_id:
++        raise ArtifactForbidden()
++    return row, run
++
++
++def store_artifact(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    filename: str,
++    body: bytes,
++    content_type: str,
++    s3_endpoint: str,
++    bucket: str,
++    access_key: str,
++    secret_key: str,
++) -> dict[str, object]:
++    """Upload the bytes, then save metadata and artifact.created in one transaction."""
++    if not isinstance(body, bytes) or len(content_type) > 128 or not content_type.strip():
++        raise ArtifactForbidden()
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            run = db.get(Run, run_id)
++            if run is None or run.tenant_id != tenant_id:
++                raise ArtifactForbidden()
++    finally:
++        engine.dispose()
++
++    digest = hashlib.sha256(body).hexdigest()
++    artifact_id = uuid.uuid4().hex
++    object_key = f"tenants/{tenant_id}/runs/{run_id}/{artifact_id}/{_safe_name(filename)}"
++    if len(object_key) > 400:
++        raise ArtifactForbidden()
++    client = _client(s3_endpoint, access_key, secret_key)
++    _ensure_private_bucket(client, bucket)
++    client.put_object(
++        Bucket=bucket,
++        Key=object_key,
++        Body=body,
++        ContentType=content_type,
++        ACL="private",
++        Metadata={
++            "sha256": digest,
++            "content-type": content_type,
++            "ttl-seconds": str(_RETENTION_SECONDS),
++        },
++    )
++    payload = {
++        "artifact_id": artifact_id,
++        "sha256": digest,
++        "size": len(body),
++        "content_type": content_type,
++        "ttl_seconds": _RETENTION_SECONDS,
++    }
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            run = db.execute(
++                select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
++            ).scalar_one_or_none()
++            if run is None:
++                client.delete_object(Bucket=bucket, Key=object_key)
++                raise ArtifactForbidden()
++            db.add(
++                Artifact(
++                    id=artifact_id,
++                    run_id=run.id,
++                    object_key=object_key,
++                    sha256=digest,
++                    size=len(body),
++                    content_type=content_type,
++                )
++            )
++            _add_event(db, run, "artifact.created", payload)
++            db.commit()
++    except Exception:
++        client.delete_object(Bucket=bucket, Key=object_key)
++        raise
++    finally:
++        engine.dispose()
++    return {"artifact_id": artifact_id, **payload}
++
++
++def open_download(
++    database_url: str,
++    *,
++    tenant_id: str,
++    artifact_id: str,
++    signing_key: str,
++    ttl_seconds: int,
++) -> dict[str, object]:
++    """Sign a download that expires within fifteen minutes for this tenant only."""
++    if not isinstance(ttl_seconds, int) or ttl_seconds <= 0 or ttl_seconds > _MAX_DOWNLOAD_TTL:
++        raise ArtifactForbidden()
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            row, _run = _owned(db, artifact_id, tenant_id, None)
++            expires = int(datetime.now(timezone.utc).timestamp()) + ttl_seconds
++            signature = _signature(signing_key, row.id, tenant_id, expires, row.sha256)
++            return {
++                "artifact_id": row.id,
++                "expires": expires,
++                "signature": signature,
++                "ttl_seconds": ttl_seconds,
++            }
++    finally:
++        engine.dispose()
++
++
++def read_download(
++    database_url: str,
++    *,
++    tenant_id: str,
++    artifact_id: str,
++    expires: int | str,
++    signature: str,
++    signing_key: str,
++    s3_endpoint: str | None = None,
++    bucket: str | None = None,
++    access_key: str | None = None,
++    secret_key: str | None = None,
++    now: datetime | None = None,
++    run_id: str | None = None,
++) -> bytes:
++    """Return the object only after the tenant, expiry, and signature all match."""
++    expires_at = _parse_expires(expires)
++    if _moment(now).timestamp() >= expires_at:
++        raise ArtifactForbidden()
++    engine = _engine(database_url)
++    try:
++        with Session(engine) as db:
++            row, _run = _owned(db, artifact_id, tenant_id, run_id)
++            expected = _signature(signing_key, row.id, tenant_id, expires_at, row.sha256)
++            object_key = row.object_key
++            digest = row.sha256
++            size = int(row.size)
++    finally:
++        engine.dispose()
++    try:
++        matches = hmac.compare_digest(expected, signature)
++    except (TypeError, ValueError):
++        matches = False
++    if not matches:
++        raise ArtifactForbidden()
++    if not s3_endpoint or not bucket or not access_key or not secret_key:
++        raise ArtifactForbidden()
++    client = _client(s3_endpoint, access_key, secret_key)
++    found = client.get_object(Bucket=bucket, Key=object_key)
++    data = found["Body"].read()
++    if hashlib.sha256(data).hexdigest() != digest or len(data) != size:
++        raise ArtifactForbidden()
++    return data
+diff --git a/packages/rxycode-server/src/rxycode_server/main.py b/packages/rxycode-server/src/rxycode_server/main.py
+index 4807c972..cb8da4a9 100644
+--- a/packages/rxycode-server/src/rxycode_server/main.py
++++ b/packages/rxycode-server/src/rxycode_server/main.py
+@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
+ from sqlalchemy.pool import NullPool
+ 
+ from rxycode_server.api.approvals import router as approvals_router
++from rxycode_server.api.artifacts import router as artifacts_router
+ from rxycode_server.api.auth import router as auth_router
+ from rxycode_server.api.projects import router as projects_router
+ from rxycode_server.api.sse import router as sse_router
+@@ -63,6 +64,7 @@ def create_app(
+     app.include_router(projects_router)
+     app.include_router(sse_router)
+     app.include_router(approvals_router)
++    app.include_router(artifacts_router)
+ 
+     @app.exception_handler(HTTPException)
+     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
+diff --git a/packages/rxycode-server/src/rxycode_server/usage/__init__.py b/packages/rxycode-server/src/rxycode_server/usage/__init__.py
+new file mode 100644
+index 00000000..b3ebfd83
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/usage/__init__.py
+@@ -0,0 +1 @@
++"""Run token and cost ledger."""
+diff --git a/packages/rxycode-server/src/rxycode_server/usage/service.py b/packages/rxycode-server/src/rxycode_server/usage/service.py
+new file mode 100644
+index 00000000..43fa6518
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/usage/service.py
+@@ -0,0 +1,122 @@
++"""Record terminal model usage once per run, model, and price version."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime, timezone
++from decimal import Decimal
++
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.persistence.models import Outbox, Run, RunEvent, UsageRecord
++
++# Published USD per token. An unknown price version records tokens and charges nothing.
++_PRICE_PER_TOKEN = {
++    "2026-10": Decimal("0.000002"),
++}
++
++
++class UsageForbidden(Exception):
++    """The run is not in this tenant, so nothing is charged."""
++
++    def __init__(self) -> None:
++        super().__init__("usage forbidden")
++        self.http_status = 403
++        self.code = "FORBIDDEN"
++
++
++def _amount(tokens: int, price_version: str) -> str:
++    rate = _PRICE_PER_TOKEN.get(price_version, Decimal("0"))
++    value = (Decimal(tokens) * rate).quantize(Decimal("0.00000001"))
++    return format(value, "f")
++
++
++def _public(row: UsageRecord) -> dict[str, object]:
++    return {
++        "id": row.id,
++        "amount": row.amount,
++        "tokens": int(row.tokens),
++        "price_version": row.price_version,
++        "model_id": row.model_id,
++    }
++
++
++def _add_event(db: Session, run: Run, payload: dict) -> None:
++    retained = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
++    seq = max(int(run.event_seq or 0), int(retained or 0)) + 1
++    run.event_seq = seq
++    event_id = uuid.uuid4().hex
++    db.add(
++        RunEvent(
++            event_id=event_id,
++            run_id=run.id,
++            tenant_id=run.tenant_id,
++            seq=seq,
++            type="usage.updated",
++            payload=payload,
++            at=datetime.now(timezone.utc),
++        )
++    )
++    db.flush()
++    db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
++
++
++def record_terminal_usage(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    model_id: str,
++    price_version: str,
++    tokens: int,
++    event_id: str,
++) -> dict[str, object]:
++    """Insert the ledger row once. A replay returns the first amount and token count."""
++    if tokens < 0 or not model_id or not price_version or not event_id:
++        raise UsageForbidden()
++    engine = create_engine(database_url, poolclass=NullPool)
++    try:
++        with Session(engine) as db:
++            run = db.execute(
++                select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
++            ).scalar_one_or_none()
++            if run is None:
++                raise UsageForbidden()
++            existing = db.scalar(
++                select(UsageRecord).where(
++                    UsageRecord.run_id == run_id,
++                    UsageRecord.model_id == model_id,
++                    UsageRecord.price_version == price_version,
++                )
++            )
++            if existing is not None:
++                return _public(existing)
++            amount = _amount(tokens, price_version)
++            row = UsageRecord(
++                id=uuid.uuid4().hex,
++                run_id=run.id,
++                model_id=model_id,
++                price_version=price_version,
++                tokens=tokens,
++                currency="USD",
++                amount=amount,
++            )
++            db.add(row)
++            _add_event(
++                db,
++                run,
++                {
++                    "model_id": model_id,
++                    "price_version": price_version,
++                    "tokens": tokens,
++                    "currency": "USD",
++                    "amount": amount,
++                    "event_id": event_id,
++                },
++            )
++            db.commit()
++            return _public(row)
++    finally:
++        engine.dispose()
+diff --git a/pyproject.toml b/pyproject.toml
+index 58ac6679..b94db3ba 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -82,6 +82,8 @@ packages = [
+   "rxycode_server.runs",
+   "rxycode_server.events",
+   "rxycode_server.approvals",
++  "rxycode_server.artifacts",
++  "rxycode_server.usage",
+   "rxycode_worker",
+ ]
+ 
+@@ -99,6 +101,8 @@ packages = [
+ "rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
+ "rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
+ "rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
++"rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
++"rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
+ "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+ 
+ [tool.setuptools.dynamic]
+diff --git a/requirements.txt b/requirements.txt
+index 1d8be4bc..bef992c3 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -29,3 +29,4 @@ alembic>=1.17,<2
+ psycopg[binary]>=3.2,<4
+ redis>=5,<7
+ langgraph-checkpoint-postgres>=3,<4
++boto3>=1.34,<2
+diff --git a/tests/web/w2/test_w2_c07_module.py b/tests/web/w2/test_w2_c07_module.py
+new file mode 100644
+index 00000000..99cb729c
+--- /dev/null
++++ b/tests/web/w2/test_w2_c07_module.py
+@@ -0,0 +1,83 @@
++"""WEB-W2-C07. Replaying a terminal usage event does not charge the run twice."""
++
++from __future__ import annotations
++
++import sys
++import uuid
++from pathlib import Path
++
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++if str(_SERVER) not in sys.path:
++    sys.path.insert(0, str(_SERVER))
++
++from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
++from rxycode_server.persistence.models import (  # noqa: E402
++    Organization,
++    Project,
++    SessionRow,
++    UsageRecord,
++    User,
++)
++from rxycode_server.runs.service import create_run  # noqa: E402
++from rxycode_server.usage.service import record_terminal_usage  # noqa: E402
++
++
++def test_w2_c07_integration(postgres_url: str):
++    """The same terminal usage payload records one ledger row and one amount."""
++    upgrade_head(postgres_url)
++    engine = create_engine(postgres_url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c07u", github_id="gh-c07u", kind="github"))
++        db.add(Organization(id="org-c07u", tenant_id="tenant-c07u"))
++        db.add(Project(id="project-c07u", tenant_id="tenant-c07u", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c07u",
++                project_id="project-c07u",
++                title="cost",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        postgres_url,
++        tenant_id="tenant-c07u",
++        session_id=session_id,
++        message="bill once",
++        target_id="local:c07",
++        permission_profile="workspace-write",
++        request_id="req-c07-usage",
++    )
++    payload = {
++        "tenant_id": "tenant-c07u",
++        "run_id": created.run_id,
++        "model_id": "gpt-test",
++        "price_version": "2026-10",
++        "tokens": 1200,
++        "event_id": "evt-terminal-1",
++    }
++    first = record_terminal_usage(postgres_url, **payload)
++    second = record_terminal_usage(postgres_url, **payload)
++    inflated = record_terminal_usage(postgres_url, **{**payload, "tokens": 99999})
++    assert second["id"] == first["id"]
++    assert inflated["id"] == first["id"]
++    assert second["amount"] == first["amount"]
++    assert inflated["tokens"] == first["tokens"]
++    assert first["price_version"] == "2026-10"
++    assert first["model_id"] == "gpt-test"
++    engine = create_engine(postgres_url)
++    with Session(engine) as db:
++        count, total = db.execute(
++            select(func.count(UsageRecord.id), func.sum(UsageRecord.tokens)).where(
++                UsageRecord.run_id == created.run_id
++            )
++        ).one()
++    engine.dispose()
++    assert count == 1
++    assert int(total) == 1200
+diff --git a/tests/web/w2/test_w2_c07_unit.py b/tests/web/w2/test_w2_c07_unit.py
+new file mode 100644
+index 00000000..e775db58
+--- /dev/null
++++ b/tests/web/w2/test_w2_c07_unit.py
+@@ -0,0 +1,225 @@
++"""WEB-W2-C07. An artifact downloads with a matching digest, and another tenant cannot read it."""
++
++from __future__ import annotations
++
++import hashlib
++import subprocess
++import sys
++import time
++import urllib.request
++import uuid
++
++import pytest
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++if str(_SERVER) not in sys.path:
++    sys.path.insert(0, str(_SERVER))
++
++from rxycode_server.artifacts.service import (  # noqa: E402
++    ArtifactForbidden,
++    open_download,
++    read_download,
++    store_artifact,
++)
++from rxycode_server.main import create_app  # noqa: E402
++from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
++from rxycode_server.persistence.models import Organization, Project, Run, SessionRow, User  # noqa: E402
++from rxycode_server.runs.service import create_run  # noqa: E402
++
++ORIGIN = "http://127.0.0.1"
++SECRET = "local-web-secret-value-32bytes!!"
++_MINIO = "rxy-w2c07-minio"
++_S3 = "http://127.0.0.1:59000"
++_ACCESS = "rxycode"
++_SECRET_KEY = "rxy-minio-secret-value"
++_BUCKET = "rxycode-artifacts"
++_BODY = b"artifact-secret-c07\n"
++
++
++def _docker(*args: str) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(["docker", *args], text=True, capture_output=True, check=False)
++
++
++def _minio() -> dict[str, str]:
++    _docker("rm", "-f", _MINIO)
++    started = _docker(
++        "run",
++        "-d",
++        "--name",
++        _MINIO,
++        "-p",
++        "127.0.0.1:59000:9000",
++        "-e",
++        f"MINIO_ROOT_USER={_ACCESS}",
++        "-e",
++        f"MINIO_ROOT_PASSWORD={_SECRET_KEY}",
++        "minio/minio",
++        "server",
++        "/data",
++    )
++    assert started.returncode == 0, started.stderr
++    deadline = time.time() + 40
++    while time.time() < deadline:
++        try:
++            with urllib.request.urlopen("http://127.0.0.1:59000/minio/health/live", timeout=2) as response:
++                if response.status == 200:
++                    break
++        except Exception:
++            time.sleep(0.5)
++    else:
++        logs = _docker("logs", _MINIO)
++        raise RuntimeError(logs.stderr or logs.stdout or "minio did not become ready")
++    return {
++        "endpoint": _S3,
++        "bucket": _BUCKET,
++        "access_key": _ACCESS,
++        "secret_key": _SECRET_KEY,
++    }
++
++
++def _seed_run(url: str) -> str:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c07", github_id="gh-c07", kind="github"))
++        db.add(Organization(id="org-c07", tenant_id="tenant-c07"))
++        db.add(Project(id="project-c07", tenant_id="tenant-c07", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c07",
++                project_id="project-c07",
++                title="files",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        url,
++        tenant_id="tenant-c07",
++        session_id=session_id,
++        message="produce a file",
++        target_id="local:c07",
++        permission_profile="workspace-write",
++        request_id="req-c07-file",
++    )
++    return created.run_id
++
++
++def _s3_of(store: dict[str, str]) -> dict[str, str]:
++    return {
++        "s3_endpoint": store["endpoint"],
++        "bucket": store["bucket"],
++        "access_key": store["access_key"],
++        "secret_key": store["secret_key"],
++    }
++
++
++def test_w2_c07_contract(postgres_url: str):
++    """A finished tool file can be downloaded and its digest matches the bytes."""
++    store = _minio()
++    run_id = _seed_run(postgres_url)
++    saved = store_artifact(
++        postgres_url,
++        tenant_id="tenant-c07",
++        run_id=run_id,
++        filename="note.txt",
++        body=_BODY,
++        content_type="text/plain",
++        **_s3_of(store),
++    )
++    assert saved["sha256"] == hashlib.sha256(_BODY).hexdigest()
++    assert saved["size"] == len(_BODY)
++    assert saved["content_type"] == "text/plain"
++    opened = open_download(
++        postgres_url,
++        tenant_id="tenant-c07",
++        artifact_id=saved["artifact_id"],
++        signing_key=SECRET,
++        ttl_seconds=60,
++    )
++    body = read_download(
++        postgres_url,
++        tenant_id="tenant-c07",
++        artifact_id=saved["artifact_id"],
++        expires=opened["expires"],
++        signature=opened["signature"],
++        signing_key=SECRET,
++        **_s3_of(store),
++    )
++    assert hashlib.sha256(body).hexdigest() == saved["sha256"]
++    assert body == _BODY
++
++
++def test_w2_c07_negative(postgres_url: str):
++    """Tenant B cannot read tenant A's artifact, even with A's id."""
++    store = _minio()
++    run_id = _seed_run(postgres_url)
++    saved = store_artifact(
++        postgres_url,
++        tenant_id="tenant-c07",
++        run_id=run_id,
++        filename="secret.txt",
++        body=_BODY,
++        content_type="text/plain",
++        **_s3_of(store),
++    )
++    opened = open_download(
++        postgres_url,
++        tenant_id="tenant-c07",
++        artifact_id=saved["artifact_id"],
++        signing_key=SECRET,
++        ttl_seconds=30,
++    )
++    with pytest.raises(ArtifactForbidden) as denied:
++        read_download(
++            postgres_url,
++            tenant_id="tenant-other",
++            artifact_id=saved["artifact_id"],
++            expires=opened["expires"],
++            signature=opened["signature"],
++            signing_key=SECRET,
++            **_s3_of(store),
++        )
++    assert denied.value.http_status == 403
++    assert denied.value.code == "ARTIFACT_FORBIDDEN"
++    assert b"artifact-secret-c07" not in str(denied.value).encode()
++    with pytest.raises(ArtifactForbidden) as expired:
++        read_download(
++            postgres_url,
++            tenant_id="tenant-c07",
++            artifact_id=saved["artifact_id"],
++            expires=opened["expires"],
++            signature=opened["signature"],
++            signing_key=SECRET,
++            now=datetime.now(timezone.utc) + timedelta(hours=2),
++            **_s3_of(store),
++        )
++    assert expired.value.http_status == 403
++    assert b"artifact-secret-c07" not in str(expired.value).encode()
++    app = create_app(postgres_url, mode="local", secret=SECRET, allowed_origins=[ORIGIN])
++    client = TestClient(app)
++    token = client.get("/api/v1/auth/csrf").json()["csrf_token"]
++    headers = {"X-CSRF-Token": token, "Origin": ORIGIN, "X-Local-Secret": SECRET}
++    assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
++    stolen = client.get(
++        f"/api/v1/runs/{run_id}/artifacts/{saved['artifact_id']}",
++        params={"expires": opened["expires"], "signature": opened["signature"]},
++    )
++    assert stolen.status_code == 403
++    assert stolen.json()["code"] == "ARTIFACT_FORBIDDEN"
++    assert b"artifact-secret-c07" not in stolen.content
++    engine = create_engine(postgres_url)
++    with Session(engine) as db:
++        run = db.get(Run, run_id)
++        assert run is not None
++        assert run.tenant_id == "tenant-c07"
++    engine.dispose()

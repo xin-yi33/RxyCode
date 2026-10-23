@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-ncp4_hwy
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c04_unit.py:21: AttributeError: module 'rxycode_web_check_plan_c04' has no attribute 'trace_requirements'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c04_unit.py:36: AttributeError: module 'rxycode_web_check_plan_c04' has no attribute 'load_conflicts'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c04_module.py:21: AttributeError: module 'rxycode_web_check_plan_c04m' has no attribute 'protocol_name_ruling'
+=========================== short test summary info ===========================
+FAILED tests/web/w0/test_w0_c04_unit.py::test_w0_c04_contract - AttributeErro...
+FAILED tests/web/w0/test_w0_c04_unit.py::test_w0_c04_negative - AttributeErro...
+FAILED tests/web/w0/test_w0_c04_module.py::test_w0_c04_integration - Attribut...
+3 failed in 0.12s

@@ -9,6 +9,7 @@ vendored.
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
 from enum import IntEnum
@@ -58,6 +59,9 @@ TOOL_RISK_TABLE: dict[str, RiskLevel] = {
     "webfetch": RiskLevel.READ,
     "websearch": RiskLevel.READ,
     "datetime": RiskLevel.READ,
+    # 2026-10-13 K例复审：纯目录检索元工具——不触发写审批/快照（不得因此
+    # 降低被发现 MCP 工具自身的风险，它们的 risk 各自独立分类）。
+    "tool_search": RiskLevel.READ,
     "final_answer": RiskLevel.READ,
     "history": RiskLevel.READ,
     "diagnostics": RiskLevel.READ,
@@ -126,6 +130,150 @@ DANGEROUS_COMMAND_PATTERNS: list[str] = [
 ]
 
 _COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in DANGEROUS_COMMAND_PATTERNS]
+
+# 黑名单：命中后一律不执行。full_auto 和人工批准都不能放行。
+# 相对路径的项目清理（rm -rf ./build）不在这里。
+_CATASTROPHIC_PREFIXES = (
+    # Linux
+    "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/boot", "/dev",
+    "/proc", "/sys", "/run", "/var", "/opt", "/home", "/root", "/tmp",
+    # macOS
+    "/system", "/library", "/volumes", "/applications", "/private", "/cores",
+    "/users",
+)
+_COMMAND_EDGE = (
+    r"(?:^|[;&|`\n(])\s*"
+    r"(?:(?:sudo|cmd(?:\.exe)?\s+/c|powershell(?:\.exe)?\s+-command|"
+    r"pwsh(?:\.exe)?\s+-command)\s+)*"
+)
+_WIN_CRITICAL_PROCESS = r"(?:lsass|csrss|winlogon|smss|services|wininit)"
+
+
+def _shell_scan_text(command: str) -> str:
+    return re.sub(r"['\"]", "", command or "")
+
+
+def _normalize_path_token(token: str) -> str:
+    text = token.strip().replace("\\", "/")
+    text = re.sub(r"^//\?/([a-zA-Z]:)", r"\1", text)
+    for env_name in ("systemroot", "windir"):
+        text = re.sub(rf"(?i)^%(?:{env_name})%", "c:/windows", text)
+        text = re.sub(rf"(?i)^\$env:{env_name}", "c:/windows", text)
+    return text.rstrip("/")
+
+
+def _is_catastrophic_path(token: str) -> bool:
+    raw = _normalize_path_token(token)
+    if not raw:
+        return True
+    lower = raw.lower()
+    if lower in {"/", "/.", "/*", "~", "~/", ".", "..", "*", "$home"}:
+        return True
+    if any(lower == prefix or lower.startswith(prefix + "/") for prefix in _CATASTROPHIC_PREFIXES):
+        return True
+    if re.fullmatch(r"[a-z]:", lower):
+        return True
+    return re.match(
+        r"^[a-z]:/(windows|program files|program files \(x86\)|users|programdata)(/|$)",
+        lower,
+    ) is not None
+
+
+def _recursive_delete_hits_system(text: str) -> bool:
+    patterns = (
+        r"(?:sudo\s+)?rm\b(?P<tail>[^;&|\n]*)",
+        r"\b(?:Remove-Item|ri|rmdir|rd|del|erase)\b(?P<tail>[^;&|\n]*)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            tail = match.group("tail")
+            recursive = re.search(
+                r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive|-Recurse|/s)\b",
+                tail,
+                re.IGNORECASE,
+            )
+            if match.group(0).lower().startswith("rm") and not recursive:
+                continue
+            if not match.group(0).lower().startswith("rm") and not recursive:
+                continue
+            tokens = []
+            for tok in tail.split():
+                if not tok or tok.startswith("-"):
+                    continue
+                if tok.lower() in {"/s", "/q", "/f"}:
+                    continue
+                tokens.append(tok)
+            if not tokens:
+                return True
+            if any(_is_catastrophic_path(tok) for tok in tokens):
+                return True
+    return False
+
+
+_ALWAYS_DENIED: tuple[tuple[str, str], ...] = (
+    (r"\bmkfs(\.\w+)?\b", "格式化文件系统"),
+    (r"\bdd\b[^\n]*\bof=/dev/", "把数据写入磁盘设备"),
+    (r"\bdiskutil\s+erase", "擦除 macOS 磁盘"),
+    (_COMMAND_EDGE + r"format(?:\.com)?\s+[a-z]:", "格式化 Windows 磁盘"),
+    (r"\b(?:Format-Volume|Clear-Disk|Initialize-Disk|Clear-Partition)\b", "清除或初始化磁盘"),
+    (_COMMAND_EDGE + r"diskpart\b", "进入 diskpart"),
+    (_COMMAND_EDGE + r"(?:shutdown|reboot|halt|poweroff)\b", "关机或重启"),
+    (r"\b(?:Stop-Computer|Restart-Computer)\b", "关机或重启"),
+    (_COMMAND_EDGE + r"init\s+[06]\b", "切换到关机或重启运行级别"),
+    (r"\bsystemctl\s+(?:poweroff|reboot|halt)\b", "systemctl 关机或重启"),
+    (r":\(\)\s*\{", "fork bomb"),
+    (r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba)?(?:sh|zsh|fish|pwsh|powershell)\b", "把下载内容直接送进 shell"),
+    (r"\breg(?:\.exe)?\s+delete\b", "删除注册表"),
+    (r"\bbcdedit\b[^\n]*/delete\b", "删除启动项"),
+    (r"\bcipher(?:\.exe)?\s+/w\b", "覆盖擦除磁盘空闲空间"),
+    (r"\bvssadmin\s+delete\s+shadows\b", "删除卷影副本"),
+    (r"\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:enc|encodedcommand)\b", "编码后的 PowerShell 看不清内容"),
+    (r"\bchmod\s+(?:-[a-zA-Z]*R[a-zA-Z]*\s+)?(?:777|000|a\+rwx)\s+/", "递归改写根目录权限"),
+    (r">\s*/dev/(?:sd|nvme|mmc|disk|rdisk)", "重定向写入磁盘设备"),
+    (r"\b(?:shred|wipefs)\b[^\n]*\s/dev/", "擦除磁盘设备"),
+    (r"\b(?:sfdisk\s+--delete|parted\b[^\n]*\bmklabel\b)", "改写分区表"),
+    (_COMMAND_EDGE + r"fdisk\s+/dev/(?!.*\s-l\b)", "改写磁盘分区"),
+    (r"\bkill\s+(?:-9\s+)?-1\b", "结束全部进程"),
+    (r"\becho\s+[bco]\s*>\s*/proc/sysrq-trigger", "触发内核紧急重启或关机"),
+    # macOS
+    (r"\bcsrutil\s+(?:disable|clear)\b", "关闭 macOS 系统完整性保护"),
+    (r"\bnvram\s+-[cd]\b", "清除 macOS NVRAM"),
+    (r"\basr\s+restore\b", "用 asr 整盘恢复"),
+    # Windows
+    (r"\bwmic\s+shadowcopy\s+delete\b", "删除 Windows 卷影副本"),
+    (r"\bwbadmin\s+delete\s+catalog\b", "删除 Windows 备份目录"),
+    (r"\bbcdedit\b[^\n]*\s/(?:set|import|createstore)\b", "改写 Windows 启动配置"),
+    (r"\bsdelete(?:64)?(?:\.exe)?\b", "安全擦除磁盘"),
+    (r"\bfsutil\s+usn\s+deletejournal\b", "删除 NTFS USN 日志"),
+    (r"\btaskkill\b[^\n]*\s/im\s+" + _WIN_CRITICAL_PROCESS + r"\.exe\b", "结束 Windows 关键进程"),
+    (r"\bStop-Process\b[^\n]*\b" + _WIN_CRITICAL_PROCESS + r"\b", "结束 Windows 关键进程"),
+    (r"\bnet\s+user\b[^\n]*\s/delete\b", "删除 Windows 用户"),
+)
+
+
+def hard_denied_shell_reason(command: str) -> str | None:
+    """Return why this shell command is on the hard blacklist, or None.
+
+    A match must not run. Approval and full_auto do not override it.
+    """
+    text = _shell_scan_text(command).strip()
+    if not text:
+        return None
+    if _recursive_delete_hits_system(text):
+        return "递归删除指向系统目录、磁盘根或用户主目录"
+    find_delete = re.search(
+        r"(?i)\bfind\s+(\S+)[^\n;|&]*-(?:delete|exec\s+rm)\b",
+        text,
+    )
+    if find_delete:
+        start = find_delete.group(1)
+        # find . -name '*.pyc' -delete 是项目内清理。根和系统目录不是。
+        if start not in {".", "./", ".."} and _is_catastrophic_path(start):
+            return "find 从系统目录或根目录删除文件"
+    for pattern, reason in _ALWAYS_DENIED:
+        if re.search(pattern, text, re.IGNORECASE):
+            return reason
+    return None
 
 # A deliberately small allow-list for shell probes that have no filesystem,
 # process, package, network, or repository side effect.  Bash itself remains
@@ -265,6 +413,20 @@ def classify_tool_risk(name: str, args: Any = None) -> RiskLevel:
     return risk
 
 
+def apply_mcp_hint(name: str, risk: RiskLevel, annotations: Any | None) -> RiskLevel:
+    """Unknown MCP stays at least WRITE. Hints may only raise risk.
+
+    ``readOnlyHint`` does not lower a level. ``destructiveHint`` raises to
+    DANGER. ToolSpec text is not an annotation and is not read here.
+    """
+    hints = annotations if isinstance(annotations, dict) else {}
+    if canonical_tool_name(name) not in TOOL_RISK_TABLE and hints:
+        risk = max(risk, RiskLevel.WRITE)
+    if hints.get("destructiveHint") is True:
+        risk = max(risk, RiskLevel.DANGER)
+    return risk
+
+
 def _resolve(path: str) -> Path:
     from ..session_runtime import resolve_session_path
 
@@ -288,7 +450,9 @@ def is_write_allowed(path: str, config: dict) -> bool:
     - the RxyCode output dir (~/.rxycode/output/ or RXYCODE_OUTPUT_DIR)
     - every entry of config ``safety.allowed_write_paths``
     """
-    from ..session_runtime import current_working_directory
+    current_working_directory = importlib.import_module(
+        f"{__package__.rsplit('.', 1)[0]}.session_runtime"
+    ).current_working_directory
 
     safety = (config or {}).get("safety", {}) or {}
     allowed_extra = safety.get("allowed_write_paths", []) or []
@@ -320,7 +484,6 @@ def is_write_allowed(path: str, config: dict) -> bool:
     try:
         # Import from the concrete package module, not sys.modules lookup,
         # so tests that stub config.settings in sys.modules don't break us.
-        import importlib
         _settings = importlib.import_module("RxyCode.RxyCode1_1_0.config.settings")
         _get_output_dir = getattr(_settings, "get_output_dir", None)
         if _get_output_dir is None:
@@ -395,6 +558,18 @@ WRITE_PATH_BLOCKED_HINT = (
 )
 
 
+#: bash 写路径闸拒绝文案的可操作指引：判定针对的是命令形状而非运气 —
+#: 换载具/加引号/套 env/cd 都不会改变结论（实测一个 run 探测 60+ 轮、
+#: 烧 ~86 万 token）。告诉 agent 正确的自救路径。
+BASH_WRITE_BLOCKED_HINT = (
+    "hint: this verdict is deterministic for the command shape — "
+    "re-quoting, env/sh/bash carriers, or path variants will not change "
+    "it. If a check needs inline interpreter code (python -c, node -e, "
+    "bash -c …), write a small script file into the workspace and run it "
+    "by path instead; otherwise choose a different command or ask the user."
+)
+
+
 # Absolute path literals that often appear in shell write/delete probes.
 _ABS_PATH_RE = re.compile(
     r"(?P<path>"
@@ -403,30 +578,709 @@ _ABS_PATH_RE = re.compile(
     r")"
 )
 # Mutating verbs / redirects whose *target path* must stay inside the whitelist.
-# Paths that only appear inside -Value / here-string report bodies are ignored
-# by scanning verb-local windows instead of the whole command.
-_BASH_MUTATING_TARGET_RE = re.compile(
+# Paths that only appear inside -Value/-Content payloads are ignored; here-string
+# contents stay visible because they can be executed (iex, Invoke-Expression).
+_ABS_TARGET = (
+    r"(?<![\w~./\\:])"
+    r"(?:"
+    r"[A-Za-z]:(?:[\\/][^\s'\"|;>&]*)?"
+    r"|\\{1,2}[^\s'\"|;>&]+"
+    r"|/[^\s'\"|;>&]*"
+    r"|\$\{env:[^\W\d]\w*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$env:[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$\{[^}\s'\"|;>&]*\}(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$HOME(?!\w)(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|\$\("
+    r"|\$[^\W\d]\w*(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|%[^\W\d][\w()]*%(?:[\\/.\[][^\s'\"|;>&]*)?"
+    r"|~[^\s'\"|;>&]*"
+    r")"
+)
+# Pseudo-device redirect targets that are not real filesystem writes.
+_REDIRECT_PSEUDO_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+# A path-shaped relative token (word + separators). Interesting only when it
+# carries a '..' segment — plain filenames resolve inside the workspace.
+_REL_TARGET = r"(?<![\w~./\\])[^\s'\"|;>&:/\\]+(?:[\\/][^\s'\"|;>&:/\\]*)*"
+_MUT_VERB_ALT = (
+    r"Remove-Item|Rename-Item|ri|rni|ren|Set-Content|Add-Content|Clear-Content|Out-File|New-Item|Copy-Item|Move-Item|"
+    r"Export-Csv|Export-Clixml|Export-Alias|Set-Item|Clear-Item|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|"
+    r"Rename-ItemProperty|Copy-ItemProperty|Move-ItemProperty|Clear-ItemProperty|Start-BitsTransfer|bitsadmin|"
+    r"sc|ac|clc|ni|cpi|mi|ci|hh|regsvr32|presentationhost|msiexec|"
+    r"installutil|regasm|regsvcs|mshta|rundll32|scrcons|forfiles|schtasks|control|"
+    r"cd|chdir|Set-Location|sl|Push-Location|pushd|popd|Pop-Location|"
+    r"del|erase|rmdir|rd|rm|mv|cp|copy|xcopy|robocopy|move|rename|replace|mklink|tee|touch|mkdir|install|dd|truncate|"
+    r"shred|patch|tar|bsdtar|gtar|unzip|7z|cpio|unrar|rar|ar|mkfifo|mknod|ln|zip|gzip|gunzip|bzip2|bunzip2|xz|unxz|compress|uncompress|"
+    r"split|csplit|sponge|makecab|extrac32|"
+    r"chmod|chown|chgrp|chattr|setfacl|attrib|icacls|cacls|cipher|compact|takeown|xargs|find|sed|perl|ed|ex|vi|vim|nvim|"
+    r"view|nano|emacs|fsutil|reg|crontab|visudo|vipw|vigr|format(?!-)|diskpart|mount|umount|mkfs|fdisk|parted|sgdisk|"
+    r"wipefs|hdparm|pvcreate|vgcreate|lvcreate|cryptsetup|losetup|"
+    r"rsync|scp|rcp|curl|wget|powershell|pwsh|cmd|bash|sh|zsh|dash|env|sudo|doas|su|nohup|nice|time|timeout|parallel|"
+    r"iex|Invoke-Expression|Invoke-Command|eval|source|watch|ssh|pkexec|runas|python|python3|py|node|deno|bun|php|ruby|"
+    r"osascript|rscript|julia|certutil|expand|esentutl|cscript|wscript|sort|gpg|openssl|awk|gawk|mawk|nawk|iwr|irm|at|batch|start-process|saps|start|for|"
+    r"Invoke-WebRequest|Invoke-RestMethod|"
+    # Binaries that write output artifacts (compilers, media/document
+    # tools, VCS, cloud/infra, archivers of last resort).
+    r"gcc|g\+\+|clang(?:\+\+|-cl)?|javac|rustc|cargo|dotnet|msbuild|csc|vbc|fsc|nasm|yasm|masm|cmake|ninja|meson|scons|"
+    r"bazel|buck2|gradle|mvn|tsc|webpack|vite|esbuild|rollup|parcel|swig|protoc|flatc|pip3?|gem|composer|nuget|poetry|"
+    r"apt|apt-get|dpkg|rpm|dnf|yum|pacman|zypper|brew|snap|flatpak|ffmpeg|ffprobe|ffplay|magick|gm|pandoc|soffice|"
+    r"libreoffice|aria2c|axel|yt-dlp|youtube-dl|espeak|lame|oggenc|opusenc|ps2pdf|wkhtmltopdf|weasyprint|enscript|"
+    r"a2ps|groff|nroff|tex|latex|pdflatex|xelatex|lualatex|bibtex|dvips|dvipdf|makeindex|img2pdf|pdftk|qpdf|pdfunite|"
+    r"inkscape|objcopy|ranlib|pyinstaller|nuitka|makensis|iscc|electron-packager|signtool|osslsigncode|jarsigner|"
+    r"apksigner|codesign|srm|wipe|sdelete|octave|sqlite3|mysqldump|pg_dump|mongodump|git|svn|hg|bzr|docker|podman|"
+    r"nerdctl|kubectl|helm|vagrant|packer|terraform|ansible|aws|az|gcloud|gsutil|azcopy|rclone|ftp|tftp|sftp|socat|"
+    r"systemctl|service|launchctl|gs\b|npm|yarn|pnpm|sphinx-build|hugo|jekyll|flac"
+)
+_BASH_MUTATING_OPENER_RE = re.compile(
     r"(?ix)"
     r"(?:"
-    r"(?:Remove-Item|ri|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|"
-    r"del|erase|rmdir|rd|rm|mv|cp|tee|touch|install)"
-    r"[^\n;|&]{0,200}?"
-    r"(?:-(?:Literal)?Path\s+|-(?:File)?Path\s+|)"
-    r"['\"]?(?P<path>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
-    r"|"
-    r"(?:^|[^>])>{1,2}\s*['\"]?(?P<redir>[A-Za-z]:[\\/][^\s'\"|;>&]+|/(?:Users|home|tmp|var|etc|root)[^\s'\"|;>&]*)"
+    # ``(?<![^\s/\\]\.)``: a filename's extension is not a verb —
+    # ``hello.py``/``*.py``/``foo.php`` must not open a bare ``py``/``php``
+    # interpreter event (which fails closed with no args). ``./rm`` still
+    # matches: the char before ``.`` there is ``/`` — a path prefix,
+    # not a suffix.
+    rf"(?<![$:])(?<![^\s/\\]\.)\b(?P<verb>(?:{_MUT_VERB_ALT})(?:\.(?:exe|com|bat|cmd|ps1))?)\b"
+    r"(?P<verbseg>[^\n;|&]*)"
+    r"|(?:^|[^>])>{1,2}\|?(?P<redirseg>[^\n;|&]*)"
+    r"|(?P<dotnetcall>\[[\w.]+\]\s*::\s*\w+\s*\(|New-Object\b|"
+    r"\$[^\W\d]\w*(?:\.[^\W\d]\w*)+\s*\()"
+    r"(?P<dotnetseg>[^\n;|&]*)"
     r")"
+)
+# Method names that read or produce content, not a filesystem target —
+# ``.Write(data)`` writes into an already-verified handle, ``ReadAllText``
+# touches nothing for write purposes.
+_DOTNET_CONTENT_RE = re.compile(
+    r"(?i)^(?:Read\w*|Get\w*|Exists|OpenRead|OpenText|Combine|Join|"
+    r"Enumerate\w*|List\w*|Has\w*|Test\w*|Split|Parse|TryParse|ToString|"
+    r"ChangeExtension|Resolve\w*|Measure\w*|Write|WriteLine|print|printf)$"
+)
+# ``New-Object`` types that cannot write to the path they receive.
+_DOTNET_READER_TYPE_RE = re.compile(
+    r"(?i)\b(?:StreamReader|TextReader|StringReader|XmlReader|"
+    r"BinaryReader|FileInfo|DirectoryInfo|Path)\b"
+)
+# Word-level verb matcher for carrier commands (``xargs``/``find -exec``)
+# whose own segment swallows the nested verb before it can open a segment.
+_MUT_VERB_WORDS_RE = re.compile(rf"(?i)(?<![^\s/\\]\.)\b(?:{_MUT_VERB_ALT})\b")
+_PATH_TOKEN_RE = re.compile(rf"(?ix)(?P<t>{_ABS_TARGET}|{_REL_TARGET})")
+_DOTDOT_SEGMENT_RE = re.compile(r"\.{2}(?:[\\/]|$)")
+_ABS_TOKEN_START_RE = re.compile(r"^(?:[A-Za-z]:|[\\/~$%!])")
+_ABS_FORM_RE = re.compile(r"(?i)^(?:[a-z]:[\\/]|[\\/])")
+# Directory-change verbs whose target becomes the effective cwd for the rest
+# of the command; pop-verbs restore a pushed location (fail closed on an
+# empty stack — the resulting directory cannot be verified).
+_CD_VERBS = frozenset({"cd", "chdir", "set-location", "sl"})
+_PUSH_VERBS = frozenset({"pushd", "push-location"})
+_POP_VERBS = frozenset({"popd", "pop-location"})
+# Plain shell variable targets (``Set-Content $out x`` / ``> $OUT``) resolve
+# through assignments tracked earlier in the command; untracked names fail
+# closed. $HOME/$env:/${...} forms are matched by the earlier alternatives.
+_SHELL_VAR_RE = re.compile(
+    r"^\$(?:\{([^}]*)\}|([^\W\d]\w*))([\\/.\[].*)?$",
+    re.IGNORECASE,
+)
+# A braced name must be a plain identifier (optionally env:-prefixed) to be
+# resolvable; ``${arr[i]}``/``${x:-d}``/other expansion ops are not verifiable.
+_BRACED_NAME_RE = re.compile(r"(?:env:)?[^\W\d][\w()]*", re.IGNORECASE)
+# ``$x = "v"``/``$env:X = "v"`` (PowerShell) and ``X=v``/``X="v"`` (bash)
+# assignments, tracked in order.
+_ASSIGN_RE = re.compile(
+    r"(?is)"
+    r"\$(?P<psenv>env:)?(?P<ps>[^\W\d]\w*)\s*=\s*"
+    r"(?:\"(?P<psdq>[^\"]*)\"|'(?P<pssq>[^']*)'|(?P<psbare>[^\s;|&'\"]+))"
+    r"|\b(?P<sh>[A-Za-z_]\w*)="
+    r"(?:(?P<shansi>\$'[^']*'|\$\"[^\"]*\")|\"(?P<shdq>[^\"]*)\"|"
+    r"'(?P<shsq>[^']*)'|(?P<shval>[^\s;|&'\"]*))"
+)
+# A ``NAME=value`` token binds only when it leads the command segment —
+# alone or after earlier assignments. The same text as a later argument
+# (``Write-Output TEMP=x``) is data, not a binding, and env builtins are
+# dialect-dependent (``set`` binds only in cmd, ``export`` only in bash),
+# so neither is allowed to prefix a tracked assignment.
+_ASSIGN_PREFIX_RE = re.compile(
+    r"(?i)\s*"
+    r"(?:[A-Za-z_]\w*\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s'\"|;>&]*)?\s*)*$"
+)
+# What may sit between a separator and a word while that word still owns
+# the command slot: whitespace, invoke operators (``&``/``.``), leading
+# env assignments, and flag tokens (``cmd /c <prog>``).
+# Shell keywords and CMD grammar that may sit between the last separator
+# and the command slot: bash conditionals/loops, ``!`` negation, the
+# ``time``/``exec``/``command``/``builtin`` launchers, CMD ``do``/``else``
+# and a CMD ``if <cond>`` clause (``exist``/``defined``/``errorlevel``/
+# ``cmdextversion``/``==``/``equ``…``geq``).
+_CMD_SLOT_KW = (
+    r"(?:(?:if|then|else|elif|do|while|until|time|exec|command|builtin)"
+    r"[ \t]+|![ \t]+"
+    r"|if\s+(?:/i\s+)?(?:not\s+)?"
+    r"(?:exist\s+\S+|defined\s+\S+|errorlevel\s+\S+"
+    r"|cmdextversion\s+\S+|\S+?\s*==\s*\S+"
+    r"|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)\s+)"
+)
+# Anchors for the command slot itself: a separator (or command start), or
+# a mid-command ``do``/``then``/``else``/``elif`` keyword (``for %i in (a)
+# do <cmd>``). Subshell/group openers are anchored per-regex — inside
+# ``(``/``{`` a bare ``$x`` needs a following argument, unlike the
+# separator slot where ``$x`` alone already hides the program.
+_CMD_SLOT_ANCHOR = r"(?:^|[;|&\n]|\b(?:do|then|else|elif)\s)"
+_CMD_SLOT_PREFIX_RE = re.compile(
+    rf"(?ix)(?:[\s&.]|(?:[A-Za-z_]\w*=[^\s'\"|;>&]*"
+    rf"|(?:-{{1,2}}|\+)[\w.?+-]+|/[\w.?+-]+)\s+|{_CMD_SLOT_KW})*"
+)
+# A variable or expression in the command slot hides the executed program
+# — ``& $x``/``. $x``/``& (expr)``, ``"$x" args``, bare ``$x args``,
+# ``%X% args``, ``!X! args``. Assignments (``$x = v``), increments, and
+# PowerShell comparisons are expressions, not invocations. No resolution
+# attempt — fail closed.
+_CMD_SLOT_DYN_RE = re.compile(
+    r"(?ix)"
+    r"(?:"
+    rf"(?:{_CMD_SLOT_ANCHOR})[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
+    r"(?:"
+    r"(?<![&|])[&.][ \t]*(?:\(|['\"]*\$)"
+    r"|['\"]\$"
+    r"|\$(?:\{[^}]*\}|env:[^\W\d]\w*(?!\w)|[^\W\d]\w*(?![\w:]))"
+    r"(?:\[[^\]]*\])?"
+    r"(?![ \t]*(?:[+\-*/%.&|^]?=(?!=)|\+\+|--"
+    r"|-(?:eq|ne|lt|le|gt|ge|like|notlike|match|notmatch|contains|"
+    r"notcontains|in|notin|is|isnot|as|and|or|xor|join|split|replace|f)\b))"
+    r"|%[^\W\d][\w()]*%"
+    r"|![^\W\d]\w*!"
+    r")"
+    r"|"
+    # ``(``/``{``/``$(``/``@(`` open a subshell/group/subexpression: inside,
+    # invoke operators and env/cmd expansions always hide the command, but
+    # a bare or quoted variable counts only when a real argument follows
+    # it — ``($x = 1)``, ``($ok)``, ``foreach ($f in $files)`` and
+    # ``($x -eq 1)`` are expressions, not invocations.
+    rf"(?:[$@]?\(|(?<![$@])\{{)[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
+    r"(?:"
+    r"(?<![&|])[&.][ \t]*(?:\(|['\"]*\$)"
+    r"|['\"]*\$(?:\{[^}]*\}|env:[^\W\d]\w*(?!\w)|[^\W\d]\w*(?![\w:]))"
+    r"(?:\[[^\]]*\])?"
+    r"(?=[ \t]+(?!in\b|[)}]))"
+    r"(?![ \t]*(?:[+\-*/%.&|^]?=(?!=)|\+\+|--"
+    r"|-(?:eq|ne|lt|le|gt|ge|like|notlike|match|notmatch|contains|"
+    r"notcontains|in|notin|is|isnot|as|and|or|xor|join|split|replace|f)\b))"
+    r"|%[^\W\d][\w()]*%"
+    r"|![^\W\d]\w*!"
+    r")"
+    r")"
+)
+# A program token at the command slot that is a path (``C:/x/rar.exe``,
+# ``/usr/bin/rm``, ``& 'C:/Program Files/y.exe'``) must reach verb
+# detection by basename — normalized before ``_unescape`` fuses
+# separators (``C:\tools\rar.exe`` → ``C:\toolsrar.exe``).
+_PROG_SLOT_PATH_RE = re.compile(
+    rf"(?ix)(?:{_CMD_SLOT_ANCHOR}|[$@]?\(|(?<![$@])\{{)[ \t]*"
+    rf"(?:(?:[A-Za-z_]\w*=[^ \t'\"|;>&]*|(?:-{{1,2}}|/|\+)[\w.?+-]+)[ \t]+|{_CMD_SLOT_KW})*"
+    rf"(?:[&.][ \t]*)?"
+    rf"(?P<tok>'(?:[A-Za-z]:)?[^';|&]*[\\/][^';|&]*'"
+    rf'|\"(?:[A-Za-z]:)?[^";|&]*[\\/][^";|&]*\"'
+    # At least one char must follow the separator — ``NAME=/`` is an
+    # env assignment, not a path (``CDPATH=/; cd tmp`` must keep the
+    # binding so the CDPATH re-root check fires).
+    rf"|(?:[A-Za-z]:)?[^\s'\";|&(){{}}]*[\\/][^\s'\";|&(){{}}]+)"
+)
+# Verbs that only count as commands in the command slot — as arguments
+# they are data (``echo ar``, ``npm start``, ``docker start web``).
+_CMDPOS_ONLY_VERBS = frozenset({"rar", "ar", "start", "start-process", "saps"})
+# A ``\`` before a letter collapses mid-word, so ``C:\tools\rar.exe``
+# reaches the scanner as ``C:\toolsrar.exe`` — the verb never gets a word
+# boundary. Cmdpos verbs fused to a word char that way still execute, so
+# they get their own (unanchored) event source; ``_command_slot_ok`` walks
+# back to the token head and filters out arguments (``w7.rar``,
+# ``foo.rar``). A literal ``foorar`` at command position is refused too —
+# the two readings are indistinguishable.
+_CMDPOS_GLUE_RE = re.compile(
+    r"(?ix)(?<=\w)((?:start-process|saps|start|rar|ar)"
+    r"(?:\.(?:exe|com|bat|cmd|ps1))?)(?![\w-])([^\n;|&]*)"
 )
 
 
-def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
-    """Return absolute mutating target paths outside the write whitelist.
+class _GlueMatch:
+    """Adapt a ``_CMDPOS_GLUE_RE`` match to the opener-event shape — named
+    groups it does not carry (``redirseg``/``dotnetseg``/``dotnetcall``)
+    read as ``None``."""
+
+    __slots__ = ("_m",)
+
+    def __init__(self, m):
+        self._m = m
+
+    def group(self, name):
+        return {"verb": 1, "verbseg": 2}.get(name) and self._m.group(
+            {"verb": 1, "verbseg": 2}[name]
+        )
+
+    def start(self, name=None):
+        if name is None:
+            return self._m.start()
+        return self._m.start({"verb": 1, "verbseg": 2}[name])
+
+    def end(self):
+        return self._m.end()
+# Shell-provided names that map to a knowable directory; everything else a
+# mutating target could be stays unverifiable.
+_BUILTIN_DIR_VARS = ("pwd", "home")
+# Pipeline/loop variables are objects, not paths — never tracked names and
+# never path targets, so they resolve to themselves (inside the workspace).
+_PIPELINE_VARS = frozenset(
+    {"_", "psitem", "input", "args", "this", "matches", "foreach", "event"}
+)
+# Basename-style properties on pipeline objects are always relative names —
+# they cannot hold an absolute path (``$_.FullName`` can, so it fails closed).
+_PIPELINE_SAFE_PROPS = re.compile(
+    r"^\.(?:name|basename|extension)(?:[\\/]|$)", re.IGNORECASE
+)
+# Verbs that write only under specific flags: their path arguments are
+# search/read roots otherwise and must not be false-blocked.
+_FIND_MUT_FLAGS_RE = re.compile(
+    r"-(?:exec|execdir|delete|fls|fprint|fprintf)\b", re.IGNORECASE
+)
+_COND_MUT_VERBS = {
+    "sed": r"-i\b|--in-place\b",
+    "perl": r"-\w*[ie]\b",
+    # ``-oFILE``/``-OFILE`` glue the target onto the flag — no word
+    # boundary after the letter.
+    "curl": r"-[oOT](?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b|--upload-file\b",
+    "wget": r"-O(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output-document\b",
+    "sort": r"-o(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b|/o\b",
+    "gpg": r"-o(?:\b|(?=[A-Za-z]:)|(?=[/\\~$.]))|--output\b",
+    "openssl": r"-out\b",
+    "awk": r"-i\b|inplace",
+    "gawk": r"-i\b|inplace",
+    "mawk": r"-i\b|inplace",
+    "nawk": r"-i\b|inplace",
+    "iwr": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "irm": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "invoke-webrequest": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+    "invoke-restmethod": r"-OutFile\b|-o(?:\b|(?=[A-Za-z]:)|(?=[/\~$.]))",
+}
+# Carrier verbs execute their arguments: the nested command is scanned
+# recursively (depth-limited). Encoded-payload flags cannot be decoded
+# statically and fail closed.
+_CARRIER_VERBS = frozenset({
+    "xargs", "parallel", "powershell", "pwsh", "powershell.exe", "pwsh.exe",
+    "cmd", "cmd.exe", "bash", "sh", "zsh", "dash", "env", "sudo", "doas",
+    "su", "nohup", "nice", "time", "timeout", "watch", "ssh", "pkexec",
+    "runas", "iex", "invoke-expression", "invoke-command", "eval", "source",
+    "cscript", "wscript", "at", "batch",
+})
+# Carriers/interpreters that execute a payload arriving on stdin when no
+# command argument is given (``echo 'rm /etc/x' | sh``). Piped with only
+# flag args (or nothing), the payload is unverifiable — fail closed.
+# ``ssh``/``at``/``batch`` additionally need a second argument: their
+# first token is a host/time spec, not the command itself.
+_STDIN_EXECUTORS = frozenset({
+    "xargs", "parallel", "powershell", "pwsh", "powershell.exe", "pwsh.exe",
+    "cmd", "cmd.exe", "bash", "sh", "zsh", "dash", "env", "sudo", "doas",
+    "su", "nohup", "nice", "time", "timeout", "watch", "ssh", "pkexec",
+    "runas", "iex", "invoke-expression", "invoke-command", "eval", "source",
+    "cscript", "wscript", "at", "batch",
+})
+_STDIN_TWO_ARG = frozenset({"ssh", "at", "batch"})
+# Heredoc (``cmd <<[-]['"]WORD``) owners. The body feeds the owner's
+# stdin: shells execute it (the owning event rescans it as a command),
+# interpreters run the inline-code checks on it, executors of stdin
+# fail closed, and every other command sees it as data — the body is
+# masked so a ``>`` inside cannot open a redirect event.
+_HEREDOC_SHELLS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "pwsh", "powershell", "cmd",
+    "source", "eval", "iex", "invoke-expression",
+})
+# ``perl`` heredocs also execute stdin, but there is no perl inline-code
+# branch — they fail closed with the stdin executors instead.
+_HEREDOC_INTERPS = frozenset({
+    "python", "python3", "py", "node", "deno", "bun", "ruby", "php",
+    "rscript", "osascript", "julia",
+})
+_HEREDOC_JS = frozenset({"node", "deno", "bun"})
+# Matches ``<<WORD``/``<<-WORD``/``<<'WORD'``/``<<"WORD"`` openings.
+_HEREDOC_RE = re.compile(r"<<(-)?[ \t]*(['\"]?)([A-Za-z_]\w*)\2")
+# Transparent prefixes — they pass stdin through to the command they
+# launch, so the heredoc belongs to that command, not to the wrapper.
+# Each is skipped along with its options, option values, and bare
+# operands (``timeout``'s duration, ``chrt``'s prio, ``taskset``'s mask).
+_HEREDOC_WRAPPERS = frozenset({
+    "env", "timeout", "nice", "nohup", "time", "stdbuf", "command",
+    "builtin", "exec", "sudo", "doas", "pkexec", "chrt", "ionice",
+    "taskset",
+})
+# Heredoc owners that execute stdin but have no inline-code or carrier
+# rescan path — fail closed like the piped-stdin executors.
+_HEREDOC_EXEC_FAILCLOSED = (
+    _STDIN_EXECUTORS - _HEREDOC_WRAPPERS - _HEREDOC_SHELLS
+) | frozenset({"perl", "crontab"})
+_ENCODED_CARRIERS = frozenset(
+    {"powershell", "pwsh", "powershell.exe", "pwsh.exe", "cmd", "cmd.exe"}
+)
+_ENC_FLAG_RE = re.compile(r"-(?:enc|ec|e|encodedcommand)\b", re.IGNORECASE)
+# Interpreters run opaque code strings with -c/-e; a write-ish API inside
+# makes the target unverifiable — fail closed.
+_INTERP_VERBS = frozenset(
+    {"python", "python3", "py", "node", "deno", "bun", "php", "ruby",
+     "osascript", "rscript", "julia"}
+)
+_INTERP_CODE_FLAG_RE = re.compile(
+    r"(?:-c|-e|-E|-r|--eval|--command|-e:)\b", re.IGNORECASE
+)
+_CODE_MUT_RE = re.compile(
+    r"\b(?:open\s*\(|fopen|write(?:file|text|all|_file|_text|_bytes|bytes|lines)?s?\s*[({]|"
+    r"remove|unlink|delete|rmdir|rmtree|makedirs|mkdir\s*\(|rename|replace|copyfile|"
+    r"copy2?|move|chmod|chown|truncate|mkfifo|mknod|symlink|link\s*\(|"
+    r"os\.system|system|spawn|process\.|\.rm\b|subprocess|popen|eval\s*\(|"
+    r"exec\s*\(|__import__|fs\.|do\s+shell\s+script|io\.write|"
+    r"file_put_contents|fwrite|set-content|remove-item|out-file|invoke-expression|"
+    r"save\w*\s*\(|to_csv|to_excel|to_parquet|to_pickle|to_feather|"
+    r"to_hdf|to_latex|to_json|to_html|to_xml|to_stata|to_sql|to_markdown|"
+    r"tofile|urlretrieve|ZipFile|TarFile|BZ2File|GzipFile|LZMAFile|Workbook|"
+    r"make_archive|unpack_archive|extractall|extract|sqlite3\.connect|"
+    r"FileHandler|removedirs|renames|hardlink|lchown|lchmod|chflags|lchflags|"
+    r"link_to|touch|write_text|write_bytes|getattr|\.output\s*\(|`)",
+    re.IGNORECASE,
+)
+# Write targets produced at runtime (env/argv/stdin/temp dirs/script
+# paths) cannot be checked statically — fail closed. The second group
+# covers expressions that *compute* the target (decode/format/join/
+# concat/slice/reflection): a quoted hex string is not the real path,
+# ``bytes.fromhex('433a…').decode()`` produces it at runtime.
+_CODE_DYN_RE = re.compile(
+    r"(?:os\.environ|environ\s*\[|getenv|\bsys\.|process\.env|process\.argv|"
+    r"\bENV\s*\[|\bARGV\b|expandvars|expanduser|Path\.home|Path\.cwd|"
+    r"tempfile|tmpdir|gettempdir|tempnam|mkstemp|mkdtemp|"
+    r"__file__|__dirname|__filename|__main__|__builtins__|input\s*\(|readline|"
+    r"getlogin|getuser|getpass|\$argv|\$args|param\s*\(|"
+    r"fromhex|unhexlify|b64|base64|\bdecode|\bencode|\bchr\s*\(|\bord\s*\(|"
+    r"\bbytes\s*\(|bytearray|\bstr\s*\(|\brepr\s*\(|\bint\s*\(|\bhex\s*\(|"
+    r"\boct\s*\(|\bbin\s*\(|\.join|\bjoin\s*\(|\bformat|%[sdr]\b|f[\"']|"
+    r"\\x[0-9a-f]|\\u[0-9a-f]|setattr|delattr|__import__|importlib|"
+    r"\beval(?!\s*\()|\bexec(?!\s*\()|\bcompile(?!\s*\()|"
+    r"\bglobals|\blocals|\bvars\s*\(|"
+    r"os\.path|os\.getcwd|os\.listdir|os\.walk|os\.scandir|os\.getlogin|"
+    r"\.resolve|\babspath|\brealpath|\bglob|listdir|scandir|"
+    r"(?:os|shutil|fs|File|Path|io)\.(?:remove|unlink|rmdir|rename|"
+    r"replace|mkdir|makedirs|chmod|chown|truncate|symlink|link|mkfifo|"
+    r"mknod|removexattr|setxattr|utime|rmtree|copy|copy2|copyfile|"
+    r"copytree|move|make_archive|unpack_archive|write|writeFileSync|"
+    r"appendFileSync|unlinkSync|renameSync|rmSync|mkdirSync|rm|mv|cp|"
+    r"delete|open|writeFile|appendFile|createWriteStream)(?!\s*\()|\.upper|\.lower|"
+    r"\.replace|\.strip|\.title|\.casefold|\.split|\.translate|\.group|"
+    r"\.sub\b|re\.search|re\.match|\bread\b|\.read|subprocess|check_output|"
+    r"popen|urllib|urlopen|requests|json\.|pickle|yaml\.|uuid|random|"
+    r"socket|\.time|datetime|\btmp|\bhome\b|homedir|appdata|programdata|"
+    r"programfiles|systemroot|windir|userprofile|homepath|homedrive|"
+    r"\bcwd\b|curdir|\bpwd\b|['\"]\s*\+|\+\s*['\"]|['\"]\s*\[)",
+    re.IGNORECASE,
+)
+# Path-accepting calls in interpreter inline code. The target argument of
+# these must be a literal for the write gate to verify it; a call like
+# ``f.write(data)`` whose argument is content is intentionally absent.
+_CODE_TARGET_API_RE = re.compile(
+    r"(?i)(?<![\w])"
+    r"(open|fopen|NamedTemporaryFile|mkstemp|mkdtemp|expanduser|"
+    r"copy|copy2|copyfile|copytree|cp|move|rename|replace|remove|unlink|delete|"
+    r"rmtree|makedirs|mkdir|rmdir|chmod|chown|truncate|symlink|link|"
+    r"hardlink|mkfifo|mknod|setxattr|utime|touch|file_put_contents|"
+    r"file_get_contents|writeFileSync|writeFile|appendFileSync|appendFile|"
+    r"cpSync|copyFileSync|renameSync|rmSync|rmdirSync|mkdirSync|unlinkSync|"
+    r"chmodSync|chownSync|truncateSync|symlinkSync|linkSync|openSync|"
+    r"createWriteStream|mkdtempSync|utimesSync|rm|mv|io\.open|"
+    r"File\.open|File\.delete|File\.rename|File\.copy|File\.chmod|"
+    r"FileUtils\.\w+|save|savefig|savetxt|savez|savez_compressed|tofile|"
+    r"to_csv|to_excel|to_parquet|to_pickle|to_feather|to_hdf|to_latex|"
+    r"to_json|to_html|to_xml|to_stata|to_sql|to_markdown|urlretrieve|"
+    r"ZipFile|TarFile|BZ2File|GzipFile|LZMAFile|Workbook|make_archive|"
+    r"unpack_archive|extractall|extract|connect|FileHandler|output|"
+    r"removedirs|renames|link_to|symlink_to|hardlink_to|lchown|lchmod|"
+    r"chflags|lchflags)\s*\(",
+    re.IGNORECASE,
+)
+# ``Call(args).mutating_method()`` — the target lives on the receiver
+# (``Path(os.environ['T']).unlink()``), not in the method's own args.
+_CODE_RECV_RE = re.compile(
+    r"(?i)[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)\s*\.\s*"
+    r"(?:write_text|write_bytes|touch|unlink|rename|replace|mkdir|rmdir|"
+    r"chmod|chown|open|delete|remove|move|copy|link_to|symlink_to|"
+    r"hardlink_to|extract|extractall|utime|dump|truncate|"
+    r"write|writelines|append)\s*\("
+)
+# Bare-name receivers whose method mutates the path the name holds —
+# ``p.unlink()`` where ``p=Path(x)``. Kept narrow: ``rename``/``copy``/
+# ``write`` receivers would false-positive on streams and objects.
+_CODE_NAMERECV_RE = re.compile(
+    r"(?i)(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*\w+)*)\s*\.\s*"
+    r"(?:unlink|touch|mkdir|rmdir|link_to|symlink_to|hardlink_to|utime|"
+    r"write_text|write_bytes|rename|replace|chmod|chown|truncate|delete|"
+    r"remove|move|copy|extract|extractall|open)\s*\("
+)
+# Module/class names that legitimately appear before ``.unlink`` etc —
+# ``os.unlink('x')`` is a function call covered by the API scan, not a
+# name-bound path receiver.
+_CODE_NAMERECV_HEADS = frozenset(
+    {
+        "os", "sys", "pathlib", "shutil", "io", "fs", "path", "subprocess",
+        "re", "json", "functools", "importlib", "builtins", "__builtins__",
+        "tempfile", "glob", "stat", "logging", "datetime", "time", "math",
+        "collections", "itertools", "platform", "signal", "socket",
+        "urllib", "node", "php", "ruby", "python",
+    }
+)
+# ``(expr).method()`` — a parenthesized or subscript receiver
+# (``(Path(env)/'x').unlink()``, ``arr[0].unlink()``), optionally through
+# attribute hops (``Path(env).parent.unlink()``).
+_CODE_PAREN_RECV_RE = re.compile(
+    r"(?i)[\)\]](?:\s*\.\s*[A-Za-z_]\w*)*\s*\.\s*"
+    r"(?:write_text|write_bytes|touch|unlink|rename|replace|mkdir|rmdir|"
+    r"chmod|chown|open|delete|remove|move|copy|link_to|symlink_to|"
+    r"hardlink_to|extract|extractall|utime|dump|truncate|"
+    r"write|writelines|append)\s*\("
+)
+# Call heads that construct a path from their arguments — their inner
+# expression is checked, the head name itself need not resolve.
+_CODE_RECV_CTORS = frozenset(
+    {
+        "path", "purepath", "posixpath", "windowspath", "pureposixpath",
+        "purewindowspath", "file", "directory", "open", "io.open",
+        "namedtemporaryfile", "temporaryfile", "bytesio", "stringio",
+        "iobase", "pathlib.path",
+    }
+)
+# ``exec``/``eval``/``compile`` calls: safe only when every argument is a
+# literal whose body carries no mutating call or dynamic source.
+_CODE_EXEC_RE = re.compile(r"(?i)\b(?:exec|eval|compile)\s*\(")
+# A dispatched call — ``getattr(os,'remove')(t)``, ``__builtins__['open'](t)``
+# or ``partial(os.remove,t)()`` — makes the code unverifiable even when no
+# named write API appears.
+_CODE_DISP_CALL_RE = re.compile(r"[\)\]]\s*\(")
+# A binding value that is itself a mutating callable —
+# ``x = os.remove`` / ``x = getattr(os, 'remove')`` — so a later ``x(t)``
+# call inherits the literal-only argument rule.
+_CODE_CALLABLE_REF_RE = re.compile(
+    r"(?i)(?:getattr|setattr|partial|eval|exec|compile|__import__|"
+    r"globals|locals|attrgetter|methodcaller|itemgetter)\s*\(|"
+    r"^(?:[\w.]+\.)?(?:open|remove|unlink|rename|replace|copy\w*|move|"
+    r"rmtree|system|popen|exec\w*|spawn\w*|delete|truncate|mkdir|rmdir|"
+    r"chmod|chown|symlink|link|mkfifo|mknod|save|dump|extract\w*|"
+    r"urlretrieve|put|install|run|call|check_output|write)\s*$"
+)
+
+
+def _find_quote_close(text: str, qpos: int) -> int:
+    """Return the index of the closing quote after ``text[qpos]``.
+
+    ``\"`` inside a ``"..."`` span is an escaped quote in bash and
+    PowerShell — an odd run of backslashes before a ``"`` means the
+    string keeps going (``\\"`` is an escaped backslash plus a real
+    close). Single quotes take no escapes, so they close naively.
+    """
+    qc = text[qpos]
+    close = text.find(qc, qpos + 1)
+    if qc != '"':
+        return close
+    while close != -1:
+        k = close - 1
+        bs = 0
+        while k > qpos and text[k] == "\\":
+            bs += 1
+            k -= 1
+        if bs % 2:
+            close = text.find(qc, close + 1)
+        else:
+            return close
+    return -1
+
+
+# ``"..."`` literal with ``\"`` escapes folded into the content; single
+# quotes keep naive POSIX/cmd semantics.
+_STR_LIT_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|\'([^\']*)\'')
+
+
+def _lit_contents(text: str) -> list:
+    """All string-literal bodies in ``text`` (quotes removed)."""
+    return [
+        m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        for m in _STR_LIT_RE.finditer(text)
+    ]
+
+
+def _code_arg_region(text: str, start: int) -> str:
+    """Return the argument region after ``text[start]`` (an opening ``(``).
+
+    Scans balanced brackets outside quotes so a ``)`` inside a literal or a
+    nested call does not truncate the region early.
+    """
+    depth = 0
+    quote = None
+    end = min(len(text), start + 240)
+    i = start
+    while i < end:
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                if quote == '"' and text[i - 1] == "\\":
+                    k = i - 1
+                    bs = 0
+                    while k > start and text[k] == "\\":
+                        bs += 1
+                        k -= 1
+                    if bs % 2:
+                        i += 1
+                        continue
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return text[start:i]
+            depth -= 1
+        i += 1
+    return text[start:end]
+
+
+def _code_lit_strip(text: str) -> str:
+    """Strip quoted literals from interpreter code.
+
+    ``f``-string ``{expr}`` interpolations are live code, not data — they
+    stay visible so ``os.system(f'-o{os.environ["T"]}')`` still trips the
+    dynamic-source check even though the surrounding quotes are data.
+    """
+    parts = []
+    pos = 0
+    for lm in _STR_LIT_RE.finditer( text):
+        parts.append(text[pos:lm.start()])
+        j = lm.start()
+        while j > 0 and text[j - 1] in "rRuUbBfF\\":
+            j -= 1
+        pfx = text[j:lm.start()].replace("\\", "")
+        if "f" in pfx.lower() and (
+            j == 0 or not (text[j - 1].isalnum() or text[j - 1] == "_")
+        ):
+            body = lm.group(0)
+            exprs = re.findall(r"\{([^{}]*)\}", body)
+            truncated = False
+            if not exprs and "{" in body:
+                # Truncated ``f'...{expr'' — the fragment still holds the
+                # start of a dynamic expression; keep it visible. Strip
+                # the surrounding quotes so the fragment is not mistaken
+                # for a static literal below.
+                exprs = [body[1:-1]]
+                truncated = True
+            if not truncated and (
+                not exprs
+                or all(
+                re.fullmatch(
+                    r"\s*(?:'[^']*'|\"[^\"]*\"|[0-9][0-9_]*(?:\.[0-9]+)?)\s*",
+                    e,
+                )
+                    for e in exprs
+                )
+            ):
+                # Every interpolation is static — the folded value is a
+                # plain literal, so strip it like any other string. The
+                # original text still reaches the generic token scan.
+                parts[-1] = re.sub(r"[rRuUbBfF\\]+$", "", parts[-1])
+            else:
+                for expr in exprs:
+                    parts.append(" " + expr + " ")
+        pos = lm.end()
+    parts.append(text[pos:])
+    return "".join(parts)
+
+
+# Two-path calls whose destination is also a write target.
+_TWO_TARGET_APIS = frozenset(
+    {
+        "copy", "copy2", "copyfile", "copytree", "cp", "move", "rename",
+        "replace", "symlink", "link", "hardlink", "cpsync", "copyfilesync",
+        "renamesync", "renames", "extract", "unpack_archive", "urlretrieve",
+    }
+)
+# cmd.exe verbs where ``/x`` tokens are options rather than POSIX paths.
+# A ``/flag:value`` or ``/flag=value`` can still carry a target inside the
+# flag itself, so the value is checked; the bare flag is skipped.
+_CMD_VERBS = frozenset(
+    "attrib icacls cacls cipher compact takeown fsutil reg format certutil "
+    "expand makecab extrac32 diskpart sort bitsadmin esentutl for del erase "
+    "rd rmdir mkdir md copy move ren xcopy robocopy replace mklink forfiles "
+    "schtasks regsvr32 msiexec control installutil regasm regsvcs rundll32 "
+    "mshta".split()
+)
+_MAX_CARRIER_DEPTH = 3
+
+
+def _expand_env_candidate(raw: str) -> str | None:
+    """Resolve ``$env:``/``${env:X}``/``%VAR%``/``$HOME``/``~`` prefixes.
+
+    Returns ``None`` when an env-prefixed target cannot be resolved — the
+    caller must then fail closed instead of letting the literal form count
+    as a relative in-workspace path.
+    """
+    match = re.match(r"^\$\{env:([^\W\d]\w*)\}", raw, re.IGNORECASE)
+    if not match:
+        match = re.match(r"^\$env:([^\W\d]\w*)", raw, re.IGNORECASE)
+    if match:
+        value = os.environ.get(match.group(1)) or os.environ.get(
+            match.group(1).upper(), ""
+        )
+        return value + raw[match.end() :] if value else None
+    match = re.match(r"^\$\{([^\W\d]\w*)\}", raw)
+    if match:
+        name = match.group(1)
+        if name.upper() == "HOME":
+            return str(Path.home()) + raw[match.end() :]
+        value = os.environ.get(name) or os.environ.get(name.upper(), "")
+        return value + raw[match.end() :] if value else None
+    if raw.upper().startswith("$HOME"):
+        return str(Path.home()) + raw[5:]
+    if raw.startswith("~"):
+        expanded = os.path.expanduser(raw)
+        return expanded if expanded != raw else None
+    if raw.startswith("%"):
+        match = re.match(r"^%([^\W\d][\w()]*)%", raw)
+        if match:
+            value = os.environ.get(match.group(1)) or os.environ.get(
+                match.group(1).upper(), ""
+            )
+            return value + raw[match.end() :] if value else None
+        expanded = os.path.expandvars(raw)
+        return expanded if expanded != raw else None
+    return raw
+
+
+def _bash_candidate(raw: str, eff_dir: str | None) -> str | None:
+    """Expand env prefixes, then resolve relative targets against ``eff_dir``."""
+    candidate = _expand_env_candidate(raw)
+    if candidate is None:
+        return None
+    if eff_dir and not _ABS_FORM_RE.match(candidate):
+        candidate = os.path.join(eff_dir, candidate)
+    return os.path.normpath(candidate)
+
+
+def find_bash_disallowed_write_paths(
+    cmd: str,
+    config: dict,
+    workdir: str | None = None,
+    _depth: int = 0,
+    _piped: bool = False,
+    _mut_out: "list[bool] | None" = None,
+) -> list[str]:
+    """Return mutating target paths outside the write whitelist.
 
     Workspace sandbox only constrains cwd; without this check, agents can still
     ``Set-Content C:\\Users\\...`` and escape. Used by ToolOrchestrator.
 
     Only verb/redirect *targets* are considered so that writing a relative
     report that *mentions* an absolute path in its body is not false-blocked.
+    Relative targets are resolved against ``workdir`` (the shell's requested
+    cwd, falling back to ``execution.workspace_root``), and cd/pushd/popd
+    verbs update the tracked effective directory so chained ``cd ..`` forms
+    cannot re-root a later relative write.
     """
     if not cmd:
         return []
@@ -437,23 +1291,2119 @@ def find_bash_disallowed_write_paths(cmd: str, config: dict) -> list[str]:
     # Drop -Value/-Content payloads and PowerShell here-strings so report
     # bodies that quote blocked paths do not false-trigger.
     scrubbed = re.sub(
-        r"(?is)(-(?:Value|Content))\s+(@\"[\s\S]*?\"@|'[^']*'|\"[^\"]*\")",
+        r"(?is)(?<![A-Za-z])(-(?:Value|Content))\s+"
+        r"(@\"[\s\S]*?\"@|@'[\s\S]*?'@|'[^']*'|\"[^\"]*\")",
         " ",
         cmd,
     )
-    scrubbed = re.sub(r"(?is)@\"[\s\S]*?\"@", " ", scrubbed)
+    # Here-strings keep their contents visible to the target scan: an
+    # ``iex @"..."@`` or ``$x = @"..."@; iex $x`` payload would otherwise hide
+    # the whole command behind the erase. -Value/-Content payloads were
+    # already scrubbed above, so report bodies stay unaffected.
+    scrubbed = re.sub(r'@\"|\"@', " ", scrubbed)
+    # PowerShell (`` ` ``) and bash (``\``) line continuations join the next
+    # line into the same command; collapse them so targets past a newline
+    # stay inside the scanned segment.
+    scrubbed = re.sub(r"[\\`]\r?\n", " ", scrubbed)
+
+    def _fix_redir_ops(text: str) -> str:
+        # ``>|``/``>>|`` noclobber overrides and ``>&FILE``/``>>&FILE``
+        # stdout+stderr redirects hide behind ``|``/``&`` separator
+        # parsing — ``|C:/x`` would even look like a piped program path.
+        # Rewrite the operator to a plain ``>``/``>>`` at the same length
+        # so positions stay stable. Quoted ``>`` stays inert downstream,
+        # and a quoted carrier payload is rescanned after unwrapping —
+        # so rewriting inside quotes is harmless and actually needed for
+        # ``bash -c 'x >| y'``. ``>&`` keeps its fd-duplicate meaning when
+        # followed by a digit or ``-`` (``2>&1``, ``>&-``).
+        out = list(text)
+        for i, ch in enumerate(text):
+            if ch == ">" and i + 1 < len(text):
+                nxt = text[i + 1]
+                if nxt == "|":
+                    out[i + 1] = " "
+                elif nxt == "&":
+                    k = i + 2
+                    while k < len(text) and text[k] in " \t":
+                        k += 1
+                    if (
+                        k < len(text)
+                        and not text[k].isdigit()
+                        and text[k] not in "-|;&>"
+                    ):
+                        out[i + 1] = " "
+        return "".join(out)
+
+    scrubbed = _fix_redir_ops(scrubbed)
+    # A command-slot token that is a path (``C:/x/rar.exe``,
+    # ``& 'C:/Program Files/y.exe'``, ``/usr/bin/rm``) runs its basename —
+    # rewrite it before ``_unescape`` fuses ``\`` separators and the
+    # ``/``-glued form hides the verb from the opener regex.
+    def _norm_slot_prog(m):
+        tok = m.group("tok")
+        if re.fullmatch(
+            r"/[A-Za-z][A-Za-z0-9+]*(?::[^\s]*)?", tok.strip("'\"")
+        ):
+            # ``/c``/``/d``/``/k`` are carrier flags, not root paths —
+            # rewriting them to a basename would eat the flag and hide
+            # the real program that follows it (``cmd /c $x``).
+            return m.group(0)
+        base = re.split(r"[\\/]", tok.strip("'\""))[-1]
+        raw_tok = tok.strip("'\"")
+        if (
+            "\\" in tok
+            and not tok.startswith(("'", '"'))
+            and not re.match(r"[A-Za-z]:\\", raw_tok)
+            and not raw_tok.startswith("\\\\")
+        ):
+            # ``\x`` inside an unquoted word is a bash escape, not a
+            # separator (``r\m`` runs ``rm``, ``c\d`` runs ``cd``) —
+            # when the collapsed word reads as a mutating verb prefer
+            # it over the Windows-path basename reading. A token that
+            # opens with a drive spec (``C:\``) or UNC prefix (``\\``)
+            # is a Windows path: the executor runs PowerShell/cmd, where
+            # ``\`` is not an escape, and bash never treats a drive
+            # letter as a root — keep its separators.
+            collapsed = tok
+            while True:
+                step = re.sub(r"\\([A-Za-z])", r"\1", collapsed)
+                if step == collapsed:
+                    break
+                collapsed = step
+            if re.fullmatch(
+                rf"(?i)(?:{_MUT_VERB_ALT})"
+                rf"(?:\.(?:exe|com|bat|cmd|ps1))?",
+                collapsed,
+            ):
+                base = collapsed
+        return m.group(0)[: m.start("tok") - m.start()] + base
+
+    # The slot anchors (``;``/``(``/``{``) are quote-blind: inside an
+    # enclosing quoted arg — ``python -c "...Path('C:\\x')..."`` — they are
+    # literal text, not command slots. Rewriting the token there would
+    # basename-eat the path literal the interpreter checks read, so skip
+    # any match that opens inside a top-level quoted span. A quoted
+    # *program* token (``& 'C:\\dir\\rar.exe'``) starts its own span, so
+    # its anchor still sits outside and keeps the rewrite.
+    slot_quote_spans: list[tuple[int, int]] = []
+    sqpos = 0
+    while sqpos < len(scrubbed):
+        if scrubbed[sqpos] in "\"'":
+            sclose = _find_quote_close(scrubbed, sqpos)
+            slot_quote_spans.append(
+                (sqpos, sclose if sclose != -1 else len(scrubbed))
+            )
+            sqpos = sclose + 1 if sclose != -1 else len(scrubbed)
+        else:
+            sqpos += 1
+
+    def _norm_slot_prog_guarded(m):
+        # Strictly-inside: a match that opens *at* the quote (``"C:\\dir\\x.exe"``)
+        # is the quoted program token itself — its anchor is outside the span.
+        if any(s < m.start() < e for s, e in slot_quote_spans):
+            return m.group(0)
+        return _norm_slot_prog(m)
+
+    scrubbed = _PROG_SLOT_PATH_RE.sub(_norm_slot_prog_guarded, scrubbed)
+    def _unescape(text: str) -> str:
+        # ``\`` mid-word (``r\m``, ``r\\m``) is a bash escape — strip it.
+        # At a word start (``\Windows``, ``\\share``) or after a
+        # ``:``/``}``/``%`` it is a path root or suffix, and ``$var\``
+        # binds the var's path suffix (``$PWD\inside.txt``) — all stay.
+        # `` ` `` (``Set-Cont`ent``) is the PowerShell escape: it is never
+        # a path character, so a word-internal `` `<letter>`` drops out.
+        out: list[str] = []
+        for i, ch in enumerate(text):
+            if (
+                ch == "`"
+                and i + 1 < len(text)
+                and text[i + 1].isalnum()
+                and i > 0
+                and (text[i - 1].isalnum() or text[i - 1] in "_-.")
+            ):
+                # Mid-word only: ``Set-Cont`ent`` is a PS escape. A leading
+                # or paired `` ` `` is bash command substitution and stays
+                # for the command-position check.
+                continue
+            if ch == "\\" and i + 1 < len(text) and text[i + 1].isalpha():
+                prev = text[i - 1] if i else ""
+                if prev == "\\" or prev.isalnum() or prev == "_":
+                    # A token that opens with a drive spec (``C:\``) or
+                    # UNC prefix (``\\``) is a Windows path — ``\`` is a
+                    # separator, not a bash escape. On Windows the
+                    # executor runs PowerShell/cmd where ``\`` never
+                    # escapes; a bash host never treats a drive letter
+                    # as a root, and bash's collapsed reading (``C:x``)
+                    # is a relative name in the cwd. Token boundaries:
+                    # whitespace, quotes, ``;|&\n``, ``(``, ``{``, ``=``
+                    # or ``:`` (``-Path:C:\x``, ``of=C:\x``).
+                    k = i - 1
+                    while k >= 0 and text[k] not in " \t'\";|&\n({=:":
+                        k -= 1
+                    # A ``:`` boundary can be the drive colon itself
+                    # (``D:\x``): when it follows a lone letter that sits
+                    # right after another boundary, step back over both
+                    # so ``seg`` still starts with the drive spec.
+                    if (
+                        k >= 0
+                        and text[k] == ":"
+                        and k - 1 >= 0
+                        and text[k - 1].isalpha()
+                        and (k - 2 < 0 or text[k - 2] in " \t'\";|&\n({=:")
+                    ):
+                        k -= 2
+                    seg = text[k + 1 : i + 1]
+                    if (
+                        re.match(r"^[A-Za-z]:\\", seg)
+                        or seg.startswith("\\\\")
+                    ):
+                        out.append(ch)
+                        continue
+                    j = i - 1
+                    while j >= 0 and (text[j].isalnum() or text[j] == "_"):
+                        j -= 1
+                    # ``$env:OUT\f`` — the walk stops at ``:``; a ``env:``
+                    # prefix belongs to the same ``$`` ref, so keep ``\``
+                    # there too (it is the var's path suffix).
+                    if j >= 4 and text[j] == ":" and text[j - 3 : j].lower() == "env" and text[j - 4] == "$":
+                        out.append(ch)
+                    elif not (j >= 0 and text[j] == "$"):
+                        continue
+                    else:
+                        out.append(ch)
+                    continue
+            out.append(ch)
+        return "".join(out)
+
+    # The shell concatenates words before parsing them: ``r'm' x``,
+    # ``r"m" x`` and ``r\m x`` all reach the gate as ``rm x``. Collapse
+    # word-internal quotes and backslash-escaped letters so the opener
+    # sees the verb the shell will actually run. ``\`` only escapes when
+    # unquoted — inside 'C:\Users\x' it is a literal path separator.
+    # Collapsing quotes can reveal new escapes, so loop to stable.
+    prev = None
+    while prev != scrubbed:
+        prev = scrubbed
+        spans = []
+        qpos = 0
+        while qpos < len(scrubbed):
+            if scrubbed[qpos] in "\"'":
+                close = _find_quote_close(scrubbed, qpos)
+                end = close if close != -1 else len(scrubbed)
+                spans.append((qpos, end))
+                qpos = end + 1 if close != -1 else len(scrubbed)
+            else:
+                qpos += 1
+        rebuilt: list[str] = []
+        last = 0
+        for start, end in spans:
+            rebuilt.append(_unescape(scrubbed[last:start]))
+            word_before = start > 0 and (
+                scrubbed[start - 1].isalnum() or scrubbed[start - 1] == "_"
+            )
+            word_after = end + 1 < len(scrubbed) and (
+                scrubbed[end + 1].isalnum() or scrubbed[end + 1] == "_"
+            )
+            if end < len(scrubbed) and (word_before or word_after):
+                # A quote wedged inside a word (``r'm'``/``x"y"z``) is not
+                # a string delimiter — the shell concatenates it into the
+                # word, so drop the quote pair and keep the inner text.
+                # A free-standing quoted argument stays intact so code
+                # literals inside it survive for the interpreter checks.
+                rebuilt.append(scrubbed[start + 1 : end])
+            else:
+                rebuilt.append(scrubbed[start : end + 1])
+            last = end + 1
+        rebuilt.append(_unescape(scrubbed[last:]))
+        scrubbed = "".join(rebuilt)
+    # Quote-stripping above can fuse ``x'>|'y`` into ``x>|y`` — rerun the
+    # redirect-operator rewrite (it is idempotent and length-preserving).
+    scrubbed = _fix_redir_ops(scrubbed)
+    base = workdir
+    if not base:
+        try:
+            current_working_directory = importlib.import_module(
+                f"{__package__.rsplit('.', 1)[0]}.session_runtime"
+            ).current_working_directory
+            base = str(current_working_directory())
+        except Exception:
+            base = None
+    if not base:
+        base = execution.get("workspace_root") or None
+    eff_dir: str | None = None
+    if base:
+        try:
+            eff_dir = os.path.normpath(str(base))
+        except Exception:
+            eff_dir = None
+    dir_stack: list[str | None] = []
+    shell_vars: dict[str, str] = {}
     blocked: list[str] = []
-    seen: set[str] = set()
-    for match in _BASH_MUTATING_TARGET_RE.finditer(scrubbed):
-        raw = (match.group("path") or match.group("redir") or "").rstrip("\\/")
-        if not raw or raw in seen:
-            continue
-        # Relative / cwd targets are fine.
-        if raw.startswith(".\\") or raw.startswith("./"):
-            continue
-        seen.add(raw)
-        if not is_write_allowed(raw, config):
+    mutating = False
+    seen: set[tuple[str | None, str]] = set()
+
+    def _resolve_value(raw: str, depth: int = 0) -> str | None:
+        """Resolve tracked ``$var`` names first, then env forms, vs eff_dir."""
+        if raw.startswith("$(") or "`" in raw or raw == "{}":
+            # Command substitution executes regardless of position, and an
+            # xargs/find ``{}`` placeholder resolves outside our tracking.
+            return None
+        if depth >= 4:
+            return None
+        env = re.match(r"^\$\{?env:([^\W\d]\w*)\}?", raw, re.IGNORECASE)
+        if env:
+            name = "env:" + env.group(1).lower()
+            if name in shell_vars:
+                # ``$env:X = "v"`` rebinds the process env inside the
+                # command — the tracked value wins over the inherited one.
+                # A bare ``X=v`` does not bind this namespace.
+                return _resolve_value(shell_vars[name] + raw[env.end():], depth + 1)
+            return _bash_candidate(raw, eff_dir)
+        loopvar = re.match(r"^%+([A-Za-z])($|[\\/.\[])", raw)
+        if loopvar:
+            # ``%i``/``%%i`` are cmd for-loop vars bound by the enclosing
+            # ``for`` — resolve to an in-workspace basename, the same
+            # treatment pipeline ``$_`` gets.
+            return _resolve_value("x" + raw[loopvar.end(1) :], depth + 1)
+        atvar = re.match(r"^@[A-Za-z]+", raw)
+        if atvar:
+            # ``forfiles`` iteration variables (``@path``/``@fname``/…)
+            # bind to each iterated name — a basename placeholder, like
+            # the ``for %i`` treatment.
+            return _resolve_value("x" + raw[atvar.end() :], depth + 1)
+        pct = re.match(r"^%([^\W\d][\w()]*)%", raw)
+        if pct:
+            # ``%X%`` reads the process env — only an ``$env:X = v``
+            # assignment can rebind it inside the command.
+            name = "env:" + pct.group(1).lower()
+            if name in shell_vars:
+                value = shell_vars[name]
+                suffix = raw[pct.end() :]
+                if not value and not suffix:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            return _bash_candidate(raw, eff_dir)
+        bang = re.match(r"^!([^\W\d]\w*)!", raw)
+        if bang:
+            # ``!X!`` is cmd delayed expansion — same env/tracked lookup
+            # as ``%X%``; an unverifiable value fails closed below.
+            name = "env:" + bang.group(1).lower()
+            if name in shell_vars:
+                value = shell_vars[name]
+                suffix = raw[bang.end() :]
+                if not value and not suffix:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            env_hit = os.environ.get(bang.group(1)) or os.environ.get(
+                bang.group(1).upper()
+            )
+            if env_hit is None:
+                return None
+            return _resolve_value(env_hit + raw[bang.end() :], depth + 1)
+        var = _SHELL_VAR_RE.match(raw)
+        if var:
+            braced = var.group(1) is not None
+            if braced:
+                inner = var.group(1)
+                if not _BRACED_NAME_RE.fullmatch(inner):
+                    return None
+                name = inner.lower()
+            else:
+                name = var.group(2).lower()
+            suffix = var.group(3) or ""
+            if name in shell_vars:
+                # Membership, not truthiness: ``X=""`` is still tracked,
+                # and an empty value must not fall back to the process env.
+                value = shell_vars[name]
+                if not value and not suffix:
+                    return None
+                if suffix:
+                    # ``X=v`` binds only under bash and ``$X=v`` only under
+                    # PowerShell — under the other dialect ``$X`` stays
+                    # empty and the suffix alone is the target. Check that
+                    # interpretation too: ``$X\pwn`` -> ``\pwn`` (drive
+                    # root) must not pass because one dialect binds.
+                    unset = _bash_candidate(suffix, eff_dir)
+                    if unset is not None and not is_write_allowed(unset, config):
+                        return unset
+                return _resolve_value(value + suffix, depth + 1)
+            if name in _PIPELINE_VARS:
+                # ``$_``/``$args`` alone are not paths. A property or index
+                # (``$_.FullName``/``$args[0]``) can hold an absolute path
+                # outside the workspace — unverifiable, fail closed —
+                # except basename-style properties, which stay relative.
+                if not suffix:
+                    return raw
+                safe = _PIPELINE_SAFE_PROPS.match(suffix)
+                if safe:
+                    # Substitute a placeholder basename; a trailing
+                    # ``\..\evil`` can still traverse out of the workspace.
+                    tail = suffix[safe.end():]
+                    return _bash_candidate("x/" + tail if tail else "x", eff_dir)
+                return None
+            if name in _BUILTIN_DIR_VARS:
+                base_dir = eff_dir if name == "pwd" else (
+                    os.path.expanduser("~") or None
+                )
+                return base_dir + suffix if base_dir else None
+            value = shell_vars.get(name)
+            if value:
+                if depth >= 4:
+                    return None
+                return _resolve_value(value + suffix, depth + 1)
+            if var.group(1) is not None:
+                # Braced ``${X}`` resolves from the environment when no
+                # earlier assignment tracked it; bare ``$X`` fails closed.
+                return _bash_candidate(raw, eff_dir)
+            return None
+        return _bash_candidate(raw, eff_dir)
+
+    def _check(raw: str) -> None:
+        if raw in _REDIRECT_PSEUDO_TARGETS:
+            return
+        # Same token is re-checked when the effective directory moved —
+        # '..' means something different after each 'cd'.
+        key = (eff_dir, raw)
+        if key in seen:
+            return
+        seen.add(key)
+        candidate = _resolve_value(raw)
+        if candidate is None or not is_write_allowed(candidate, config):
             blocked.append(raw)
+
+    def _rescan_tail(text: str) -> None:
+        # A verb's segment swallows everything to the next top-level
+        # separator, so a ``>`` or nested verb inside it never opened its
+        # own event — rescan the tail and merge any blocks it finds.
+        for hit in find_bash_disallowed_write_paths(
+            text, config, workdir=eff_dir, _depth=_depth + 1, _piped=_piped
+        ):
+            if hit not in blocked:
+                blocked.append(hit)
+
+    # Quoted spans mask assignment detection: 'X=D:\evil' inside quotes is
+    # string content, not an assignment (an unclosed quote quotes to EOL).
+    quoted_spans: list[tuple[int, int]] = []
+    qpos = 0
+    while qpos < len(scrubbed):
+        if scrubbed[qpos] in "\"'":
+            close = _find_quote_close(scrubbed, qpos)
+            quoted_spans.append((qpos, close if close != -1 else len(scrubbed)))
+            qpos = close + 1 if close != -1 else len(scrubbed)
+        else:
+            qpos += 1
+
+    def _in_quotes(pos: int) -> bool:
+        return any(start <= pos < end for start, end in quoted_spans)
+
+    def _assign_prefix_ok(pos: int) -> bool:
+        # The text between the previous separator and the match must be a
+        # pure assignment chain (optionally led by an env builtin like
+        # ``export``/``set``) — a command word makes ``NAME=v`` an argument.
+        seg_start = max(masked.rfind(c, 0, pos) for c in ";|&\n") + 1
+        return bool(_ASSIGN_PREFIX_RE.match(masked[seg_start:pos]))
+
+    def _tok_head(pos: int) -> int:
+        # Walk back to the head of the token containing ``pos`` — spaces
+        # inside quotes are token text (``"C:\Program Files\x"``), so
+        # quoted characters never end the walk.
+        seg_start = max(masked.rfind(c, 0, pos) for c in ";|&\n") + 1
+        t = pos
+        while t > seg_start and (
+            masked[t - 1] not in " \t'\"" or _in_quotes(t - 1)
+        ):
+            t -= 1
+        return t
+
+    def _command_slot_ok(pos: int) -> bool:
+        # Only whitespace, invoke operators (``&``/``.``), env
+        # assignments, and flag tokens may sit between the last
+        # separator and a command-position word — anything else makes
+        # it an argument (``echo ar``, ``npm start``, ``docker start web``).
+        seg_start = max(masked.rfind(c, 0, pos) for c in ";|&\n") + 1
+        # The verb can sit mid-token: ``& "C:\dir\rar.exe"`` keeps the
+        # opening quote in ``masked``, and a collapsed ``\`` escape glues
+        # the directory tail to the verb (``C:\tools\rar.exe`` becomes
+        # ``C:\toolsrar.exe``) — the slot boundary is the containing
+        # token's head in both cases.
+        tok_start = _tok_head(pos)
+        prefix = masked[seg_start:tok_start]
+        # Drop a leftover opening quote or ``dir\`` tail before checking.
+        prefix = re.sub(
+            r"(?:['\"][^'\"\n;|&]*[\\/]|['\"]"
+            r"|(?:[A-Za-z]:)?[^\s'\"|;&]*[\\/])$",
+            "",
+            prefix,
+        )
+        return bool(_CMD_SLOT_PREFIX_RE.fullmatch(prefix))
+
+    # Separators inside quotes are literal text, not command boundaries —
+    # mask them so 'os.remove("x")' inside one quoted arg stays in the
+    # interpreter's segment.
+    masked_chars = list(scrubbed)
+    for start, end in quoted_spans:
+        for pos in range(start, end):
+            if masked_chars[pos] in ";|&\n":
+                masked_chars[pos] = " "
+    masked = "".join(masked_chars)
+
+    # Heredoc bodies (``cmd <<[-]['"]WORD`` … ``WORD``) feed the owning
+    # command's stdin. The owner decides the semantics: shells and
+    # interpreters run the body (deferred to the owning event via
+    # ``heredoc_feed``), stdin executors fail closed, and anything else
+    # gets the body masked as inert data so a ``>`` inside cannot open
+    # a redirect event. Only body lines plus the terminator word are
+    # masked — a redirect on the ``<<`` line itself still fires. Line
+    # scanning runs on ``scrubbed``: a stray ``'`` inside the body can
+    # corrupt ``masked``'s newline map before the span filter below.
+    heredoc_feed: dict[int, tuple[str, str, int, int]] = {}
+    hd_mask: list[tuple[int, int]] = []
+    for hm in _HEREDOC_RE.finditer(masked):
+        if _in_quotes(hm.start()):
+            continue
+        if any(bs <= hm.start() < be for bs, be in hd_mask):
+            # A ``<<`` inside an earlier body is data, not an opener.
+            continue
+        nl = scrubbed.find("\n", hm.end())
+        if nl == -1:
+            continue
+        body_start = nl + 1
+        word = hm.group(3)
+        strip_tabs = hm.group(1) == "-"
+        body_end = len(scrubbed)
+        mask_end = len(scrubbed)
+        lpos = body_start
+        while lpos < len(scrubbed):
+            lend = scrubbed.find("\n", lpos)
+            if lend == -1:
+                lend = len(scrubbed)
+            line = scrubbed[lpos:lend]
+            if (line.lstrip("\t") if strip_tabs else line) == word:
+                body_end = lpos
+                mask_end = lend
+                break
+            lpos = lend + 1
+        # Mask the body AND the terminator line — a delimiter like
+        # ``PY`` would otherwise parse as a ``py`` verb event.
+        hd_mask.append((body_start, mask_end))
+        # Owner = first word of the segment holding the ``<<``, resolved
+        # through transparent wrappers — ``env``/``timeout``/``sudo``
+        # pass stdin through to the command they launch, so the body
+        # belongs to that command. Leading ``NAME=val`` assignments are
+        # skipped, and a bare wrapper with no command fails closed.
+        hseg_start = max(
+            masked.rfind(c, 0, hm.start()) for c in ";|&\n"
+        ) + 1
+        head = masked[hseg_start : hm.start()]
+        pm = _CMD_SLOT_PREFIX_RE.match(head)
+        wpos = hseg_start + (pm.end() if pm else 0)
+        wt = list(re.finditer(r"[^\s]+", masked[wpos : hm.start()]))
+
+        def _hdbase(tok: str) -> str:
+            return re.sub(
+                r"\.(?:exe|com|bat|cmd|ps1)$",
+                "",
+                tok.strip("'\"").lower(),
+            ).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        # Skip leading ``NAME=val`` assignments and transparent
+        # wrappers — the heredoc belongs to the wrapped command.
+        wi = 0
+        while wi < len(wt) and (
+            re.match(r"^[A-Za-z_]\w*=", wt[wi].group().strip("'\""))
+            or _hdbase(wt[wi].group()) in _HEREDOC_WRAPPERS
+        ):
+            wi += 1
+        owner = ""
+        hd_kind = ""
+        if wt and wi == 0:
+            # Not wrapper-led — the first word owns the heredoc.
+            owner = _hdbase(wt[0].group())
+            if owner in _HEREDOC_SHELLS:
+                hd_kind = "shell"
+            elif owner in _HEREDOC_INTERPS:
+                hd_kind = "interp"
+            elif owner in _HEREDOC_EXEC_FAILCLOSED:
+                blocked.append(owner)
+                continue
+            else:
+                owner = ""
+        elif wt:
+            # Wrapper-led: classify by ALL tokens up to ``<<`` so an
+            # unrecognized option can neither masquerade as the owner
+            # nor swallow the real command. ``env cat bash`` resolves
+            # as shell — conservative, per the audit ruling.
+            first_wrap = ""
+            for j in range(wi):
+                if _hdbase(wt[j].group()) in _HEREDOC_WRAPPERS:
+                    first_wrap = _hdbase(wt[j].group())
+                    break
+            if not first_wrap:
+                # Pure ``NAME=val`` prefix with no command — the body
+                # is unconsumed data.
+                continue
+            for j in range(len(wt)):
+                if _hdbase(wt[j].group()) in _HEREDOC_SHELLS:
+                    hd_kind, owner = "shell", _hdbase(wt[j].group())
+                    break
+            if not owner:
+                for j in range(len(wt)):
+                    if _hdbase(wt[j].group()) in _HEREDOC_INTERPS:
+                        hd_kind, owner = "interp", _hdbase(wt[j].group())
+                        break
+            if not owner:
+                exec_tok = next(
+                    (
+                        _hdbase(wt[j].group())
+                        for j in range(len(wt))
+                        if _hdbase(wt[j].group())
+                        in _HEREDOC_EXEC_FAILCLOSED
+                    ),
+                    "",
+                )
+                if exec_tok:
+                    blocked.append(exec_tok)
+                    continue
+                # A "command-like" token after the wrappers makes the
+                # body plain stdin data. Flag tokens, ``NAME=val`` and
+                # pure values (``5``, ``1s``, ``0-2``, ``0x3``, ``10``)
+                # are not commands.
+                cmd_like = any(
+                    not t.startswith(("-", "+"))
+                    and not re.match(r"^[A-Za-z_]\w*=", t)
+                    and not re.match(
+                        r"(?i)^\d[\d.,:x\-]*[smhd]?$|^0x[0-9a-f]+$", t
+                    )
+                    for t in (
+                        wt[j].group().strip("'\"")
+                        for j in range(wi, len(wt))
+                    )
+                )
+                if not cmd_like:
+                    blocked.append(first_wrap)
+                    continue
+                continue
+        else:
+            continue
+        if not owner:
+            continue
+        # The opener regex consumes a whole segment greedily — a wrapped
+        # owner (``env bash <<EOF``) is swallowed inside the wrapper's
+        # verbseg and never opens its own event. The dispatching event is
+        # therefore the FIRST mutating-verb word in the segment.
+        feed_pos = -1
+        for j in range(len(wt)):
+            if re.fullmatch(
+                r"(?i)(?:" + _MUT_VERB_ALT
+                + r")(?:\.(?:exe|com|bat|cmd|ps1))?",
+                _hdbase(wt[j].group()),
+            ):
+                jtok = wt[j].group()
+                feed_pos = wpos + wt[j].start() + (
+                    len(jtok) - len(jtok.lstrip("'\""))
+                )
+                break
+        if feed_pos >= 0:
+            heredoc_feed[feed_pos] = (hd_kind, owner, body_start, body_end)
+        elif hd_kind == "shell" and _depth < _MAX_CARRIER_DEPTH:
+            # The owner produces no opener event (``ksh``) — rescan the
+            # body immediately against the current dir.
+            hmut: list[bool] = []
+            for hit in find_bash_disallowed_write_paths(
+                scrubbed[body_start:body_end],
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+                _piped=_piped,
+                _mut_out=hmut,
+            ):
+                if hit not in blocked:
+                    blocked.append(hit)
+            if hmut and hmut[0]:
+                mutating = True
+        else:
+            blocked.append(owner)
+    if hd_mask:
+        # Body text is data — a ``'`` inside it must not extend a quoted
+        # span past the terminator into real command text. Rebuild the
+        # separator mask with those spans dropped so a stray quote in
+        # the body (``don't``) cannot hide a later ``>`` or verb.
+        quoted_spans = [
+            qs
+            for qs in quoted_spans
+            if not any(bs <= qs[0] < be for bs, be in hd_mask)
+        ]
+        masked_chars = list(scrubbed)
+        for start, end in quoted_spans:
+            for pos in range(start, end):
+                if masked_chars[pos] in ";|&\n":
+                    masked_chars[pos] = " "
+        for bs, be in hd_mask:
+            for p in range(bs, be):
+                if masked_chars[p] != "\n":
+                    masked_chars[p] = " "
+        masked = "".join(masked_chars)
+
+    # ``$'...'`` ANSI-C / ``$"..."`` locale strings, ``$(...)`` and
+    # backticks evaluate at runtime — when they sit where a command name
+    # goes the executed verb is unverifiable, so fail closed.
+    for m in re.finditer(r"\$'|\$\"|`|\$\(", masked):
+        if _in_quotes(m.start()):
+            continue
+        seg_start = max(masked.rfind(c, 0, m.start()) for c in ";|&\n") + 1
+        if _ASSIGN_PREFIX_RE.match(masked[seg_start : m.start()]):
+            blocked.append(m.group())
+
+    # A variable or expression in the command slot hides the executed
+    # program — no resolution attempt, fail closed (``& $x``, ``$x
+    # args``, ``%X% args``, ``& (gc f)``). Runs on every (re)scanned
+    # segment, so carrier tails inherit it.
+    if any(
+        not _in_quotes(dm.start())
+        for dm in _CMD_SLOT_DYN_RE.finditer(masked)
+    ):
+        blocked.append("<opaque:variable-command>")
+
+    events = sorted(
+        [
+            (m.start(), "op", m)
+            for m in _BASH_MUTATING_OPENER_RE.finditer(masked)
+            # ``>`` inside quotes is literal text (``echo 'a > /x'``), not
+            # a shell redirect — only unquoted ``>`` opens a redir seg.
+            # ``2>&1``/``>&-`` duplicate a descriptor — the ``&`` split
+            # leaves an empty seg behind — and a ``>`` with no target
+            # (``echo x >``) writes nothing verifiable either.
+            if not (m.group("redirseg") is not None and _in_quotes(m.start()))
+            and not (
+                m.group("redirseg") is not None
+                and (
+                    not m.group("redirseg").strip()
+                    or re.match(r"&[-\d]", m.group("redirseg"))
+                )
+            )
+            # ``schtasks /sc`` is a flag, not Set-Content — a whole-token
+            # verb glued to ``/`` is a cmd option, never an invocation.
+            and not (
+                m.group("verb") is not None
+                and m.start() > 0
+                and masked[m.start() - 1] == "/"
+            )
+        ]
+        + [
+            (m.start(), "op", _GlueMatch(m))
+            for m in _CMDPOS_GLUE_RE.finditer(masked)
+            # ``ar`` inside ``tar``/``rar`` and ``rar`` inside ``w7.rar``
+            # would double-count — drop the glue event when the token's
+            # head already produced a real opener event.
+            if _tok_head(m.start())
+            not in {
+                om.start()
+                for om in _BASH_MUTATING_OPENER_RE.finditer(masked)
+                if om.group("verb") is not None
+            }
+        ]
+        + [
+            (m.start(), "as", m)
+            for m in _ASSIGN_RE.finditer(masked)
+            if not _in_quotes(m.start()) and _assign_prefix_ok(m.start())
+        ]
+    )
+    # The outside-workdir refusal is per event: every opener that still
+    # mutates at dispatch end records the directory in force when it
+    # *started* — a later ``cd`` cannot launder an earlier write.
+    mut_dirs: list[str] = []
+    ev_dir: str | None = None
+    ev_mut = False
+    prev_mut = False
+    redir_hit = False
+
+    def _read_only() -> None:
+        # A verb branch that verified it writes nothing reverts the
+        # event's mutating flag; a redirect target found in the same
+        # segment still counts as a write.
+        nonlocal mutating, ev_mut
+        mutating = prev_mut
+        ev_mut = redir_hit
+
+    for _, kind, m in events:
+        if kind == "as":
+            name = m.group("ps") or m.group("sh") or ""
+            value = (
+                m.group("psdq")
+                or m.group("pssq")
+                or m.group("psbare")
+                or m.group("shdq")
+                or m.group("shsq")
+                or m.group("shval")
+                or ""
+            )
+            if name and m.group("shansi") is None:
+                # ANSI-C ``$'...'``/locale ``$"..."`` values cannot be
+                # expanded statically — leave the name untracked so a
+                # later reference fails closed. ``$env:X = v`` binds the
+                # ``env:`` namespace only — a bare ``X=v`` is not an env
+                # assignment in any dialect and must not satisfy it.
+                key = ("env:" if m.group("psenv") else "") + name.lower()
+                shell_vars[key] = value
+            continue
+        # Flush the previous event's mutating directory, then record the
+        # directory in force as this event starts — its relative writes
+        # resolve against it even if a later ``cd`` moves ``eff_dir``.
+        if ev_mut and ev_dir is not None:
+            mut_dirs.append(ev_dir)
+        ev_dir = eff_dir
+        ev_mut = False
+        redir_hit = False
+        opener = m
+        verb = (opener.group("verb") or "").lower()
+        if verb:
+            # ``cmd.exe``/``powershell.exe`` normalize to their carrier
+            # verb so flag/enc handling stays identical.
+            verb = re.sub(r"\.(?:exe|com|bat|cmd|ps1)$", "", verb)
+        seg = (
+            opener.group("verbseg")
+            or opener.group("redirseg")
+            or opener.group("dotnetseg")
+            or ""
+        )
+        # A verb reached through ``|`` receives stdin from the previous
+        # stage; shells/interpreters can then run an unseen payload.
+        sep_pos = max(masked.rfind(c, 0, m.start()) for c in ";|&\n")
+        piped = sep_pos >= 0 and masked[sep_pos] == "|"
+        piped = piped or _piped
+        if verb in _CMDPOS_ONLY_VERBS and not _command_slot_ok(m.start()):
+            # ``echo ar``/``npm start``/``docker start web`` — the word
+            # is an argument, not an invocation.
+            continue
+        # Redirect targets swallowed inside a verb's own segment (``tar
+        # -tf a > out``, ``echo hi 2> e.txt``) are writes no per-verb
+        # branch sees. ``2>&1``/``>&-`` duplicate a descriptor; ``NUL``
+        # and ``/dev/*`` sinks discard — none are file targets.
+        seg_src = (
+            "verbseg"
+            if opener.group("verbseg") is not None
+            else "redirseg"
+            if opener.group("redirseg") is not None
+            else "dotnetseg"
+        )
+        seg_abs = (
+            opener.start(seg_src)
+            if opener.group(seg_src) is not None
+            else opener.end()
+        )
+        for rdm in re.finditer(r"(?:\d|[*&])?>{1,2}\|?", seg):
+            if _in_quotes(seg_abs + rdm.start()):
+                continue
+            rest = seg[rdm.end() :]
+            if re.match(r"[ \t]*&[-\d]", rest):
+                continue
+            tm = re.match(
+                r"[ \t]*('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)", rest
+            )
+            if tm is None:
+                continue
+            rtarget = tm.group(1).strip("'\"")
+            if re.match(
+                r"(?i)(?:nul|/dev/(?:null|stdout|stderr))$", rtarget
+            ):
+                continue
+            mutating = True
+            redir_hit = True
+            _check(rtarget)
+        # ``mutating`` means this invocation writes — a read-only branch
+        # restores the snapshot so earlier events keep their flag.
+        prev_mut = mutating
+        mutating = True
+        ev_mut = True
+        if opener.group("dotnetcall") is not None:
+            # ``[IO.File]::WriteAllText(path, x)`` / ``$x.Save(path)`` /
+            # ``New-Object IO.StreamWriter path`` write without any shell
+            # verb. Literals are masked out of ``seg`` — scan the raw
+            # span: a non-content call must take only statically
+            # verifiable arguments; every literal and unquoted token in
+            # its argument region is a candidate target.
+            call = (opener.group("dotnetcall") or "").strip()
+            draw = scrubbed[opener.start("dotnetcall") : opener.end()]
+            member = call.rstrip("(").rsplit(":", 1)[-1].rsplit(".", 1)[-1].strip()
+            if call.lower().startswith("new-object"):
+                if not _DOTNET_READER_TYPE_RE.search(draw):
+                    dmasked = re.sub(
+                        r'"[^"]*"|\'[^\']*\'', " ", draw[call.__len__() :]
+                    )
+                    for lit in _STR_LIT_RE.finditer( draw[call.__len__() :]
+                    ):
+                        _check(lit.group(1) or lit.group(2) or "")
+                    for tok in _PATH_TOKEN_RE.finditer(dmasked):
+                        t = tok.group("t").rstrip("\\/") or tok.group("t")[:1]
+                        if not t.startswith(("-", "+")):
+                            _check(t)
+                continue
+            dirty = call if not _DOTNET_CONTENT_RE.match(member) else ""
+            if dirty:
+                for cm in re.finditer(r"(?<![\w$])(\w+)\s*\(", draw):
+                    if _DOTNET_CONTENT_RE.match(cm.group(1)):
+                        continue
+                    region = _code_arg_region(draw, cm.end())
+                    work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
+                    work = _code_lit_strip(work)
+                    if _CODE_DYN_RE.search(work):
+                        blocked.append(member)
+                        break
+                    bad_arg = False
+                    for arg in work.split(","):
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            blocked.append(member)
+                            bad_arg = True
+                            break
+                    if bad_arg:
+                        break
+                    for lit in _STR_LIT_RE.finditer( region
+                    ):
+                        _check(lit.group(1) or lit.group(2) or "")
+                    for tok in _PATH_TOKEN_RE.finditer(work):
+                        t = tok.group("t").rstrip("\\/") or tok.group("t")[:1]
+                        if not t.startswith(("-", "+")):
+                            _check(t)
+            continue
+        if verb == "for":
+            # ``for X in GLOB; do <verb>`` — the loop var binds to iterated
+            # names, so a mutating body makes the ``in`` set the write
+            # source. Register the var as a basename placeholder and check
+            # the glob; ``/f`` iterates command output (unverifiable) and
+            # ``/r <dir>`` iterates the rooted tree.
+            var_m = re.match(r"\s*[%$]?([^\W\d]\w*)\s+in\b", seg)
+            if var_m:
+                shell_vars[var_m.group(1).lower()] = "x"
+            # The mutating body lives past ``do``/``;`` — check the
+            # segment plus whatever follows this verb's span.
+            if _MUT_VERB_WORDS_RE.search(seg + masked[opener.end() :]):
+                flag = re.match(r"\s*/([A-Za-z])", seg)
+                if flag and flag.group(1).lower() == "f":
+                    blocked.append(verb)
+                    continue
+                if flag and flag.group(1).lower() == "r":
+                    root = re.search(
+                        r"(?i)/r(?:oot)?\s+(?:root=)?([^\s'\"()]+)", seg
+                    )
+                    if root is None:
+                        blocked.append(verb)
+                        continue
+                    _check(root.group(1))
+                in_m = re.search(r"(?i)\bin\s+\(?([^\s;'\"()]+)", seg)
+                if in_m is None:
+                    blocked.append(verb)
+                    continue
+                _check(in_m.group(1))
+            # ``do del C:\x`` sits inside this verb's segment — rescan so
+            # the body verb still gets its own check.
+            _rescan_tail(seg)
+            continue
+        if verb in _POP_VERBS:
+            _rescan_tail(seg)
+            if dir_stack:
+                eff_dir = dir_stack.pop()
+                _read_only()
+            else:
+                # ``popd`` on an empty stack fails in the shell — the
+                # resulting directory is unverifiable, so fail closed.
+                blocked.append(verb)
+            continue
+        tokens = list(_PATH_TOKEN_RE.finditer(seg))
+        if verb in _CD_VERBS or verb in _PUSH_VERBS:
+            # Navigation itself writes nothing; a resolvable literal
+            # target only moves ``eff_dir``/``dir_stack`` so later events
+            # are checked against the directory they actually run in.
+            if not tokens:
+                # Bare cd/pushd heads to the profile dir — unverifiable,
+                # so fail closed.
+                blocked.append(verb)
+                continue
+            target = next(
+                (
+                    match.group("t")
+                    for match in tokens
+                    if not match.group("t").startswith(("-", "+"))
+                ),
+                None,
+            )
+            if target is None:
+                # ``cd -``/``cd -L`` and other flag-only forms retarget to
+                # OLDPWD/HOME — unverifiable, so fail closed.
+                blocked.append(verb)
+                continue
+            target = target.rstrip("\\/") or target[:1]
+            resolved = _resolve_value(target)
+            if (
+                resolved is not None
+                and (os.environ.get("CDPATH") or shell_vars.get("cdpath"))
+                and not _ABS_FORM_RE.match(target)
+            ):
+                # CDPATH can re-root a relative cd anywhere; unverifiable.
+                blocked.append(target)
+                continue
+            if resolved is None:
+                # ``cd $x`` — the landing directory is unverifiable.
+                blocked.append(target)
+                continue
+            if verb in _PUSH_VERBS:
+                dir_stack.append(eff_dir)
+            eff_dir = os.path.normpath(resolved)
+            _rescan_tail(seg)
+            _read_only()
+            continue
+        if verb == "find":
+            if _FIND_MUT_FLAGS_RE.search(seg):
+                blocked.append(verb)
+            else:
+                _rescan_tail(seg)
+            continue
+        if verb == "start" and re.match(
+            r"\s*-(?!(?i:process)\b)([A-Za-z]+)\b", seg.lstrip("'\"")
+        ):
+            # ``Start-<Noun>`` with Noun != Process is a different cmdlet,
+            # not the cmd/PS ``start`` carrier — it does not invoke a
+            # program, so it is not mutating per se.
+            snoun = re.match(
+                r"\s*-([A-Za-z]+)\b", seg.lstrip("'\"")
+            ).group(1).lower()
+            _read_only()
+            if snoun == "transcript":
+                mutating = True
+                ev_mut = True
+                tval = re.search(
+                    r"(?i)-(?:literalpath|path|outputdirectory)"
+                    r"\s*[:=]?\s*('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                    seg,
+                )
+                if tval:
+                    _check(tval.group(1).strip("'\""))
+                else:
+                    ptok = re.match(
+                        r"\s*-[A-Za-z]+\s+"
+                        r"('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                        seg,
+                    )
+                    if ptok and not ptok.group(1).startswith(("-", "/")):
+                        _check(ptok.group(1).strip("'\""))
+            elif snoun == "bitstransfer":
+                mutating = True
+                ev_mut = True
+                dval = re.search(
+                    r"(?i)-destination\s*[:=]?\s*"
+                    r"('[^']*'|\"[^\"]*\"|[^\s'\";|&]+)",
+                    seg,
+                )
+                if dval:
+                    _check(dval.group(1).strip("'\""))
+                else:
+                    btoks = [
+                        t.strip("'\"")
+                        for t in re.findall(
+                            r'"[^"]*"|\'[^\']*\'|\S+', seg
+                        )
+                        if not t.startswith("-")
+                    ]
+                    if len(btoks) >= 2:
+                        _check(btoks[1])
+            elif snoun in ("job", "threadjob"):
+                mutating = True
+                ev_mut = True
+                sblock = re.search(
+                    r"(?i)-scriptblock\s+(\{[^{}]*\}|\S+)", seg
+                )
+                if sblock is None:
+                    sblock = re.search(r"\{[^{}]*\}", seg)
+                if sblock is not None:
+                    for hit in find_bash_disallowed_write_paths(
+                        sblock.group(0).strip("{}'\" "),
+                        config,
+                        workdir=eff_dir,
+                        _depth=_depth + 1,
+                        _piped=piped,
+                    ):
+                        if hit not in blocked:
+                            blocked.append(hit)
+                else:
+                    blocked.append("<opaque:start-process>")
+            continue
+        if verb in ("start", "start-process", "saps"):
+            # ``start``/``Start-Process`` launch a program: extract the
+            # program and its argument list, fail closed when either
+            # hides behind a variable/expression, else rescan ``program
+            # args`` as a command. cmd ``start`` strips an optional
+            # quoted window title and ``/flags`` (``/d DIR`` consumes DIR).
+            # A quoted verb path leaves its closing quote at the head of
+            # ``seg`` (``& "…\start.exe" args``) — drop it first.
+            stoks = re.findall(
+                r'"[^"]*"|\'[^\']*\'|\S+', seg.lstrip("'\"")
+            )
+            program = ""
+            sargs: list[str] = []
+            sworkdir: str | None = None
+            sredir: list[str] = []
+            si = 0
+            while si < len(stoks):
+                stok = stoks[si]
+                slow = stok.lower()
+                glued = re.match(
+                    r"(?i)^-(filepath|argumentlist|workingdirectory|wd|"
+                    r"redirectstandardoutput|redirectstandarderror|"
+                    r"redirectstandardinput)[:=](.*)$",
+                    stok,
+                )
+                if glued:
+                    gname = glued.group(1).lower()
+                    gval = glued.group(2)
+                    if gname == "filepath":
+                        program = gval
+                    elif gname == "argumentlist":
+                        if gval:
+                            sargs.append(gval)
+                    elif gname in ("workingdirectory", "wd"):
+                        sworkdir = gval
+                    elif gname == "redirectstandardinput":
+                        # Reads the file, does not write it.
+                        pass
+                    elif gval:
+                        sredir.append(gval)
+                    si += 1
+                    continue
+                if slow in (
+                    "-filepath",
+                    "-argumentlist",
+                    "-workingdirectory",
+                    "-wd",
+                    "-redirectstandardoutput",
+                    "-redirectstandarderror",
+                    "-redirectstandardinput",
+                ):
+                    sval = stoks[si + 1] if si + 1 < len(stoks) else None
+                    if slow == "-filepath":
+                        if sval is not None:
+                            program = sval
+                    elif slow == "-argumentlist":
+                        if sval is not None:
+                            sargs.append(sval)
+                    elif slow in ("-workingdirectory", "-wd"):
+                        sworkdir = sval
+                    elif slow == "-redirectstandardinput":
+                        pass
+                    elif sval is not None:
+                        sredir.append(sval)
+                    si += 2 if sval is not None else 1
+                    continue
+                if stok.startswith(("-", "/")):
+                    if slow == "/d" and si + 1 < len(stoks):
+                        # cmd ``start /d DIR`` sets the child cwd just
+                        # like ``-WorkingDirectory``.
+                        sworkdir = stoks[si + 1]
+                        si += 2
+                    else:
+                        si += 1
+                    continue
+                if (
+                    not program
+                    and verb == "start"
+                    and len(stok) > 1
+                    and stok[0] in "\"'"
+                    and stok[-1] == stok[0]
+                ):
+                    # A quoted first token is the cmd window title.
+                    si += 1
+                    continue
+                if program:
+                    sargs.append(stok)
+                else:
+                    program = stok
+                si += 1
+            # Dynamism is judged on the RAW tokens with PowerShell
+            # quoting rules: single quotes are always literal; double
+            # quotes interpolate ``$``/backtick; unquoted tokens evaluate
+            # ``$``, ``(``, ``)``, ``@(`` and backtick. ``%VAR%``/``!X!``
+            # are left to the rescan's command-slot rule.
+            def _stok_dyn(tok: str) -> bool:
+                if len(tok) > 1 and tok[0] == "'" and tok[-1] == "'":
+                    return False
+                if len(tok) > 1 and tok[0] == '"' and tok[-1] == '"':
+                    return bool(re.search(r"[$`]", tok))
+                return bool(re.search(r"[$`()]", tok))
+
+            def _sdir_dyn(tok: str) -> bool:
+                # The child dir additionally fails closed on cmd-style
+                # expansions — ``start /d %TEMP%``/``!W7_WD!`` expand at
+                # runtime even where PowerShell quoting would not.
+                return bool(re.search(r"[%!]", tok)) or _stok_dyn(tok)
+
+            if (
+                _stok_dyn(program)
+                or any(_stok_dyn(a) for a in sargs)
+                or (sworkdir is not None and _sdir_dyn(sworkdir))
+                or any(_stok_dyn(t) for t in sredir)
+            ):
+                blocked.append("<opaque:start-process>")
+                continue
+            prog_text = program.strip("'\"")
+            # ``-WorkingDirectory``/``start /d`` relocate the child's
+            # cwd: the payload's relative writes resolve against it,
+            # not the parent's ``eff_dir``.
+            child_dir: str | None = None
+            if sworkdir is not None:
+                child_dir = _bash_candidate(
+                    sworkdir.strip("'\""), eff_dir
+                )
+                if child_dir is None:
+                    blocked.append("<opaque:start-process>")
+                    continue
+            # ``-RedirectStandardOutput``/``-RedirectStandardError``
+            # write in the parent location; ``-RedirectStandardInput``
+            # only reads.
+            if sredir:
+                redir_hit = True
+                mutating = True
+                ev_mut = True
+                for rtarget in sredir:
+                    _check(rtarget.strip("'\""))
+            # Raw tokens keep their quoting so the rescan can pair up
+            # ``-ArgumentList '/c','cmd …'`` array elements — stripping
+            # here would unbalance the quotes and hide the payload.
+            args_text = " ".join(sargs)
+            # The launcher is only as mutating as the program it runs:
+            # ``Start-Process notepad.exe`` mutates nothing itself.
+            smut: list[bool] = []
+            for hit in find_bash_disallowed_write_paths(
+                (prog_text + " " + args_text).strip(),
+                config,
+                workdir=child_dir if child_dir is not None else eff_dir,
+                _depth=_depth + 1,
+                _piped=piped,
+                _mut_out=smut,
+            ):
+                if hit not in blocked:
+                    blocked.append(hit)
+            if smut and smut[0]:
+                # The payload's writes happened in the *child* dir —
+                # record it so an outside child is refused even when the
+                # parent's dir is whitelisted (and vice versa: redirect
+                # targets stay charged to the parent ``ev_dir``).
+                if child_dir is not None:
+                    mut_dirs.append(child_dir)
+            else:
+                _read_only()
+            continue
+        if verb == "rar":
+            # ``rar a|u|m|f ARCHIVE files`` — the archive operand writes;
+            # ``rar x|e ARCHIVE [files] DEST\`` extracts to the trailing
+            # dir token; ``-op<dir>`` prefixes the output path. A quoted
+            # verb path leaves its closing quote at the head of ``seg``.
+            seg = seg.lstrip("'\"")
+            for opm in re.finditer(r"(?i)(?:^|\s)-op([^\s'\"]+)", seg):
+                _check(opm.group(1).strip("'\""))
+            rargs = [
+                t.strip("'\"")
+                for t in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', seg)
+                if not t.startswith(("-", "+"))
+            ]
+            if rargs:
+                rmode = rargs[0][:1].lower()
+                if rargs[0].lower() in ("l", "lt", "lb", "v", "vt", "vb", "t", "p"):
+                    # ``rar l``/``v``/``t``/``p`` list, view and test —
+                    # nothing is written.
+                    _read_only()
+                elif rmode in ("a", "u", "m", "f") and len(rargs) > 1:
+                    _check(rargs[1])
+                elif (
+                    rmode in ("x", "e")
+                    and len(rargs) > 1
+                    and re.search(r"[\\/]$", rargs[-1])
+                ):
+                    _check(rargs[-1].rstrip("\\/") or rargs[-1])
+            continue
+        if verb == "ar":
+            # ``ar rcs ARCHIVE [members]`` — keys r/q/m/d/s write the
+            # archive; ``t``/``p``/``x`` are reads. A quoted verb path
+            # leaves its closing quote at the head of ``seg``.
+            seg = seg.lstrip("'\"")
+            aargs = [
+                t.strip("'\"")
+                for t in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', seg)
+            ]
+            if aargs and all(
+                ch in "tp" for ch in aargs[0].lstrip("-")
+            ):
+                # ``ar t``/``ar p`` list and print members — reads only.
+                _read_only()
+            elif len(aargs) > 1 and re.search(
+                r"[rqmds]", aargs[0].lstrip("-")
+            ):
+                _check(aargs[1])
+            continue
+        if verb in _CARRIER_VERBS and not seg.startswith((".", "(")):
+            # ``time.sleep(3)`` is a call expression, not the ``time``
+            # carrier — a ``.``/``(`` suffix means no command tail.
+            if verb in _ENCODED_CARRIERS and _ENC_FLAG_RE.search(seg):
+                blocked.append(verb)
+                continue
+            # Rescan the RAW segment text, not the masked ``seg``: the
+            # quote mask rewrites ``\n``/``;``/``&`` inside quotes, which
+            # would destroy heredoc bodies and pipelines inside a
+            # carrier payload (``bash -c 'cat <<EOF\nrm x\nEOF'``).
+            tail = scrubbed[seg_abs : seg_abs + len(seg)].strip()
+            # Unwrap only a fully-quoted payload (``iex 'rm x'``); blind
+            # stripping would unbalance quotes inside e.g. ``cmd /c``.
+            if len(tail) > 1 and tail[0] in "\"'" and tail[0] == tail[-1]:
+                tail = tail[1:-1]
+            else:
+                # ``bash -c 'code'``/``cmd /c "code"``/``powershell -Command
+                # "code"`` — the code flag's quoted operand IS the payload;
+                # unwrap it so the rescan sees its operators unquoted.
+                # ``-Command`` (single dash, PowerShell) needs its own
+                # alternative: ``-[ce]`` alone would consume only ``-C``
+                # and fail the quote lookahead at ``ommand``.
+                cqm = re.match(
+                    r"(?is)^\s*(?:(?:-{1,2}|/)[\w?+-]+\s+)*?"
+                    r"(?:-{1,2}command\b|--eval|-[ce]|/[ck])[\s,]*"
+                    r"(['\"])((?:\\.|(?!\1).)*)\1\s*$",
+                    tail,
+                )
+                if cqm:
+                    tail = cqm.group(2)
+            resolved = tail
+            # A non-literal command slot inside the payload (``iex $x``,
+            # ``cmd /c %X%``) is refused by the command-slot check in the
+            # rescan — no resolution attempt.
+            if resolved and _depth >= _MAX_CARRIER_DEPTH:
+                blocked.append(verb)
+                continue
+            if piped and verb in _STDIN_EXECUTORS:
+                nonflag_words = [
+                    w for w in resolved.split()
+                    if not w.startswith(("-", "+", "/"))
+                ]
+                # A piped executor with no visible command runs its stdin;
+                # ssh/at/batch consume the first token themselves.
+                needed = 2 if verb in _STDIN_TWO_ARG else 1
+                if len(nonflag_words) < needed:
+                    blocked.append(verb)
+                    continue
+            smut: list[bool] = []
+            sub = find_bash_disallowed_write_paths(
+                resolved,
+                config,
+                workdir=eff_dir,
+                _depth=_depth + 1,
+                _piped=piped,
+                _mut_out=smut,
+            )
+            if sub:
+                blocked.append(verb)
+                for hit in sub:
+                    if hit.startswith("<opaque:") and hit not in blocked:
+                        blocked.append(hit)
+                continue
+            payload_mut = bool(smut and smut[0])
+            # A quoted string inside the tail is itself a nested command
+            # (``cmd /c 'echo x > C:\x'``) — the rescan masks its ``>`` as
+            # quoted, so rescan each literal's inner text directly.
+            lit_hit = False
+            if resolved and _depth < _MAX_CARRIER_DEPTH:
+                for lit in _STR_LIT_RE.finditer(resolved):
+                    inner = (lit.group(1) or lit.group(2) or "").strip()
+                    if not inner or not (
+                        _MUT_VERB_WORDS_RE.search(inner)
+                        or re.search(r"[>|;&`$]", inner)
+                    ):
+                        continue
+                    # A literal that is wholly a ``$(…)``/`` `…` `` substitution
+                    # sat in *argument* position inside the payload — its body
+                    # is what executes (``sh -c 'test "$(cat f)" = ok'`` runs
+                    # ``cat``, the substitution itself is not a command slot).
+                    # Rescanning the bare wrapper puts ``$(`` at command
+                    # position and fails closed on read-only checks. Rescan the
+                    # body instead: writes inside (``$(rm /x)``) still block —
+                    # reported as the real path, not the opaque ``$(``.
+                    whole_sub = re.fullmatch(
+                        r"\$\((?P<dollar>[\s\S]+)\)|`(?P<tick>[\s\S]+)`",
+                        inner,
+                    )
+                    if whole_sub:
+                        inner = (
+                            whole_sub.group("dollar") or whole_sub.group("tick") or ""
+                        ).strip()
+                        if not inner:
+                            continue
+                    lmut: list[bool] = []
+                    lsub = find_bash_disallowed_write_paths(
+                        inner,
+                        config,
+                        workdir=eff_dir,
+                        _depth=_depth + 1,
+                        _piped=piped,
+                        _mut_out=lmut,
+                    )
+                    if lsub:
+                        blocked.append(verb)
+                        for hit in lsub:
+                            if hit.startswith("<opaque:") and hit not in blocked:
+                                blocked.append(hit)
+                        lit_hit = True
+                        break
+                    if lmut and lmut[0]:
+                        payload_mut = True
+            if lit_hit:
+                continue
+            # No nested verbs — the payload's first non-flag token may be
+            # a script file (``cmd /c x.bat``). Only a file-looking token
+            # counts: it contains a path separator or ends in an
+            # extension. Plain words (``echo hi``, ``dir``) are not
+            # paths. A script file's internal writes are unverifiable,
+            # so it keeps the carrier mutating.
+            script_file = False
+            if resolved:
+                for token in _PATH_TOKEN_RE.finditer(resolved):
+                    t = token.group("t").rstrip("\\/") or token.group("t")[:1]
+                    if t.startswith(("-", "+")) or re.match(
+                        r"^/[A-Za-z](?::|$)", t
+                    ):
+                        continue
+                    if (
+                        "/" not in t
+                        and "\\" not in t
+                        and not re.search(r"\.\w{1,5}$", t)
+                    ):
+                        break
+                    script_file = True
+                    _check(t)
+                    break
+            # ``bash <<EOF``/``env python - <<PY`` — the heredoc body is
+            # the executed payload. A wrapped owner (``env bash``) is
+            # swallowed inside the wrapper's verbseg, so the feed is
+            # keyed at the first event-producing word and dispatched
+            # here: shell bodies rescan as commands; interpreter bodies
+            # go through the ``-c`` inline-code checks.
+            hd = heredoc_feed.get(opener.start())
+            if hd is not None and _depth < _MAX_CARRIER_DEPTH:
+                hkind, howner, hbs, hbe = hd
+                if hkind == "interp":
+                    hbody = "\n".join(
+                        re.sub(
+                            r"//.*$" if howner in _HEREDOC_JS else r"#.*$",
+                            "",
+                            ln,
+                        )
+                        for ln in scrubbed[hbs:hbe].split("\n")
+                    )
+                    hsrc = howner + ' -c "' + hbody.replace(
+                        "\\", "\\\\"
+                    ).replace('"', '\\"') + '"'
+                else:
+                    hsrc = scrubbed[hbs:hbe]
+                hmut: list[bool] = []
+                hsub = find_bash_disallowed_write_paths(
+                    hsrc,
+                    config,
+                    workdir=eff_dir,
+                    _depth=_depth + 1,
+                    _piped=piped,
+                    _mut_out=hmut,
+                )
+                if hsub:
+                    blocked.append(verb)
+                    for hit in hsub:
+                        if hit.startswith("<opaque:") and hit not in blocked:
+                            blocked.append(hit)
+                    continue
+                if hmut and hmut[0]:
+                    payload_mut = True
+            if not payload_mut and not script_file:
+                # ``cmd /c echo hi`` launches a read-only payload — the
+                # carrier itself mutates nothing.
+                _read_only()
+            continue
+        if verb in _INTERP_VERBS:
+            # ``python - <<PY``/``node <<EOF`` run the heredoc body as
+            # code — rescan it as a synthesized ``-c`` payload so the
+            # interpreter inline-code checks apply unchanged. ``#`` and
+            # ``//`` comments are data.
+            hd = heredoc_feed.get(opener.start())
+            if hd is not None and hd[0] == "interp":
+                if _depth >= _MAX_CARRIER_DEPTH:
+                    blocked.append(verb)
+                    continue
+                hbody = "\n".join(
+                    re.sub(
+                        r"//.*$" if hd[1] in _HEREDOC_JS else r"#.*$",
+                        "",
+                        ln,
+                    )
+                    for ln in scrubbed[hd[2] : hd[3]].split("\n")
+                )
+                icode = hbody.replace("\\", "\\\\").replace('"', '\\"')
+                hmut: list[bool] = []
+                hsub = find_bash_disallowed_write_paths(
+                    hd[1] + ' -c "' + icode + '"',
+                    config,
+                    workdir=eff_dir,
+                    _depth=_depth + 1,
+                    _piped=piped,
+                    _mut_out=hmut,
+                )
+                if hsub:
+                    blocked.append(verb)
+                    for hit in hsub:
+                        if hit.startswith("<opaque:") and hit not in blocked:
+                            blocked.append(hit)
+                    continue
+                if not (hmut and hmut[0]):
+                    _read_only()
+                continue
+        if verb in _INTERP_VERBS and _INTERP_CODE_FLAG_RE.search(seg):
+            # Literals come from the unmasked ``scrubbed`` span — ``seg``
+            # blanks ``;`` inside quotes, which would corrupt code-level
+            # statement splitting.
+            raw_seg = (
+                scrubbed[opener.start("verbseg") : opener.end("verbseg")]
+                if opener.group("verbseg") is not None
+                else seg
+            )
+            lit_texts = [
+                (lit.group(1) or lit.group(2) or "").strip()
+                for lit in _STR_LIT_RE.finditer( raw_seg)
+            ]
+            # ``name = expr`` bindings inside the code string are statically
+            # visible — ``p='ok.txt'; Path(p).unlink()`` resolves, while
+            # ``p=Path(env); p.unlink()`` fails closed. Extracted from the
+            # raw literal text because ``seg`` masks ``;`` inside quotes.
+            code_src = " ".join(lit_texts)
+            code_vars = {}
+            for am in re.finditer(
+                r"(?<![\w.])([A-Za-z_]\w*)\s*"
+                r"(<<=|>>=|\+=|-=|\.=|\*=|/=|%=|\|=|&=|\^=|=)"
+                r"(?!=)\s*([^;\n]+)",
+                code_src,
+            ):
+                name, op, value = am.groups()
+                if op == "=":
+                    code_vars[name] = value
+                    continue
+                prev = code_vars.get(name, "")
+                pm = re.fullmatch(r"['\"]([^'\"]*)['\"]", prev.strip())
+                vm = re.fullmatch(r"['\"]([^'\"]*)['\"]", value.strip())
+                if pm and vm and op in ("+=", ".="):
+                    # ``x='ok'; x+='/sub'`` — pure literal concatenation
+                    # stays statically checkable.
+                    code_vars[name] = repr(pm.group(1) + vm.group(1))
+                else:
+                    # ``x+=expr`` with a runtime side — bind a poisoned
+                    # expression so later lookups fail closed.
+                    code_vars[name] = value.strip() + "+"
+            for wm in re.finditer(
+                r"(?<![\w])(?:with|except)\s+([^;\n]*?)\s+as\s+"
+                r"([A-Za-z_]\w*)",
+                code_src,
+            ):
+                code_vars[wm.group(2)] = wm.group(1).strip() or "?"
+            any_api = bool(
+                _CODE_MUT_RE.search(seg)
+                or _CODE_DISP_CALL_RE.search(seg)
+                or any(
+                    _CODE_CALLABLE_REF_RE.search(
+                        _code_lit_strip(v).strip()
+                    )
+                    for v in code_vars.values()
+                )
+            )
+            if any_api:
+                # Each write-API's *target* argument must be a plain
+                # literal — a computed expression (env/argv/transforms/
+                # calls) produces the path at runtime, so fail closed.
+                # Content arguments (``f.write(data)``) and literals the
+                # code passes through stay allowed and still get checked
+                # as paths by the literal loop below.
+                dirty = False
+                seen_api = False
+
+                def _lookup(name: str, _vars: dict = code_vars):
+                    v = _vars.get(name)
+                    if v is None:
+                        v = shell_vars.get(name)
+                    return v
+
+                def _tail_dirty(tail: str) -> bool:
+                    """Check a producer/receiver expression.
+
+                    Literals get path-checked, call args get the literal-only
+                    rule, and a bare name/attribute chain must resolve to a
+                    statically known value.
+                    """
+                    # ``r``/``b``/``u`` literal prefixes are quoting syntax,
+                    # not names — without this ``Path(r'x')`` reads ``r`` as
+                    # an unresolvable variable and fails closed.
+                    tail = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", tail)
+                    t_lits = [
+                        t.strip("\"'")
+                        for t in _lit_contents( tail
+                        )
+                    ]
+                    t_clean = _code_lit_strip(tail)
+                    if _CODE_DYN_RE.search(t_clean):
+                        return True
+                    if re.search(r"[(\[{'\"=]", t_clean):
+                        for cm in re.finditer(
+                            r"[\w.]+\s*\(((?:[^()]|\([^()]*\))*)\)",
+                            tail,
+                        ):
+                            cwork = _code_lit_strip(cm.group(1),
+                            )
+                            if _arg_dirty(cwork, cwork.split(",")):
+                                return True
+                    else:
+                        hn = re.match(r"([A-Za-z_]\w*)", tail.strip())
+                        if hn:
+                            hv = _lookup(hn.group(1))
+                            if hv is None or _CODE_DYN_RE.search(
+                                _code_lit_strip(hv
+                                )
+                            ):
+                                return True
+                            for hl in _lit_contents( hv
+                            ):
+                                _check(hl.strip("\"'"))
+                    for lit in t_lits:
+                        _check(lit)
+                    return False
+
+                def _arg_dirty(work: str, check_args: list) -> bool:
+                    """Non-literal argument in a target position → dirty."""
+                    if _CODE_DYN_RE.search(work):
+                        return True
+                    for arg in check_args:
+                        aval = arg.strip()
+                        bound = None
+                        if re.fullmatch(r"[A-Za-z_]\w*", aval):
+                            bound = _lookup(aval)
+                        if bound is not None:
+                            # ``p=Path(env); Path(p).m()`` — substitute the
+                            # tracked value for the bare-name argument.
+                            aval = bound
+                            if _CODE_DYN_RE.search(
+                                _code_lit_strip(aval)
+                            ):
+                                return True
+                            sub_lits = [
+                                t.strip("\"'")
+                                for t in _lit_contents( aval
+                                )
+                            ]
+                            if sub_lits:
+                                for lit in sub_lits:
+                                    _check(lit)
+                                continue
+                            arg = aval
+                            if re.fullmatch(
+                                r"[^\s'\"|;>&(,)\[\]{}+*%/^~!-]+", arg
+                            ):
+                                # A plain tracked string value is a
+                                # literal target — check it as a path.
+                                _check(arg)
+                                continue
+                        stripped = re.sub(r"[-+]?\d[\d_]*", "", arg)
+                        stripped = re.sub(r"\b\w+\s*=", "", stripped)
+                        if re.search(r"[(\[{+*%/&|^~<>!-]|\w", stripped):
+                            return True
+                    return False
+
+                for api in _CODE_TARGET_API_RE.finditer(seg):
+                    seen_api = True
+                    region = _code_arg_region(seg, api.end())
+                    # Strip string literals (and their b/r/u prefixes —
+                    # ``f`` stays, so f-strings still fail closed) before
+                    # inspecting the argument expression: literal text such
+                    # as ``'ok.pdf'`` is data, not computed code.
+                    work = re.sub(r"(?i)(?<![\w])[bru]+(?=['\"])", "", region)
+                    work = _code_lit_strip(work)
+                    args = work.split(",")
+                    if _arg_dirty(
+                        work,
+                        args[:2] if api.group(1).lower() in _TWO_TARGET_APIS else args[:1],
+                    ):
+                        dirty = True
+                        break
+                # ``Path(args).method()`` receiver args and the args of a
+                # dispatched ``getattr(...)()/exec(...)()`` call are write
+                # targets too — same literal-only rule.
+                for recv in _CODE_RECV_RE.finditer(seg):
+                    seen_api = True
+                    # The receiver expression is a path producer — route
+                    # it through ``_tail_dirty`` so ``Path('ok')/'x'``
+                    # literals stay allowed while ``Path(env)`` fails.
+                    rwork = re.sub(
+                        r"(?i)(?<![\w])[bru]+(?=['\"])", "", recv.group(1)
+                    )
+                    if _tail_dirty(rwork):
+                        dirty = True
+                        break
+                    # Producer chain: in ``Path(env).with_name('x').write_text``
+                    # the matched head is ``with_name`` — the real target
+                    # producer (``Path(env)``) sits upstream of the match.
+                    tail = re.split(r"[;\n]", seg[: recv.start()])[-1]
+                    tail = re.split(r"(?<![=!<>])=(?!=)", tail)[-1].strip()
+                    if tail.endswith("."):
+                        tail = tail[:-1].strip()
+                    if tail and _tail_dirty(tail):
+                        dirty = True
+                        break
+                for recv in _CODE_NAMERECV_RE.finditer(seg):
+                    # ``p.unlink()`` — a bare-name receiver that mutates
+                    # the path it holds; the name must resolve to a
+                    # statically checkable value. Module heads like
+                    # ``os.unlink`` are API calls, not receivers.
+                    seen_api = True
+                    name = recv.group(1)
+                    head = name.split(".")[0].strip()
+                    if head.lower() in _CODE_NAMERECV_HEADS:
+                        continue
+                    value = _lookup(head)
+                    if value is None:
+                        dirty = True
+                        break
+                    if _CODE_DYN_RE.search(
+                        _code_lit_strip(value)
+                    ):
+                        dirty = True
+                        break
+                    n_lits = [
+                        t.strip("\"'")
+                        for t in _lit_contents( value)
+                    ]
+                    if not n_lits:
+                        dirty = True
+                        break
+                    for lit in n_lits:
+                        _check(lit)
+                    if re.search(
+                        r"(?i)\.(?:rename|replace|move|copy|link_to|"
+                        r"symlink_to|hardlink_to|extract|extractall)\s*\($",
+                        seg[: recv.end()],
+                    ):
+                        # ``p.rename(dst)`` — the destination argument is
+                        # a write target too.
+                        dregion = _code_lit_strip(
+                            _code_arg_region(seg, recv.end())
+                        )
+                        if _arg_dirty(dregion, dregion.split(",")[:1]):
+                            dirty = True
+                            break
+                for precv in _CODE_PAREN_RECV_RE.finditer(seg):
+                    # ``(expr).method()`` / ``arr[i].method()`` — the
+                    # bracketed receiver expression is the write target.
+                    seen_api = True
+                    depth2 = 0
+                    open_i = -1
+                    for j in range(precv.start(), -1, -1):
+                        if seg[j] in ")]":
+                            depth2 += 1
+                        elif seg[j] in "([":
+                            depth2 -= 1
+                            if depth2 == 0:
+                                open_i = j
+                                break
+                    if open_i < 0:
+                        dirty = True
+                        break
+                    inner = seg[open_i + 1 : precv.start()]
+                    if inner.strip() and _tail_dirty(inner):
+                        dirty = True
+                        break
+                    # The expression before the bracket decides the head —
+                    # ``arr[i]`` needs ``arr`` resolved; ``f()`` needs ``f``
+                    # bound (or a known path constructor).
+                    phead = seg[:open_i].rstrip()
+                    hm = re.search(r"([A-Za-z_]\w*(?:\.\w+)*)\s*$", phead)
+                    if hm and phead[: hm.start()].rstrip().endswith("."):
+                        # ``expr.attr(...)`` — the head is an attribute
+                        # hanging off a preceding expression; judge that
+                        # expression as the producer instead
+                        # (``Path('ok').with_name('x')``).
+                        ptail = phead[: hm.start()].rstrip()[:-1]
+                        ptail = re.split(r"[;\n]", ptail)[-1]
+                        ptail = re.split(
+                            r"(?<![=!<>])=(?!=)", ptail
+                        )[-1].strip()
+                        if ptail and _tail_dirty(ptail):
+                            dirty = True
+                            break
+                    elif hm:
+                        hname = hm.group(1).lower()
+                        hbase = hname.split(".")[0]
+                        if (
+                            hname not in _CODE_RECV_CTORS
+                            and hbase not in _CODE_NAMERECV_HEADS
+                        ):
+                            hv = _lookup(hbase)
+                            if hv is None or _CODE_DYN_RE.search(
+                                _code_lit_strip(hv
+                                )
+                            ):
+                                dirty = True
+                                break
+                for disp in _CODE_DISP_CALL_RE.finditer(seg):
+                    # ``getattr(os,'remove')(target)`` — the dispatched
+                    # call's argument region is the target.
+                    region = _code_arg_region(seg, disp.end())
+                    dwork = re.sub(
+                        r"(?i)(?<![\w])[bru]+(?=['\"])", "", region
+                    )
+                    dwork_lits = _lit_contents( dwork
+                    )
+                    dwork = _code_lit_strip(dwork)
+                    if not dwork.strip() and not dwork_lits:
+                        continue
+                    seen_api = True
+                    if _arg_dirty(dwork, dwork.split(",")):
+                        dirty = True
+                        break
+                    for lit in dwork_lits:
+                        _check(lit.strip("\"'"))
+                for exc in _CODE_EXEC_RE.finditer(seg):
+                    # ``exec(x)`` evaluates code — every argument must be a
+                    # literal whose body carries no write API, dynamic
+                    # source, or nested shell command.
+                    region = _code_arg_region(seg, exc.end())
+                    e_lits = [
+                        t.strip("\"'")
+                        for t in _lit_contents( region
+                        )
+                    ]
+                    ework = _code_lit_strip(region
+                    )
+                    bad = bool(ework.strip())
+                    if not bad:
+                        for lit in e_lits:
+                            if (
+                                _CODE_MUT_RE.search(lit)
+                                or _CODE_DYN_RE.search(lit)
+                                or _MUT_VERB_WORDS_RE.search(lit)
+                            ):
+                                bad = True
+                                break
+                    if bad:
+                        dirty = True
+                        break
+                    seen_api = True
+                for cname, cvalue in code_vars.items():
+                    # ``x = os.remove; x(t)`` — a name bound to a mutating
+                    # callable keeps the literal-only argument rule.
+                    nval = _code_lit_strip(cvalue)
+                    if not _CODE_CALLABLE_REF_RE.search(nval.strip()):
+                        continue
+                    seen_api = True
+                    for call in re.finditer(
+                        r"(?<![\w.])" + re.escape(cname) + r"\s*\(", seg
+                    ):
+                        region = _code_arg_region(seg, call.end())
+                        cw_lits = [
+                            t.strip("\"'")
+                            for t in _lit_contents( region
+                            )
+                        ]
+                        cwork = _code_lit_strip(region
+                        )
+                        seen_api = True
+                        if _arg_dirty(cwork, cwork.split(",")):
+                            dirty = True
+                            break
+                        for lit in cw_lits:
+                            if _MUT_VERB_WORDS_RE.search(lit) and (
+                                _depth < _MAX_CARRIER_DEPTH
+                            ) and find_bash_disallowed_write_paths(
+                                lit,
+                                config,
+                                workdir=eff_dir,
+                                _depth=_depth + 1,
+                            ):
+                                dirty = True
+                                break
+                            _check(lit)
+                    if dirty:
+                        break
+                # The code itself lives inside a quoted literal — strip
+                # the literals nested *inside* the code, not the code
+                # string, before the no-API dynamic check.
+                code_inner = _code_lit_strip(" ".join(lit_texts)
+                )
+                if dirty or (not seen_api and (
+                    not lit_texts or _CODE_DYN_RE.search(code_inner)
+                )):
+                    blocked.append(verb)
+                    continue
+            if not any_api or not seen_api:
+                # The code carries no write-API call (``python -c
+                # "print(1)"``) — the event reverts to read-only so an
+                # outside-workdir invocation does not refuse a read.
+                _read_only()
+            for text in lit_texts:
+                # A literal holding a nested command string recurses —
+                # but a literal that is itself interpreter code (``import
+                # sqlite3``) is not a shell command.
+                if re.match(
+                    r"(?i)\s*(?:import|from|def|class|return|with|while|"
+                    r"if|elif|else|try|except|finally|lambda|global|"
+                    r"nonlocal|print|pass|raise|yield|assert|async|await|"
+                    r"continue|break)\b",
+                    text,
+                ):
+                    continue
+                if text and _MUT_VERB_WORDS_RE.search(text) and (
+                    _depth < _MAX_CARRIER_DEPTH
+                ) and find_bash_disallowed_write_paths(
+                    text, config, workdir=eff_dir, _depth=_depth + 1
+                ):
+                    blocked.append(verb)
+            # Fall through: path tokens in the code get the generic check.
+        cond = _COND_MUT_VERBS.get(verb)
+        if cond:
+            # Glued flag values (``-oFILE``/``-O..\x``) never become
+            # separate tokens — the ``-`` token gets skipped as a flag —
+            # so check whatever clings to the flag directly.
+            for cm in re.finditer(cond, seg, re.IGNORECASE):
+                gm = re.match(
+                    r"([A-Za-z]:[\\/][^\s'\"|;>&]*"
+                    r"|\.{1,2}[\\/][^\s'\"|;>&]*"
+                    r"|[\\/][^\s'\"|;>&]+"
+                    r"|[~$][^\s'\"|;>&]*)",
+                    seg[cm.end() :],
+                )
+                if gm:
+                    _check(gm.group(1))
+        if cond and not re.search(cond, seg, re.IGNORECASE):
+            # Read-only form — but the tail may still carry a real ``>``
+            # (``curl url > /etc/x``) or a program literal that redirects
+            # inside its own language (``awk '{print > "/etc/x"}'``).
+            _rescan_tail(seg)
+            for lit in _STR_LIT_RE.finditer( seg):
+                for gt in re.finditer(
+                    r">{1,2}\s*[\"']?([^\s'\";|&}]+)",
+                    lit.group(1) or lit.group(2) or "",
+                ):
+                    _check(gt.group(1))
+            continue
+        def _cmd_flag(tok: str, _verb: str = verb) -> bool:
+            # ``/x`` is a cmd option only as a whole token — ``/opt/x`` or
+            # ``/etc/x`` carry a second separator and stay POSIX targets.
+            if _verb not in _CMD_VERBS or not tok.startswith("/"):
+                return False
+            if _verb == "sort":
+                # Dual-dialect: only ``/o`` is a flag on sort.
+                return tok.lower() == "/o"
+            return bool(re.match(r"^/[A-Za-z][A-Za-z0-9+]*([:=].+)?$", tok))
+
+        nonflag = [
+            match
+            for match in tokens
+            if not match.group("t").startswith(("-", "+"))
+            and not _cmd_flag(match.group("t"))
+        ]
+        if not nonflag:
+            # A mutating verb with no verifiable target still mutates
+            # (targets can arrive via stdin/xargs) — fail closed.
+            blocked.append(verb)
+            continue
+        # ``-Path:X:\``/``--flag=X:\``/``-flag=/x`` — option-attached
+        # targets: the path-token scan truncates at the ``:`` so the
+        # drive path never becomes a token. Check the flag value
+        # directly, but only when it carries a real path head —
+        # ``-std=c++17``/``-f %E``/``PATH=...`` stay data.
+        for fvm in re.finditer(
+            r"(?i)-{1,2}[A-Za-z][\w-]*[:=]([^\s'\"|;>&=]*)"
+            r"|(?<![\w-])(?:of|if|out|output|target|prefix|chdir|"
+            r"destination|filepath|backup)[:=]([^\s'\"|;>&=]*)"
+            r"|(?<![\w/.-]):([A-Za-z]:[\\/][^\s'\"|;>&=]*)",
+            seg,
+        ):
+            fval = fvm.group(1) or fvm.group(2) or fvm.group(3) or ""
+            if (
+                re.match(r"[A-Za-z]:[\\/]", fval)
+                or fval.startswith(("/", "\\", "~", "$"))
+                or _DOTDOT_SEGMENT_RE.search(fval)
+            ):
+                _check(fval)
+        if verb in ("tar", "bsdtar", "gtar"):
+            # ``tar cfX:\x a`` — the ``f`` flag glues the archive path
+            # with no separator at all.
+            tgl = re.search(
+                r"(?i)(?:^|\s)-?[ctx][a-z]*f([A-Za-z]:[\\/][^\s'\"|;>&]*|\.[^\s'\"|;>&]*"
+                r"|[\\/][^\s'\"|;>&]+)",
+                seg,
+            )
+            if tgl:
+                _check(tgl.group(1))
+            # Old-style mode letters need no dash — the first token is a
+            # cluster when it is pure letters (``tar xPf``, ``tar tf``);
+            # dots, slashes and colons make it a filename or drive spec.
+            first_tok = re.match(r"\s*([^\s'\"]+)", seg)
+            bare_cl = (
+                first_tok.group(1)
+                if first_tok
+                and re.fullmatch(r"[A-Za-z]+", first_tok.group(1))
+                else ""
+            )
+            # GNU getopt accepts any unambiguous option-name prefix — the
+            # typed name only needs to head one real option (``--to-com``
+            # reaches ``--to-command``, ``--xf`` reaches ``--xform``).
+            tar_longs = [
+                lm.group(1).lower()
+                for lm in re.finditer(r"(?i)--([a-z][a-z-]+)", seg)
+            ]
+
+            def _lpre(*opts: str, _longs: tuple = tuple(tar_longs)) -> bool:
+                return any(
+                    o.startswith(n) for o in opts for n in _longs if len(n) >= 2
+                )
+
+            # Payload-executing options hide a command in any mode —
+            # fail closed instead of guessing the payload.
+            if (
+                re.search(r"(?:^|\s)-(?!-)[A-Za-z]*[IF][A-Za-z]*", seg)
+                or re.search(r"[IF]", bare_cl)
+            ) or _lpre(
+                "to-command",
+                "use-compress-program",
+                "checkpoint-action",
+                "info-script",
+                "new-volume-script",
+                "rsh-command",
+                "rmt-command",
+            ):
+                blocked.append("<opaque:tar-exec>")
+                continue
+            # List mode never writes: ``t`` inside a short cluster, a bare
+            # leading ``t`` cluster (``tar tf``), or ``--list``.
+            tar_list = (
+                re.search(r"(?:^|\s)-(?!-)[A-Za-z]*t", seg) is not None
+                or "t" in bare_cl
+                or _lpre("list")
+            )
+            if not tar_list and (
+                re.search(
+                    # Windows ``tar.exe`` IS bsdtar: the ``-s`` rename
+                    # rule applies to every tar verb, glued or separate.
+                    r"(?:^|\s)-(?!-)[A-Za-z]*P[A-Za-z]*"
+                    r"|(?:^|\s)-(?!-)[A-Za-z]*s",
+                    seg,
+                )
+                or "P" in bare_cl
+                or _lpre(
+                    "absolute-names",
+                    "absolute-paths",
+                    "transform",
+                    "xform",
+                    "insecure",
+                )
+            ):
+                # ``-P``/``--absolute-names``/``--transform`` (and bsdtar
+                # ``-s``) let members escape the destination — the real
+                # write root is hidden, so fail closed.
+                blocked.append("<opaque:tar-absolute>")
+                continue
+            # An archive-write mode: ``c``/``r``/``u``/``A`` in a dash
+            # cluster or the bare leading cluster, or a write long-option
+            # (GNU getopt accepts unambiguous ≥2-char prefixes).
+            tar_arch_write = (
+                re.search(r"(?:^|\s)-(?!-)[A-Za-z]*[cruA]", seg)
+                is not None
+                or re.search(r"[cruA]", bare_cl) is not None
+                or _lpre(
+                    "create",
+                    "append",
+                    "update",
+                    "catenate",
+                    "concatenate",
+                    "delete",
+                )
+            )
+            if (
+                (
+                    re.search(r"(?:^|\s)-(?!-)[A-Za-z]*O", seg) is not None
+                    or "O" in bare_cl
+                    or _lpre("to-stdout")
+                )
+                and not tar_arch_write
+            ):
+                # ``-O``/``--to-stdout`` stream members to stdout — the
+                # archive operand is a read — but only when no
+                # archive-write mode is present (``tar -cOf`` creates).
+                _read_only()
+                continue
+            if not re.search(
+                # A write mode is a ``-`` cluster containing c/x/u/r/a
+                # anywhere in the args, or a bare option cluster at the
+                # very start of the segment (``tar cfX:``) — but a bare
+                # ``C:`` drive spec is a path, not a cluster.
+                r"(?i)-[a-z]*[cxura][a-z]*"
+                r"|^\s*[ctxurfeajzJWbmopvdhA]*[cxura][a-z]*(?![a-zA-Z]*:)",
+                seg,
+            ) and not tar_arch_write and not _lpre(
+                "extract",
+                "get",
+            ):
+                # List/diff/verify modes never write — ``tar -tf a.tar``
+                # is a read.
+                _read_only()
+                continue
+        for match in tokens:
+            raw = match.group("t").rstrip("\\/") or match.group("t")[:1]
+            if _cmd_flag(raw):
+                # ``/x`` is a cmd option — a ``/flag:value`` form can
+                # still smuggle the target inside the flag itself.
+                flagval = re.match(r"^/[A-Za-z][A-Za-z0-9+]*[:=](.+)$", raw)
+                if flagval:
+                    _check(flagval.group(1))
+                continue
+            if verb in ("icacls", "cacls") and re.match(r"^[A-Za-z]:$", raw) and re.match(
+                r"[A-Za-z(]", seg[match.end() :].lstrip()[:1] or " "
+            ):
+                # ``u:F``/``u:(OI)(CI)F`` grant strings split into a
+                # bare ``u:`` token and a perm-letter tail — not a drive.
+                continue
+            if re.match(r"^[A-Za-z]:$", raw) and re.search(
+                r"\bas\s+$", seg[: match.start()]
+            ):
+                # ``with open(...) as f:`` — a binding colon in inline
+                # interpreter code, not a drive root.
+                continue
+            if re.match(r"^[A-Za-z]:$", raw):
+                raw += "\\"
+            # Plain relative targets resolve inside the workspace; only
+            # '..' traversal or absolute/env forms need the whitelist check.
+            if (
+                not _ABS_TOKEN_START_RE.match(raw)
+                and not _DOTDOT_SEGMENT_RE.search(raw)
+                and raw != "{}"
+            ):
+                # Flag-joined paths (``of=/dev/sda``) hide the target in a
+                # value; check the right-hand side separately.
+                rhs = raw.split("=", 1)[1] if "=" in raw else ""
+                if _ABS_TOKEN_START_RE.match(rhs) or _DOTDOT_SEGMENT_RE.search(rhs):
+                    _check(rhs)
+                continue
+            _check(raw)
+    if ev_mut and ev_dir is not None:
+        mut_dirs.append(ev_dir)
+    # A directory outside the whitelist makes every relative write
+    # unverifiable — for each event that stayed mutating, refuse the
+    # directory in force when it ran, once each.
+    if _depth == 0:
+        for od in mut_dirs:
+            if (
+                od is not None
+                and not is_write_allowed(od, config)
+                and od not in blocked
+            ):
+                blocked.append(od)
+    if _mut_out is not None:
+        _mut_out.append(mutating or bool(blocked))
     return blocked
 
 

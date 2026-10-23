@@ -1,0 +1,185 @@
+{
+  "schema": "evals-web-results/v1",
+  "cells": [
+    "cli-solo"
+  ],
+  "blocked_cells": {},
+  "records": [
+    {
+      "task_id": "w7c03-c01-hello",
+      "cell": "cli-solo",
+      "category": "coding",
+      "status": "passed",
+      "expect": "pass",
+      "expected_failure": false,
+      "duration_s": 240.059,
+      "token_usage": {
+        "input": 1731070,
+        "output": 16976,
+        "total": 1748046
+      },
+      "cost": {
+        "amount": "3.49609200",
+        "currency": "USD",
+        "source": "price_table",
+        "price_version": "2026-10"
+      },
+      "run_id": "cli-6035827daac34c0581b7ccaa97f05b04",
+      "session_id": "eval-cli-solo-9d6a27d509ab",
+      "trace": {
+        "kind": "in-process",
+        "local_run_id": "cli-6035827daac34c0581b7ccaa97f05b04",
+        "session_id": "eval-cli-solo-9d6a27d509ab",
+        "notifications": 0,
+        "note": "CLI cells have no durable store; see manifest mode_map."
+      },
+      "mode_forcing": {
+        "mode": "solo",
+        "forcing": "agent.run-direct",
+        "detail": "AgentBackend calls AgentV2.run() directly — inherent solo path."
+      },
+      "error": "task timed out after 240s — oracle evaluated on the final workspace state",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "answer_excerpt": ""
+    },
+    {
+      "task_id": "w7c03-c02-calc",
+      "cell": "cli-solo",
+      "category": "coding",
+      "status": "passed",
+      "expect": "pass",
+      "expected_failure": false,
+      "duration_s": 240.012,
+      "token_usage": {
+        "input": 1618679,
+        "output": 16517,
+        "total": 1635196
+      },
+      "cost": {
+        "amount": "3.27039200",
+        "currency": "USD",
+        "source": "price_table",
+        "price_version": "2026-10"
+      },
+      "run_id": "cli-c650fb68088e4b7ca1e8c2dc56cfe0d8",
+      "session_id": "eval-cli-solo-cdd9539d2709",
+      "trace": {
+        "kind": "in-process",
+        "local_run_id": "cli-c650fb68088e4b7ca1e8c2dc56cfe0d8",
+        "session_id": "eval-cli-solo-cdd9539d2709",
+        "notifications": 0,
+        "note": "CLI cells have no durable store; see manifest mode_map."
+      },
+      "mode_forcing": {
+        "mode": "solo",
+        "forcing": "agent.run-direct",
+        "detail": "AgentBackend calls AgentV2.run() directly — inherent solo path."
+      },
+      "error": "task timed out after 240s — oracle evaluated on the final workspace state",
+      "check_details": [
+        {
+          "type": "file_exists",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "file_contains",
+          "passed": true,
+          "message": ""
+        },
+        {
+          "type": "command_succeeds",
+          "passed": true,
+          "message": ""
+        }
+      ],
+      "answer_excerpt": ""
+    },
+    {
+      "task_id": "w7c03-c03-off-by-one",
+      "cell": "cli-solo",
+      "category": "coding",
+      "status": "blocked",
+      "expect": "pass",
+      "expected_failure": false,
+      "duration_s": 0.0,
+      "token_usage": {
+        "input": 0,
+        "output": 0,
+        "total": 0
+      },
+      "cost": null,
+      "run_id": null,
+      "session_id": null,
+      "trace": null,
+      "mode_forcing": {
+        "mode": "solo",
+        "forcing": "agent.run-direct",
+        "detail": "AgentBackend calls AgentV2.run() directly — inherent solo path."
+      },
+      "error": "cell budget exhausted at 3383242 tokens (cap 2000000)",
+      "check_details": [],
+      "answer_excerpt": ""
+    }
+  ],
+  "tasks_per_cell": 3,
+  "workdir_base": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\rxy-w7c03-m8l8ykv2",
+  "manifest": {
+    "schema": "evals-web-manifest/v1",
+    "taskset_sha256": "b5aa349372abf990be262ffa50d7cd6fc8b1b8a2f1dd99821492f8dbaac5c94e",
+    "taskset_path": "D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\evals\\web\\taskset.jsonl",
+    "task_ids": [
+      "w7c03-c01-hello",
+      "w7c03-c02-calc",
+      "w7c03-c03-off-by-one"
+    ],
+    "task_count": 3,
+    "cells": [
+      "cli-solo"
+    ],
+    "budget": 2000000,
+    "budget_scope": "max total tokens per cell; 0 = unlimited",
+    "model": "deepseek-flash",
+    "provider": {
+      "requested": "active",
+      "config_key": "deepseek/deepseek-v4.1-flash",
+      "model_name": "deepseek-flash",
+      "base_url": "https://api.deepseek.com/v1"
+    },
+    "price_version": "2026-10",
+    "code_commit": "606d76654015bdbf93b8753b07d2959af6ce9196",
+    "code_branch": "feat/rxycode-web",
+    "worktree_dirty": true,
+    "mode_map": {
+      "cli-solo": {
+        "mode": "solo",
+        "forcing": "agent.run-direct",
+        "detail": "AgentBackend calls AgentV2.run() directly — inherent solo path."
+      }
+    },
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "started_at": "2026-10-18T08:45:20.933109+00:00",
+    "database_url": "postgresql+psycopg://postgres:***@127.0.0.1:55432/rxycode",
+    "sample": 3,
+    "task_timeout": 240
+  },
+  "manifest_ref": "manifest_cli-solo.json",
+  "elapsed_s": 480.263
+}

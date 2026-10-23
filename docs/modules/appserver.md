@@ -43,7 +43,11 @@ messages to **stdout**, and sends all logs to **stderr** only.
 ## Request flow
 
 ```
-Client stdin  -> AppServer._dispatch()
+Client stdin  -> dedicated reader -> AppServer._dispatch()
+              control (interrupt, approval reply, steer) is not queued
+              behind discover, connection test, or model switch
+              same-session prompt/set_model/rename stay in arrival order
+              model-config writes stay on one lane; discover is capped
               -> AgentHost (subprocess per session, T1)
               -> agent_worker: bootstrap_agent(workspace_root) + Session.prompt()
               -> AgentV2.run()
@@ -52,6 +56,19 @@ Approval      -> worker _PipeApproval -> AgentHost -> client `approval/request`
 Question      -> worker PipeQuestionBroker -> AgentHost -> client `question/request`
 Watchdog (T4) -> periodic event/server_heartbeat; stall -> kill worker + degraded
 ```
+
+`session/prompt` accepts optional `attachments: [{path, name?}]` metadata and
+passes it through `_run_prompt` (including watchdog restart snapshots),
+`AgentHost.run_prompt`, worker params, and `Session.prompt`. The worker/core
+reopens and validates the client-local paths; task events and idempotent result
+metadata retain only paths and labels, never image bytes. Reusing a request ID
+with a different prompt body or attachment metadata is rejected rather than
+replaying the prior answer. `initialize.result.capabilities` includes
+`prompt_attachments: true`; the protocol version is unchanged.
+
+The HTTP `/chat` and `/chat/stream` adapters also pass the same optional field
+to the same Session entry point. They do not create an alternate attachment
+loop.
 
 For an enabled stall recovery decision, `AppServer` reads the current
 session's authoritative TodoSnapshot immediately before building
@@ -66,9 +83,30 @@ Background `session/new` warm uses a 180s budget and **single-flight**
 bootstrap: a timed-out waiter does not start a second AgentV2 constructor.
 `session/set_model` joins that same in-flight warm (also 180s) instead of
 aborting at 30s, which previously left Desktop stuck on
-`Starting Agent worker…`. After bootstrap the GUI receives
+`Starting Agent worker…`. It does not block the stdin reader: interrupt and
+approval replies are dispatched while it runs, and a later prompt for that
+same session waits until the switch handler returns. `event/token_usage`,
+terminal status, and rename update the in-memory row immediately and share
+the buffered `tasks.json` flush with replay events. `flush_pending` still
+runs on shutdown. A hard kill can drop the last ~0.2s of those fields;
+create, trash, restore, and purge still save immediately. After bootstrap the GUI receives
 `Waiting for model response…` so the startup banner cannot linger over
 later tool activity.
+
+Once a session worker is proven idle, the appserver gracefully asks it to
+flush its current session memory and then exits it; a later turn starts a new
+worker for the same session and task-scoped model. The default idle timeout is
+600 seconds and the maximum idle-candidate count is two. Candidates with any
+persisted child records are pinned and excluded from both TTL and capacity
+selection. Active prompts, queued work, approvals/questions, live child
+sessions, write leases, executions, and enabled schedules also prevent
+retirement. The worker-side prepare check additionally pins in-memory
+child-tree history, including terminal children that are not represented in
+the session store. Since that history is only discovered during prepare, a
+failed prepare can leave total idle workers above the configured candidate
+count. Child-free workers still recycle normally. Any uncertain activity or
+persistence failure keeps the worker alive. Graceful worker shutdown also
+disconnects its owned MCP clients.
 
 ## Phase 2 hard constraints (P4)
 
@@ -111,6 +149,8 @@ When the watchdog marks the server **degraded**, new `session/prompt` calls retu
 | `RXYCODE_APPSERVER_BOOTSTRAP_DELAY` | Seconds to sleep in `bootstrap_agent` (stub integration tests for bootstrap timeout) |
 | `RXYCODE_APPSERVER_HEARTBEAT_SECONDS` | Interval for `event/server_heartbeat` (default `15`) |
 | `RXYCODE_APPSERVER_STALL_SECONDS` | Job stall threshold before degrade + worker kill (default `120`) |
+| `RXYCODE_WORKER_IDLE_SECONDS` | Gracefully retire proven-idle session workers after this many seconds (default `600`; `0` disables TTL expiry) |
+| `RXYCODE_MAX_IDLE_WORKERS` | Maximum idle session workers retained (default `2`; `0` keeps no idle workers) |
 | `RXYCODE_APPSERVER_LIVE=1` | Run live AgentV2 integration test; uses real `~/.RxyCode/config.yaml`, not pytest-isolated data dir |
 | `RXYCODE_APPSERVER_LIVE_TIMEOUT` | Live prompt/run timeout in seconds (default `300`) |
 

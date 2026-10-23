@@ -85,7 +85,7 @@ describe("status bar formatting", () => {
       width: 200,
       modeColor: "#FF69B4",
     });
-    expect(text).toContain("Ctrl+E:思考");
+    expect(text).toContain("Ctrl+T:思考");
     expect(text).toContain("Ctrl+P:设置");
   });
 
@@ -102,8 +102,8 @@ describe("status bar formatting", () => {
       modeColor: "#FF69B4",
     });
     expect(text).toContain("Ctrl+P");
-    expect(text).toContain("Ctrl+T:Todo");
-    expect(text).not.toContain("Ctrl+E:思考");
+    expect(text).toContain("Ctrl+T:思考");
+    expect(text).not.toContain("Ctrl+E:Todo");
   });
 
   test("极窄终端才整段剪没", () => {

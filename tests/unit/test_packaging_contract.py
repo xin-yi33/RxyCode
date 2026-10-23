@@ -49,12 +49,22 @@ def test_installer_ships_playwright_package_not_the_browser_binary():
     assert "_install_bundled_chromium" in launch
 
 
+def test_clipboard_image_runtime_declares_and_packages_pillow_and_helper():
+    requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "Pillow>=10.0,<13" in requirements
+    manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include utils *.py" in manifest
+    helper = (PROJECT_ROOT / "utils" / "clipboard_capture.py").read_text(encoding="utf-8")
+    assert "from RxyCode" not in helper
+    assert "import RxyCode" not in helper
+
+
 def test_pyproject_exposes_the_versioned_console_entrypoint():
     config = _pyproject()
     project = config["project"]
 
     assert project["name"] == "rxycode"
-    assert project["version"] == "1.4.2"
+    assert project["version"] == "1.4.4"
     assert (
         project["scripts"]["rxycode"]
         == "RxyCode.RxyCode1_1_0.entrypoint:main"
@@ -386,10 +396,19 @@ def test_tracked_docs_only_contain_the_github_allowlist():
         "decisions",
         "agents",
         "specs",
+        # RxyCode Web (feat/rxycode-web): architecture docs, deploy runbooks,
+        # portfolio case study, and product guides ship with the web product.
+        "architecture",
+        "deploy",
+        "portfolio",
+        "product",
+        # The web execution plan is the one docs/plans tree published to GitHub.
+        "plans",
     }
     allowed_files = {
         "quickstart.md",
         "GUI.md",
+        "CLI-MEMORY-MANAGEMENT-2026-10-11.md",
         "P8-FIX5-HANDOFF-ACCEPTANCE.md",
         "DEVELOPMENT-ORDER.md",
         "development-order.yaml",

@@ -1,4 +1,9 @@
 export {
+  webTransportAdapter,
+  type WebTransportAdapter,
+} from "./webTransport.ts";
+
+export {
   ProtocolClient,
   ProtocolDisconnectError,
   ProtocolRpcError,
@@ -35,6 +40,17 @@ export {
   type ProtocolEvent,
   type ProtocolMatch,
 } from "./handshake.ts";
+
+export type {
+  DeviceRecord,
+  RunRecord,
+  ToolCall,
+  ToolChunk,
+  WebDiagnostic,
+  WebEvent,
+} from "./generated/types.ts";
+
+export { WEB_SCHEMA_DIGEST } from "./generated/web_digest.ts";
 
 export type {
   ApprovalRequest,

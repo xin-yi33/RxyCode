@@ -1,0 +1,7 @@
+parent_before=83b58802
+nested_before=ef12a92
+upstream=none
+requirements=WEB-RQ01 through WEB-RQ07
+p0_open=CW03,CW04
+old_method=session/prompt
+w1_gate=REJECTED

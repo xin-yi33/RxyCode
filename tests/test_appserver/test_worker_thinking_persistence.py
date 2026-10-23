@@ -26,7 +26,7 @@ def _make_worker(monkeypatch) -> tuple[AgentWorker, dict]:
 
     captured: dict = {}
 
-    def fake_bind(session_id, tui):
+    def fake_bind(session_id, tui, **kwargs):
         captured["tui"] = tui
         return (None, None)
 
@@ -40,7 +40,7 @@ def _make_worker(monkeypatch) -> tuple[AgentWorker, dict]:
 
     monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", fake_bind)
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", fake_reset)
-    monkeypatch.setattr("appserver.agent_worker.Session", FakeSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: FakeSession)
     messages: list[dict] = []
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",
@@ -100,7 +100,7 @@ async def test_cancelled_prompt_returns_a_terminal_cancelled_result(monkeypatch)
             raise asyncio.CancelledError
 
     messages: list[dict] = []
-    monkeypatch.setattr("appserver.agent_worker.Session", CancelledSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: CancelledSession)
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",
         AsyncMock(side_effect=lambda msg: messages.append(msg)),
@@ -108,11 +108,16 @@ async def test_cancelled_prompt_returns_a_terminal_cancelled_result(monkeypatch)
 
     await worker._handle_prompt({"text": "cancel", "session_id": "s", "run_id": "r"}, 9)
 
-    assert messages[-1] == {
+    # run_id is always minted server-side (RunContext.from_authenticated never
+    # copies the client-claimed id) — assert the shape, not a literal value.
+    last = messages[-1]
+    result = last["result"]
+    minted_run_id = result.pop("run_id")
+    assert isinstance(minted_run_id, str) and len(minted_run_id) == 32
+    assert last == {
         "jsonrpc": "2.0",
         "id": 9,
         "result": {
-            "run_id": "r",
             "status": "cancelled",
             "text": "",
             "thinking": None,

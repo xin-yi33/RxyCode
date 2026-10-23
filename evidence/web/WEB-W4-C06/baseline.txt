@@ -1,0 +1,2 @@
+9d8a70ec755c0e5f7b78a27c6925f46036a6fc63
+E2E-FULL-06 live long command, offline, and emergency stop is not run.

@@ -1,0 +1,13 @@
+Processing d:\agent-demo\rxycode\rxycode1_1_0
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: rxycode
+  Building wheel for rxycode (pyproject.toml): started
+  Building wheel for rxycode (pyproject.toml): finished with status 'done'
+  Created wheel for rxycode: filename=rxycode-1.4.3-py3-none-any.whl size=2125901 sha256=9dc1057ae9a5bd10e3184b252c1ecf296ed44fac04343d273ea6ae7692a7da9a
+  Stored in directory: C:\Users\Administrator\AppData\Local\Temp\pip-ephem-wheel-cache-o5sxept5\wheels\34\aa\d6\4e85876d760dd2eb2ff39def2add3084a66a6c0c2ef91af8df
+Successfully built rxycode

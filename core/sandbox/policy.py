@@ -58,10 +58,22 @@ class SandboxPolicy:
             raise ValueError("os_sandbox 的 max_memory_mb/max_processes 不得为负")
 
 
-def from_config(cfg: dict[str, Any] | None, *, workspace_root: Path) -> SandboxPolicy:
+def from_config(
+    cfg: dict[str, Any] | None,
+    *,
+    workspace_root: Path,
+    permission_mode: str | None = None,
+) -> SandboxPolicy:
     """从 ``execution.os_sandbox`` 节构建策略（唯一 config 入口）。
 
-    约定（v1.4.1 默认）：enabled=False——先以显式开关交付，烧熟后（E2E 稳定）再评估默认开。
+    Post-W7 ruling（track C）：``enabled`` 未显式配置时按权限模式自动
+    开关——普通模式（confirm_all/auto_edit/只读等）开内核沙箱；
+    ``full``/``full_auto`` 解除（Full 是用户确认后的去沙箱语义，进程
+    回收与急停由 reaping Job 保留，不属于本策略面）。显式
+    ``enabled: true/false`` 始终优先于模式推断。
+
+    ``permission_mode`` 由调用方传入运行时生效值（含 ContextVar 覆盖），
+    本函数不读 ContextVar——保持 config 层的纯函数纪律。
     """
     execution = (cfg or {}).get("execution") or {}
     if not isinstance(execution, dict):
@@ -69,8 +81,13 @@ def from_config(cfg: dict[str, Any] | None, *, workspace_root: Path) -> SandboxP
     section = execution.get("os_sandbox") or {}
     if not isinstance(section, dict):
         raise ValueError("execution.os_sandbox 必须是映射")
+    if "enabled" in section:
+        enabled = bool(section.get("enabled"))
+    else:
+        mode = str(permission_mode or "").strip().lower()
+        enabled = mode not in {"full", "full_auto"}
     policy = SandboxPolicy(
-        enabled=bool(section.get("enabled", False)),
+        enabled=enabled,
         mode=str(section.get("mode", "workspace")).strip().lower() or "workspace",
         workspace_root=workspace_root,
         network=str(section.get("network", "none")).strip().lower() or "none",

@@ -26,7 +26,7 @@ class TestUnifiedSystemPrompt:
 
     def test_mentions_capabilities(self):
         from RxyCode.RxyCode1_1_0.core.prompts import UNIFIED_SYSTEM_PROMPT
-        assert "write tool" in UNIFIED_SYSTEM_PROMPT
+        assert 'edit(operation="write", content=...)' in UNIFIED_SYSTEM_PROMPT
         assert "open_file" in UNIFIED_SYSTEM_PROMPT
         assert "inspect" in UNIFIED_SYSTEM_PROMPT
 

@@ -451,6 +451,15 @@ class ProtocolTui:
         self._flush_pending_stream()
         resolved_id = str(call_id or uuid.uuid4().hex)
         arguments = args if isinstance(args, dict) else {"raw": str(args)}
+        # WEB-W7-C04: emit the tool.<name> span on the real notification
+        # path (ToolOrchestrator -> ProtocolTui). Best-effort - it never
+        # alters the notification.
+        try:
+            from rxycode_worker.agent_events import tool_span_begin
+
+            tool_span_begin(resolved_id, str(name))
+        except Exception:
+            pass
         active = self._recovery.active
         if active is not None and active.recovery_kind != RecoveryKind.TRANSPORT_RETRY:
             strategy = "alternative_tool" if str(name) != "" else "retry_task"
@@ -483,6 +492,14 @@ class ProtocolTui:
         status: str = "success",
         call_id: str | None = None,
     ) -> None:
+        # WEB-W7-C04: close the span write_tool_call opened - non-success
+        # maps to an error span. Best-effort, never alters the emit.
+        try:
+            from rxycode_worker.agent_events import tool_span_end
+
+            tool_span_end(str(call_id or ""), status == "success")
+        except Exception:
+            pass
         self._flush_pending_stream()
         self._emit(
             ToolEnd(

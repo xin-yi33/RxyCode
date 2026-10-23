@@ -1,0 +1,1496 @@
+diff --git a/infra/compose/compose.yaml b/infra/compose/compose.yaml
+new file mode 100644
+index 00000000..d0c6466a
+--- /dev/null
++++ b/infra/compose/compose.yaml
+@@ -0,0 +1,35 @@
++# Self-hosted RxyCode web dependencies. Privileged mode stays off.
++# Passwords come from the environment and are not stored in this file.
++services:
++  postgres:
++    image: postgres:16
++    privileged: false
++    environment:
++      POSTGRES_USER: rxycode
++      POSTGRES_DB: rxycode
++      POSTGRES_PASSWORD: ${RXYCODE_POSTGRES_PASSWORD}
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U rxycode"]
++      interval: 5s
++      timeout: 3s
++      retries: 10
++  redis:
++    image: redis:7
++    privileged: false
++    healthcheck:
++      test: ["CMD", "redis-cli", "ping"]
++      interval: 5s
++      timeout: 3s
++      retries: 10
++  minio:
++    image: minio/minio:latest
++    privileged: false
++    command: ["server", "/data"]
++    environment:
++      MINIO_ROOT_USER: ${RXYCODE_MINIO_ROOT_USER}
++      MINIO_ROOT_PASSWORD: ${RXYCODE_MINIO_ROOT_PASSWORD}
++    healthcheck:
++      test: ["CMD", "mc", "ready", "local"]
++      interval: 5s
++      timeout: 3s
++      retries: 10
+diff --git a/packages/rxycode-server/src/rxycode_server/quotas/service.py b/packages/rxycode-server/src/rxycode_server/quotas/service.py
+new file mode 100644
+index 00000000..d5826a6a
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/quotas/service.py
+@@ -0,0 +1,318 @@
++"""Tenant token, task, concurrency, preview, and sandbox quotas.
++
++The authenticated tenant and user are the only identity. Request headers are
++ignored. A refusal records a quota.exceeded event, does not occupy a worker,
++and does not call the model. Admitted runs add their cost to the durable
++run.created event so the next admission sees it.
++"""
++
++from __future__ import annotations
++
++import threading
++import time
++import uuid
++from dataclasses import dataclass
++from typing import Protocol
++
++from sqlalchemy import func, select
++from sqlalchemy.orm import Session
++
++from rxycode_server.persistence.models import Run, RunEvent
++
++DEFAULT_LIMITS_TASKS = 100_000
++DEFAULT_LIMITS_TOKENS = 10_000_000
++DEFAULT_LIMITS_CONCURRENCY = 10_000
++DEFAULT_LIMITS_FEE = 100_000
++
++
++class WorkerFull(RuntimeError):
++    """This user already holds the concurrency ceiling."""
++
++
++class WorkerCapacity(Protocol):
++    """The scheduler side of admission. Only an admitted Run occupies a worker."""
++
++    workers: list[tuple[str, str, str]]
++
++    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
++        """Occupy one worker, or refuse when the live count is at the ceiling."""
++
++    def release_worker(self, worker_id: str) -> None:
++        """Return the exact worker reserved for one Run."""
++
++
++class ModelClient(Protocol):
++    """A model call. The gate invokes it only after admission succeeds."""
++
++    def __call__(self, prompt: str) -> str:
++        """Generate a reply for this prompt."""
++
++
++@dataclass(frozen=True)
++class Limits:
++    """Server-side ceilings for one user inside one tenant."""
++
++    tasks: int
++    tokens: int
++    concurrency: int
++    preview_fee: int
++    sandbox_fee: int
++
++
++DEFAULT_LIMITS = Limits(
++    tasks=DEFAULT_LIMITS_TASKS,
++    tokens=DEFAULT_LIMITS_TOKENS,
++    concurrency=DEFAULT_LIMITS_CONCURRENCY,
++    preview_fee=DEFAULT_LIMITS_FEE,
++    sandbox_fee=DEFAULT_LIMITS_FEE,
++)
++
++
++@dataclass
++class _Usage:
++    tasks: int = 0
++    tokens: int = 0
++    preview_fee: int = 0
++    sandbox_fee: int = 0
++
++
++@dataclass(frozen=True)
++class QuotaDecision:
++    """Structured admission result. http_status 429 is a quota refusal."""
++
++    http_status: int
++    body: dict[str, object]
++    event: dict[str, object]
++
++
++@dataclass(frozen=True)
++class Reservation:
++    """A worker is held until the Run row commits or the caller releases it."""
++
++    tenant_id: str
++    user_id: str
++    tokens: int
++    worker_id: str
++
++
++class QuotaRefused(Exception):
++    """create_run stopped before inserting a Run."""
++
++    def __init__(self, decision: QuotaDecision) -> None:
++        self.decision = decision
++        super().__init__(str(decision.body.get("error", "quota.exceeded")))
++
++    @property
++    def http_status(self) -> int:
++        return self.decision.http_status
++
++
++class RunWorkers:
++    """In-process worker slots used when the cloud scheduler is not injected."""
++
++    def __init__(self) -> None:
++        self.workers: list[tuple[str, str, str]] = []
++        self._deadlines: dict[str, float] = {}
++        self._timers: dict[str, threading.Timer] = {}
++        self._lock = threading.Lock()
++
++    @property
++    def live_ids(self) -> list[str]:
++        return []
++
++    def acquire(self, tenant_id: str, user_id: str, *, limit: int, ttl_seconds: float = 3600) -> str:
++        self._reap()
++        with self._lock:
++            held = _held(self.workers, tenant_id, user_id)
++            if limit < 1 or held >= limit:
++                raise WorkerFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
++            worker_id = "worker-" + uuid.uuid4().hex[:8]
++            self.workers.append((tenant_id, user_id, worker_id))
++            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
++        timer = threading.Timer(ttl_seconds, self._reap)
++        timer.daemon = True
++        with self._lock:
++            self._timers[worker_id] = timer
++        timer.start()
++        return worker_id
++
++    def release_worker(self, worker_id: str) -> None:
++        timer: threading.Timer | None = None
++        with self._lock:
++            for index, (_owner, _user, current) in enumerate(self.workers):
++                if current == worker_id:
++                    del self.workers[index]
++                    self._deadlines.pop(worker_id, None)
++                    timer = self._timers.pop(worker_id, None)
++                    break
++        if timer is not None:
++            timer.cancel()
++
++    def _reap(self) -> None:
++        now = time.monotonic()
++        expired: list[threading.Timer | None] = []
++        with self._lock:
++            kept: list[tuple[str, str, str]] = []
++            for owner, user, worker_id in self.workers:
++                if self._deadlines.get(worker_id, now + 1) <= now:
++                    expired.append(self._timers.pop(worker_id, None))
++                    self._deadlines.pop(worker_id, None)
++                else:
++                    kept.append((owner, user, worker_id))
++            self.workers[:] = kept
++        for timer in expired:
++            if timer is not None:
++                timer.cancel()
++
++
++def _held(workers: list[tuple[str, str, str]], tenant_id: str, user_id: str) -> int:
++    return sum(1 for owner, user, _worker in workers if owner == tenant_id and user == user_id)
++
++
++def _token_count(message: str) -> int:
++    return len([part for part in message.split() if part])
++
++
++class QuotaGate:
++    """Admit a Run only when this user still has credentials, budget, and quota."""
++
++    def __init__(
++        self,
++        *,
++        limits: Limits,
++        capacity: WorkerCapacity,
++        worker_ttl: float = 3600,
++    ) -> None:
++        self._limits = limits
++        self.capacity = capacity
++        self._worker_ttl = worker_ttl
++        self._events: dict[str, list[dict[str, object]]] = {}
++
++    def events_for(self, tenant_id: str) -> list[dict[str, object]]:
++        return list(self._events.get(tenant_id, []))
++
++    def precheck(
++        self,
++        *,
++        tenant_id: str,
++        user_id: str,
++        message: str,
++        headers: dict[str, str] | None,
++        credentials: str | None,
++        budget: int | None,
++        model: ModelClient | None,
++    ) -> QuotaDecision | None:
++        """Refuse before opening a database when the request itself cannot run."""
++        del headers
++        if model is not None and (credentials is None or credentials == ""):
++            return self._refuse(tenant_id, user_id, "credentials")
++        if model is not None and (budget is None or budget <= 0):
++            return self._refuse(tenant_id, user_id, "budget")
++        incoming = _token_count(message)
++        if incoming > self._limits.tokens:
++            return self._refuse(tenant_id, user_id, "token")
++        return None
++
++    def reserve(
++        self,
++        db: Session,
++        *,
++        tenant_id: str,
++        user_id: str,
++        message: str,
++    ) -> QuotaDecision | Reservation:
++        """Reserve one worker, or return the refusal. The Run row is not inserted here."""
++        usage = _usage(db, tenant_id)
++        incoming = _token_count(message)
++        limits = self._limits
++        if usage.tasks >= limits.tasks:
++            return self._refuse(tenant_id, user_id, "task")
++        if usage.tokens + incoming > limits.tokens:
++            return self._refuse(tenant_id, user_id, "token")
++        if usage.preview_fee + 1 > limits.preview_fee:
++            return self._refuse(tenant_id, user_id, "preview")
++        if usage.sandbox_fee + 1 > limits.sandbox_fee:
++            return self._refuse(tenant_id, user_id, "sandbox")
++        try:
++            worker_id = self.capacity.acquire(
++                tenant_id,
++                user_id,
++                limit=limits.concurrency,
++                ttl_seconds=self._worker_ttl,
++            )
++        except Exception as exc:
++            if isinstance(exc, WorkerFull) or exc.__class__.__name__ == "CapacityFull":
++                return self._refuse(tenant_id, user_id, "concurrency")
++            raise
++        return Reservation(
++            tenant_id=tenant_id,
++            user_id=user_id,
++            tokens=incoming,
++            worker_id=worker_id,
++        )
++
++    def release_worker(self, worker_id: str) -> None:
++        self.capacity.release_worker(worker_id)
++
++    def _refuse(self, tenant_id: str, user_id: str, kind: str) -> QuotaDecision:
++        limit = {
++            "credentials": 0,
++            "budget": 0,
++            "task": self._limits.tasks,
++            "token": self._limits.tokens,
++            "concurrency": self._limits.concurrency,
++            "preview": self._limits.preview_fee,
++            "sandbox": self._limits.sandbox_fee,
++        }[kind]
++        event: dict[str, object] = {
++            "type": "quota.exceeded",
++            "kind": kind,
++            "tenant_id": tenant_id,
++            "user_id": user_id,
++            "limit": limit,
++        }
++        self._events.setdefault(tenant_id, []).append(event)
++        body: dict[str, object] = {
++            "error": "quota.exceeded",
++            "kind": kind,
++            "tenant_id": tenant_id,
++            "user_id": user_id,
++            "limit": limit,
++        }
++        return QuotaDecision(http_status=429, body=body, event=event)
++
++
++_installed: QuotaGate | None = None
++_default: QuotaGate | None = None
++
++
++def install_gate(gate: QuotaGate | None) -> None:
++    """Install the process gate. None restores the high default ceilings."""
++    global _installed
++    _installed = gate
++
++
++def active_gate() -> QuotaGate:
++    """Return the installed gate, or a process-wide gate with high ceilings."""
++    global _default
++    if _installed is not None:
++        return _installed
++    if _default is None:
++        _default = QuotaGate(limits=DEFAULT_LIMITS, capacity=RunWorkers())
++    return _default
++
++
++def _usage(db: Session, tenant_id: str) -> _Usage:
++    task_count = db.scalar(select(func.count()).select_from(Run).where(Run.tenant_id == tenant_id))
++    events = db.scalars(
++        select(RunEvent).where(RunEvent.tenant_id == tenant_id, RunEvent.type == "run.created")
++    ).all()
++    usage = _Usage(tasks=int(task_count or 0))
++    for event in events:
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        quota = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
++        message = str(payload.get("message") or "")
++        usage.tokens += int(quota.get("tokens") or _token_count(message))
++        usage.preview_fee += int(quota.get("preview_fee") or 0)
++        usage.sandbox_fee += int(quota.get("sandbox_fee") or 0)
++    return usage
+diff --git a/packages/rxycode-server/src/rxycode_server/runs/service.py b/packages/rxycode-server/src/rxycode_server/runs/service.py
+index 49477ac4..1973085e 100644
+--- a/packages/rxycode-server/src/rxycode_server/runs/service.py
++++ b/packages/rxycode-server/src/rxycode_server/runs/service.py
+@@ -72,11 +72,33 @@ def create_run(
+     permission_profile: str,
+     request_id: str,
+     claimed_tenant_id: str | None = None,
++    user_id: str | None = None,
++    headers: dict[str, str] | None = None,
++    credentials: str | None = None,
++    budget: int | None = None,
++    model: object | None = None,
++    quota: object | None = None,
+ ) -> RunAccepted:
+     """Insert run + event + outbox. The caller's tenant wins over any body claim."""
++    from rxycode_server.quotas.service import QuotaDecision, QuotaRefused, active_gate
++
+     del claimed_tenant_id
++    user = user_id or tenant_id
++    gate = quota if quota is not None else active_gate()
++    early = gate.precheck(
++        tenant_id=tenant_id,
++        user_id=user,
++        message=message,
++        headers=headers,
++        credentials=credentials,
++        budget=budget,
++        model=model,
++    )
++    if isinstance(early, QuotaDecision):
++        raise QuotaRefused(early)
+     digest = _digest(message, target_id, permission_profile, request_id, session_id)
+     engine = create_engine(database_url, poolclass=NullPool)
++    held_worker = ""
+     try:
+         with Session(engine) as db:
+             existing = db.scalars(
+@@ -86,9 +108,15 @@ def create_run(
+                 if existing.input_digest != digest:
+                     raise RunConflict(request_id)
+                 return _accepted(existing.id)
++            decision = gate.reserve(db, tenant_id=tenant_id, user_id=user, message=message)
++            if isinstance(decision, QuotaDecision):
++                raise QuotaRefused(decision)
++            held_worker = decision.worker_id
+             run_id = uuid.uuid4().hex
+             event_id = uuid.uuid4().hex
+             try:
++                if model is not None:
++                    model(message)
+                 db.add(
+                     Run(
+                         id=run_id,
+@@ -112,12 +140,19 @@ def create_run(
+                         seq=1,
+                         type="run.created",
+                         payload={
+-                        "message": message,
+-                        "permission_profile": permission_profile,
+-                        "request_id": request_id,
+-                        "session_id": session_id,
+-                        "target_id": target_id,
+-                    },
++                            "message": message,
++                            "permission_profile": permission_profile,
++                            "request_id": request_id,
++                            "session_id": session_id,
++                            "target_id": target_id,
++                            "quota": {
++                                "tokens": decision.tokens,
++                                "preview_fee": 1,
++                                "sandbox_fee": 1,
++                                "user_id": user,
++                                "worker_id": decision.worker_id,
++                            },
++                        },
+                         at=datetime.now(timezone.utc),
+                     )
+                 )
+@@ -131,6 +166,7 @@ def create_run(
+                     )
+                 )
+                 db.commit()
++                held_worker = ""
+             except IntegrityError as exc:
+                 db.rollback()
+                 detail = str(exc.orig)
+@@ -145,10 +181,67 @@ def create_run(
+                     return _accepted(winner.id)
+                 raise
+     finally:
++        if held_worker:
++            gate.release_worker(held_worker)
+         engine.dispose()
+     return _accepted(run_id)
+
+
++def complete_run(
++    database_url: str,
++    *,
++    run_id: str,
++    tenant_id: str,
++    user_id: str,
++    quota: object | None = None,
++) -> str:
++    """Mark a Run succeeded and return only that Run's worker slot."""
++    from rxycode_server.quotas.service import active_gate
++
++    del user_id
++    gate = quota if quota is not None else active_gate()
++    engine = create_engine(database_url, poolclass=NullPool)
++    try:
++        with Session(engine) as db:
++            row = db.get(Run, run_id)
++            if row is None or row.tenant_id != tenant_id:
++                raise RunConflict(run_id)
++            if row.status not in {"succeeded", "failed", "cancelled"}:
++                row.status = "succeeded"
++                db.commit()
++    finally:
++        engine.dispose()
++    release_worker_for_run(database_url, run_id, quota=gate)
++    return "succeeded"
++
++
++def release_worker_for_run(
++    database_url: str,
++    run_id: str,
++    quota: object | None = None,
++) -> None:
++    """Return the slot stored on this Run. A missing id is already gone."""
++    from rxycode_server.quotas.service import active_gate
++
++    gate = quota if quota is not None else active_gate()
++    engine = create_engine(database_url, poolclass=NullPool)
++    worker_id = ""
++    try:
++        with Session(engine) as db:
++            event = db.scalars(
++                select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
++            ).one_or_none()
++            if event is None:
++                return
++            payload = event.payload if isinstance(event.payload, dict) else {}
++            quota_payload = payload.get("quota") if isinstance(payload.get("quota"), dict) else {}
++            worker_id = str(quota_payload.get("worker_id") or "")
++    finally:
++        engine.dispose()
++    if worker_id:
++        gate.release_worker(worker_id)
++
++
+ def load_run(database_url: str, run_id: str) -> dict[str, str]:
+     """Read the accepted task back from the durable event, not from the digest."""
+     engine = create_engine(database_url, poolclass=NullPool)
+diff --git a/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py b/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py
+new file mode 100644
+index 00000000..f89d54e6
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/scheduler/capacity.py
+@@ -0,0 +1,351 @@
++"""Concurrency, cold-start samples, and sandbox GC.
++
++A failed or expired sandbox is removed with docker rm. Cold-start percentiles
++come from the measured create durations kept on this scheduler.
++"""
++
++from __future__ import annotations
++
++import base64
++import json
++import re
++import threading
++import time
++import uuid
++from contextlib import contextmanager
++from dataclasses import dataclass, replace
++from pathlib import Path
++from typing import Iterator
++
++from rxycode_runner.sandbox.gvisor import GVisorSandbox
++from rxycode_runner.sandbox.policy import load_policy, reject_if_unsafe
++from rxycode_runner.sandbox.provider import ExecResult, SandboxHandle
++
++_NONCE = re.compile(r"^[0-9a-f]{16}$")
++
++
++class TopologyRefused(ValueError):
++    """The compose file asks for privileged mode or omits a healthcheck."""
++
++
++class CapacityFull(RuntimeError):
++    """This user already holds every worker slot."""
++
++
++@dataclass(frozen=True)
++class ServiceSpec:
++    image: str
++    healthcheck: bool
++    privileged: bool
++
++
++@dataclass
++class _Record:
++    sandbox_id: str
++    tenant_id: str
++    deadline: float
++    failed: bool
++    backend: GVisorSandbox
++    timer: threading.Timer | None = None
++
++
++def load_compose(path: Path) -> dict[str, ServiceSpec]:
++    """Read the self-hosted topology. Privileged services are refused."""
++    text = Path(path).read_text(encoding="utf-8")
++    services = _parse_services(text)
++    if not services:
++        raise TopologyRefused("compose has no services")
++    for name, spec in services.items():
++        if spec.privileged:
++            raise TopologyRefused(f"{name} is privileged")
++        if not spec.healthcheck:
++            raise TopologyRefused(f"{name} has no healthcheck")
++        if not spec.image:
++            raise TopologyRefused(f"{name} has no image")
++    return services
++
++
++def _parse_services(text: str) -> dict[str, ServiceSpec]:
++    in_services = False
++    current: str | None = None
++    found: dict[str, dict[str, object]] = {}
++    for raw in text.splitlines():
++        stripped = raw.strip()
++        if not stripped or stripped.startswith("#"):
++            continue
++        indent = len(raw) - len(raw.lstrip(" "))
++        if indent == 0 and stripped == "services:":
++            in_services = True
++            current = None
++            continue
++        if not in_services:
++            continue
++        if indent == 0:
++            in_services = False
++            current = None
++            continue
++        if indent == 2 and stripped.endswith(":"):
++            current = stripped[:-1].strip()
++            found[current] = {"image": "", "healthcheck": False, "privileged": False}
++            continue
++        if current is None or indent != 4 or ":" not in stripped:
++            continue
++        key, value = stripped.split(":", 1)
++        slot = found[current]
++        if key.strip() == "image":
++            slot["image"] = value.strip().strip('"').strip("'")
++        elif key.strip() == "privileged":
++            slot["privileged"] = value.strip().lower() == "true"
++        elif key.strip() == "healthcheck":
++            slot["healthcheck"] = True
++    return {
++        name: ServiceSpec(
++            image=str(slot["image"]),
++            healthcheck=bool(slot["healthcheck"]),
++            privileged=bool(slot["privileged"]),
++        )
++        for name, slot in found.items()
++    }
++
++
++class Capacity:
++    """Worker occupancy plus the sandboxes this scheduler created."""
++
++    def __init__(self) -> None:
++        self.workers: list[tuple[str, str, str]] = []
++        self._deadlines: dict[str, float] = {}
++        self._worker_timers: dict[str, threading.Timer] = {}
++        self._records: dict[str, _Record] = {}
++        self._samples: list[float] = []
++        self._lock = threading.Lock()
++
++    @property
++    def live_ids(self) -> list[str]:
++        with self._lock:
++            return list(self._records)
++
++    def acquire(
++        self,
++        tenant_id: str,
++        user_id: str,
++        *,
++        limit: int,
++        ttl_seconds: float = 3600,
++    ) -> str:
++        """Occupy one worker until complete_run or the TTL, whichever comes first."""
++        self._reap_workers()
++        with self._lock:
++            held = sum(
++                1 for owner, user, _worker in self.workers if owner == tenant_id and user == user_id
++            )
++            if limit < 1 or held >= limit:
++                raise CapacityFull(f"{tenant_id}/{user_id} is at concurrency {limit}")
++            worker_id = "worker-" + uuid.uuid4().hex[:8]
++            self.workers.append((tenant_id, user_id, worker_id))
++            self._deadlines[worker_id] = time.monotonic() + ttl_seconds
++        timer = threading.Timer(ttl_seconds, self._reap_workers)
++        timer.daemon = True
++        with self._lock:
++            self._worker_timers[worker_id] = timer
++        timer.start()
++        return worker_id
++
++    def release_worker(self, worker_id: str) -> None:
++        timer: threading.Timer | None = None
++        with self._lock:
++            for index, (_owner, _user, current) in enumerate(self.workers):
++                if current == worker_id:
++                    del self.workers[index]
++                    timer = self._worker_timers.pop(worker_id, None)
++                    self._deadlines.pop(worker_id, None)
++                    break
++        if timer is not None:
++            timer.cancel()
++
++    def _reap_workers(self) -> None:
++        now = time.monotonic()
++        expired: list[threading.Timer | None] = []
++        with self._lock:
++            kept: list[tuple[str, str, str]] = []
++            for owner, user, worker_id in self.workers:
++                if self._deadlines.get(worker_id, now + 1) <= now:
++                    expired.append(self._worker_timers.pop(worker_id, None))
++                    self._deadlines.pop(worker_id, None)
++                else:
++                    kept.append((owner, user, worker_id))
++            self.workers[:] = kept
++        for timer in expired:
++            if timer is not None:
++                timer.cancel()
++
++    def provision(
++        self,
++        *,
++        tenant_id: str,
++        workspace_id: str,
++        ttl_seconds: int | None = None,
++    ) -> SandboxHandle:
++        """Create one isolated sandbox and record the measured cold start."""
++        started = time.perf_counter()
++        policy = load_policy()
++        if ttl_seconds is not None:
++            policy = replace(policy, ttl_seconds=ttl_seconds)
++            reject_if_unsafe(policy)
++        backend = GVisorSandbox()
++        handle = backend.create(
++            tenant_id=tenant_id,
++            workspace_id=workspace_id,
++            retain=True,
++            policy=policy,
++        )
++        elapsed = time.perf_counter() - started
++        record = _Record(
++            sandbox_id=handle.sandbox_id,
++            tenant_id=handle.tenant_id,
++            deadline=time.monotonic() + int(policy.ttl_seconds),
++            failed=False,
++            backend=backend,
++        )
++        delay = float(policy.ttl_seconds)
++        record.deadline = time.monotonic() + delay
++        timer = threading.Timer(delay, self._expire, args=(handle.sandbox_id,))
++        timer.daemon = True
++        record.timer = timer
++        with self._lock:
++            self._samples.append(elapsed)
++            self._records[handle.sandbox_id] = record
++        timer.start()
++        return handle
++
++    @contextmanager
++    def sandbox(
++        self,
++        *,
++        tenant_id: str,
++        workspace_id: str,
++        ttl_seconds: int | None = None,
++    ) -> Iterator[SandboxHandle]:
++        """Mark the sandbox failed when the caller raises after create."""
++        handle = self.provision(
++            tenant_id=tenant_id,
++            workspace_id=workspace_id,
++            ttl_seconds=ttl_seconds,
++        )
++        try:
++            yield handle
++        except Exception:
++            with self._lock:
++                record = self._records.get(handle.sandbox_id)
++                if record is not None:
++                    record.failed = True
++            self.gc()
++            raise
++
++    def _expire(self, sandbox_id: str) -> None:
++        """TTL callback. gc() is the reaper; the test does not have to call it."""
++        with self._lock:
++            record = self._records.get(sandbox_id)
++            if record is not None:
++                record.deadline = min(record.deadline, time.monotonic())
++        self.gc()
++
++    def gc(self) -> list[str]:
++        """Remove failed sandboxes and sandboxes whose TTL has elapsed."""
++        now = time.monotonic()
++        with self._lock:
++            chosen = [
++                record
++                for record in self._records.values()
++                if record.failed or now >= record.deadline
++            ]
++        removed: list[str] = []
++        for record in chosen:
++            self._remove(record)
++            removed.append(record.sandbox_id)
++        return removed
++
++    def destroy_all(self) -> None:
++        with self._lock:
++            records = list(self._records.values())
++        for record in records:
++            self._remove(record)
++
++    def cold_start_samples(self) -> list[float]:
++        with self._lock:
++            return list(self._samples)
++
++    def cold_start_p50(self) -> float:
++        return self._percentile(50)
++
++    def cold_start_p95(self) -> float:
++        return self._percentile(95)
++
++    def write_marker(self, handle: SandboxHandle, nonce: str) -> None:
++        if not _NONCE.fullmatch(nonce):
++            raise ValueError("marker nonce is refused")
++        code = (
++            "import pathlib; "
++            f"pathlib.Path('/tmp/tenant-marker').write_text('{nonce}')"
++        )
++        self._exec(handle, handle.tenant_id, code)
++
++    def read_marker(self, handle: SandboxHandle, tenant_id: str | None = None) -> str:
++        owner = tenant_id or handle.tenant_id
++        result = self._exec(handle, owner, "print(open('/tmp/tenant-marker').read())")
++        return result.stdout.strip()
++
++    def publish_event(self, handle: SandboxHandle, event: dict[str, object]) -> None:
++        blob = base64.b64encode(json.dumps(event).encode()).decode()
++        code = (
++            "import base64, pathlib; "
++            f"pathlib.Path('/tmp/events.json').write_bytes(base64.b64decode('{blob}'))"
++        )
++        self._exec(handle, handle.tenant_id, code)
++
++    def read_events(
++        self,
++        handle: SandboxHandle,
++        tenant_id: str | None = None,
++    ) -> dict[str, object]:
++        owner = tenant_id or handle.tenant_id
++        result = self._exec(handle, owner, "print(open('/tmp/events.json').read())")
++        payload = json.loads(result.stdout)
++        if not isinstance(payload, dict):
++            raise RuntimeError("sandbox event payload is not an object")
++        return payload
++
++    def _percentile(self, percentile: int) -> float:
++        with self._lock:
++            ordered = sorted(self._samples)
++        if not ordered:
++            raise RuntimeError("no cold start samples")
++        index = max(0, -(-len(ordered) * percentile // 100) - 1)
++        return ordered[min(index, len(ordered) - 1)]
++
++    def _exec(self, handle: SandboxHandle, tenant_id: str, code: str) -> ExecResult:
++        with self._lock:
++            record = self._records[handle.sandbox_id]
++            backend = record.backend
++        result = backend.exec(
++            handle.sandbox_id,
++            tenant_id=tenant_id,
++            argv=["python", "-c", code],
++            timeout=30,
++        )
++        if result.exit_code != 0:
++            detail = result.stderr or result.stdout or "sandbox exec failed"
++            raise RuntimeError(detail)
++        return result
++
++    def _remove(self, record: _Record) -> None:
++        with self._lock:
++            current = self._records.pop(record.sandbox_id, None)
++            timer = record.timer
++        if timer is not None:
++            timer.cancel()
++        if current is None:
++            return
++        try:
++            record.backend.destroy(record.sandbox_id, tenant_id=record.tenant_id)
++        except Exception:
++            record.backend._docker(["rm", "-f", record.sandbox_id], timeout=30)
+diff --git a/packages/rxycode-worker/src/rxycode_worker/supervisor.py b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+index af2b36f4..d0a3e6d3 100644
+--- a/packages/rxycode-worker/src/rxycode_worker/supervisor.py
++++ b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+@@ -157,6 +157,7 @@ def commit_terminal(
+                 ),
+                 {"status": status, "run_id": run_id},
+             )
++        _release_quota(database_url, run_id)
+     finally:
+         engine.dispose()
+
+@@ -261,11 +262,19 @@ def confirm_cancel(
+                 ),
+                 {"status": status, "run_id": run_id},
+             )
++        _release_quota(database_url, run_id)
+     finally:
+         engine.dispose()
+     return status
+
+
++def _release_quota(database_url: str, run_id: str) -> None:
++    """A terminal Run no longer holds its concurrency slot."""
++    from rxycode_server.runs.service import release_worker_for_run
++
++    release_worker_for_run(database_url, run_id)
++
++
+ def attempt_tool(
+     journal,
+     attempt_id: str,
+diff --git a/tests/web/w5/test_w5_c06_unit.py b/tests/web/w5/test_w5_c06_unit.py
+new file mode 100644
+index 00000000..88699b28
+--- /dev/null
++++ b/tests/web/w5/test_w5_c06_unit.py
+@@ -0,0 +1,580 @@
++"""WEB-W5-C06. An over-quota visitor gets 429 and a failed sandbox is removed."""
++
++from __future__ import annotations
++
++import json
++import subprocess
++import sys
++import tempfile
++import time
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++for _entry in (
++    REPO / "packages" / "rxycode-server" / "src",
++    REPO / "packages" / "rxycode-worker" / "src",
++    REPO / "packages" / "rxycode-runner" / "src",
++):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++COMPOSE = REPO / "infra" / "compose" / "compose.yaml"
++
++
++class BoomModel:
++    """A model client. The quota gate must not call it when admission fails."""
++
++    def __init__(self) -> None:
++        self.calls = 0
++
++    def __call__(self, prompt: str) -> str:
++        self.calls += 1
++        raise AssertionError("model called")
++
++
++def _inspect(sandbox_id: str) -> subprocess.CompletedProcess[str]:
++    from rxycode_runner.sandbox.gvisor import docker_executable
++
++    return subprocess.run(
++        [docker_executable(), "inspect", sandbox_id],
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++    )
++
++
++class OkModel:
++    """A model client that records a real call."""
++
++    def __init__(self) -> None:
++        self.calls = 0
++
++    def __call__(self, prompt: str) -> str:
++        self.calls += 1
++        return prompt
++
++
++def _docker(*args: str) -> subprocess.CompletedProcess[str]:
++    from rxycode_runner.sandbox.gvisor import docker_executable
++
++    return subprocess.run(
++        [docker_executable(), *args],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        check=False,
++    )
++
++
++def _postgres() -> str:
++    _docker("rm", "-f", "rxy-w5c06-pg")
++    started = _docker(
++        "run",
++        "-d",
++        "--name",
++        "rxy-w5c06-pg",
++        "-e",
++        "POSTGRES_HOST_AUTH_METHOD=trust",
++        "-e",
++        "POSTGRES_DB=rxycode",
++        "-p",
++        "127.0.0.1:55433:5432",
++        "postgres:16",
++    )
++    if started.returncode != 0:
++        raise RuntimeError(started.stderr or started.stdout)
++    deadline = time.time() + 60
++    while time.time() < deadline:
++        ready = _docker("exec", "rxy-w5c06-pg", "pg_isready", "-U", "postgres", "-d", "rxycode")
++        if ready.returncode == 0:
++            return "postgresql+psycopg://postgres@127.0.0.1:55433/rxycode"
++        time.sleep(1)
++    logs = _docker("logs", "rxy-w5c06-pg")
++    raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")
++
++
++def _stop_postgres() -> None:
++    _docker("rm", "-f", "rxy-w5c06-pg")
++
++
++def test_w5_c06_contract() -> None:
++    """A visitor over quota receives 429 and does not occupy a worker."""
++    from sqlalchemy import create_engine, select
++    from sqlalchemy.orm import Session
++
++    from rxycode_server.persistence.migrate import upgrade_head
++    from rxycode_server.persistence.models import Organization, Project, Run, RunEvent, SessionRow, User
++    from rxycode_server.quotas.service import Limits, QuotaGate, QuotaRefused, install_gate
++    from rxycode_server.runs.service import complete_run, create_run
++    from rxycode_worker.scheduler.capacity import Capacity, CapacityFull, TopologyRefused, load_compose
++
++    topo = load_compose(COMPOSE)
++    assert {"postgres", "redis", "minio"} <= set(topo)
++    for name, spec in topo.items():
++        assert spec.image
++        assert spec.healthcheck, name
++        assert spec.privileged is False
++    with tempfile.TemporaryDirectory(prefix="rxy-c06-compose-") as tmp:
++        bad = Path(tmp) / "privileged.yaml"
++        bad.write_text(
++            "\n".join(
++                [
++                    "services:",
++                    "  postgres:",
++                    "    image: postgres:16",
++                    "    privileged: true",
++                    "    healthcheck:",
++                    "      test: [\"CMD\", \"true\"]",
++                    "",
++                ]
++            ),
++            encoding="utf-8",
++        )
++        with pytest.raises(TopologyRefused):
++            load_compose(bad)
++        missing = Path(tmp) / "nocheck.yaml"
++        missing.write_text(
++            "\n".join(
++                [
++                    "services:",
++                    "  redis:",
++                    "    image: redis:7",
++                    "    privileged: false",
++                    "",
++                ]
++            ),
++            encoding="utf-8",
++        )
++        with pytest.raises(TopologyRefused):
++            load_compose(missing)
++
++    headers = {
++        "x-quota-limit": "999999",
++        "x-tenant-id": "tenant-b",
++        "x-user-id": "root",
++        "x-budget": "1000000",
++        "x-preview-fee": "1000000",
++    }
++    slot = Capacity()
++    held = slot.acquire("tenant-slot", "user-slot", limit=1)
++    with pytest.raises(CapacityFull):
++        slot.acquire("tenant-slot", "user-slot", limit=1)
++    assert len(slot.workers) == 1
++    slot.release_worker(held)
++
++    def deny(gate: QuotaGate, **kwargs: object) -> QuotaRefused:
++        with pytest.raises(QuotaRefused) as caught:
++            create_run(
++                str(kwargs.pop("database_url")),
++                tenant_id=str(kwargs.pop("tenant_id")),
++                user_id="visitor-user",
++                session_id=str(kwargs.pop("session_id")),
++                message=str(kwargs.pop("message")),
++                target_id="target-1",
++                permission_profile="default",
++                request_id=str(kwargs.pop("request_id")),
++                headers=headers,
++                claimed_tenant_id="tenant-b",
++                credentials=kwargs.pop("credentials"),  # type: ignore[arg-type]
++                budget=kwargs.pop("budget"),  # type: ignore[arg-type]
++                model=kwargs.pop("model"),
++                quota=kwargs.pop("quota", gate),
++            )
++        return caught.value
++
++    cred_model = BoomModel()
++    cred_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
++    cred = deny(
++        cred_gate,
++        database_url="postgresql://127.0.0.1:1/not-used",
++        tenant_id="visitor",
++        session_id="sess-visitor",
++        message="hello",
++        request_id="req-no-cred",
++        credentials=None,
++        budget=10,
++        model=cred_model,
++    )
++    assert cred.decision.http_status == 429
++    assert cred.decision.event["kind"] == "credentials"
++    assert cred.decision.event["tenant_id"] == "visitor"
++    assert cred.decision.event in cred_gate.events_for("visitor")
++    assert cred_model.calls == 0
++    assert cred_gate.capacity.workers == []
++    assert cred_gate.capacity.live_ids == []
++
++    budget_model = BoomModel()
++    budget_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
++    budget = deny(
++        budget_gate,
++        database_url="postgresql://127.0.0.1:1/not-used",
++        tenant_id="visitor",
++        session_id="sess-visitor",
++        message="hello",
++        request_id="req-no-budget",
++        credentials="cred-present",
++        budget=0,
++        model=budget_model,
++    )
++    assert budget.decision.event["kind"] == "budget"
++    assert budget_model.calls == 0
++    assert budget_gate.capacity.workers == []
++
++    token_model = BoomModel()
++    token_gate = QuotaGate(limits=Limits(tasks=5, tokens=1, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=Capacity())
++    early_token = deny(
++        token_gate,
++        database_url="postgresql://127.0.0.1:1/not-used",
++        tenant_id="visitor",
++        session_id="sess-visitor",
++        message="hello world",
++        request_id="req-token-early",
++        credentials="cred-present",
++        budget=10,
++        model=token_model,
++    )
++    assert early_token.decision.event["kind"] == "token"
++    assert early_token.decision.body["limit"] == 1
++    assert token_model.calls == 0
++    assert token_gate.capacity.workers == []
++
++    url = _postgres()
++    try:
++        upgrade_head(url)
++        engine = create_engine(url)
++        with Session(engine) as db:
++            for tenant in (
++                "visitor-task",
++                "visitor-token",
++                "visitor-conc",
++                "visitor-preview",
++                "visitor-sandbox",
++                "visitor-ttl",
++                "visitor-overlap",
++            ):
++                db.add(User(id=f"user-{tenant}", github_id=f"gh-{tenant}", kind="github"))
++                db.add(Organization(id=f"org-{tenant}", tenant_id=tenant))
++                db.add(Project(id=f"project-{tenant}", tenant_id=tenant, name="app", repo_config={}))
++                db.add(SessionRow(id=f"sess-a-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="a"))
++                db.add(SessionRow(id=f"sess-b-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="b"))
++                db.add(SessionRow(id=f"sess-c-{tenant}", tenant_id=tenant, project_id=f"project-{tenant}", title="c"))
++            db.commit()
++        engine.dispose()
++
++        def admit(tenant: str, gate: QuotaGate, model: OkModel, request: str, session: str):
++            accepted = create_run(
++                url,
++                tenant_id=tenant,
++                user_id="visitor-user",
++                session_id=session,
++                message="hello",
++                target_id="target-1",
++                permission_profile="default",
++                request_id=request,
++                headers=headers,
++                claimed_tenant_id="tenant-b",
++                credentials="cred-present",
++                budget=10,
++                model=model,
++                quota=gate,
++            )
++            assert accepted.http_status == 202
++            return accepted
++
++        def count(tenant: str) -> int:
++            checker = create_engine(url)
++            try:
++                with Session(checker) as db:
++                    return len(db.scalars(select(Run).where(Run.tenant_id == tenant)).all())
++            finally:
++                checker.dispose()
++
++        token_cap = Capacity()
++        token_db = QuotaGate(limits=Limits(tasks=5, tokens=1, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=token_cap)
++        token_ok = OkModel()
++        admit("visitor-token", token_db, token_ok, "req-token-1", "sess-a-visitor-token")
++        assert token_ok.calls == 1
++        token_again = BoomModel()
++        token_hit = deny(
++            token_db,
++            database_url=url,
++            tenant_id="visitor-token",
++            session_id="sess-b-visitor-token",
++            message="hello",
++            request_id="req-token-2",
++            credentials="cred-present",
++            budget=10,
++            model=token_again,
++            quota=token_db,
++        )
++        assert token_hit.decision.event["kind"] == "token"
++        assert token_again.calls == 0
++        assert len(token_cap.workers) == 1
++        assert count("visitor-token") == 1
++
++        conc_cap = Capacity()
++        conc_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5), capacity=conc_cap)
++        conc_ok = OkModel()
++        conc_first = admit("visitor-conc", conc_gate, conc_ok, "req-conc-1", "sess-a-visitor-conc")
++        conc_boom = BoomModel()
++        conc_hit = deny(
++            conc_gate,
++            database_url=url,
++            tenant_id="visitor-conc",
++            session_id="sess-b-visitor-conc",
++            message="hello",
++            request_id="req-conc-2",
++            credentials="cred-present",
++            budget=10,
++            model=conc_boom,
++            quota=conc_gate,
++        )
++        assert conc_hit.decision.event["kind"] == "concurrency"
++        assert conc_boom.calls == 0
++        assert len(conc_cap.workers) == 1
++        assert count("visitor-conc") == 1
++        assert complete_run(
++            url,
++            run_id=conc_first.run_id,
++            tenant_id="visitor-conc",
++            user_id="visitor-user",
++            quota=conc_gate,
++        ) == "succeeded"
++        assert len(conc_cap.workers) == 0
++        conc_again = OkModel()
++        admit("visitor-conc", conc_gate, conc_again, "req-conc-3", "sess-a-visitor-conc")
++        assert conc_again.calls == 1
++        assert len(conc_cap.workers) == 1
++
++        ttl_cap = Capacity()
++        ttl_gate = QuotaGate(
++            limits=Limits(tasks=5, tokens=100, concurrency=1, preview_fee=5, sandbox_fee=5),
++            capacity=ttl_cap,
++            worker_ttl=1,
++        )
++        ttl_ok = OkModel()
++        admit("visitor-ttl", ttl_gate, ttl_ok, "req-ttl-1", "sess-a-visitor-ttl")
++        assert len(ttl_cap.workers) == 1
++        time.sleep(2)
++        assert len(ttl_cap.workers) == 0
++        ttl_next = OkModel()
++        admit("visitor-ttl", ttl_gate, ttl_next, "req-ttl-2", "sess-b-visitor-ttl")
++        assert ttl_next.calls == 1
++        assert len(ttl_cap.workers) == 1
++
++        overlap_cap = Capacity()
++        overlap_gate = QuotaGate(
++            limits=Limits(tasks=5, tokens=100, concurrency=2, preview_fee=5, sandbox_fee=5),
++            capacity=overlap_cap,
++        )
++        left = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-1", "sess-a-visitor-overlap")
++        right = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-2", "sess-b-visitor-overlap")
++        assert len(overlap_cap.workers) == 2
++
++        def worker_of(run_id: str) -> str:
++            checker = create_engine(url)
++            try:
++                with Session(checker) as db:
++                    event = db.scalars(
++                        select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
++                    ).one()
++            finally:
++                checker.dispose()
++            return str(event.payload["quota"]["worker_id"])
++
++        left_id = worker_of(left.run_id)
++        right_id = worker_of(right.run_id)
++        assert left_id != right_id
++        from datetime import datetime, timedelta, timezone
++
++        from sqlalchemy import text
++        from rxycode_worker.supervisor import commit_terminal
++
++        install_gate(overlap_gate)
++        try:
++            leaser = create_engine(url)
++            with leaser.begin() as conn:
++                conn.execute(
++                    text(
++                        """
++                        UPDATE runs
++                        SET status = 'leased',
++                            lease_owner = 'worker-c06',
++                            lease_epoch = 1,
++                            lease_until = :until
++                        WHERE id = :id
++                        """
++                    ),
++                    {
++                        "id": left.run_id,
++                        "until": datetime.now(timezone.utc) + timedelta(minutes=5),
++                    },
++                )
++            leaser.dispose()
++            commit_terminal(url, left.run_id, "worker-c06", 1, "succeeded")
++        finally:
++            install_gate(None)
++        assert {item[2] for item in overlap_cap.workers} == {right_id}
++        third = admit("visitor-overlap", overlap_gate, OkModel(), "req-over-3", "sess-c-visitor-overlap")
++        assert len(overlap_cap.workers) == 2
++        assert right_id in {item[2] for item in overlap_cap.workers}
++        assert worker_of(third.run_id) != right_id
++
++        preview_cap = Capacity()
++        preview_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=1, sandbox_fee=5), capacity=preview_cap)
++        preview_ok = OkModel()
++        admit("visitor-preview", preview_gate, preview_ok, "req-preview-1", "sess-a-visitor-preview")
++        preview_boom = BoomModel()
++        preview_hit = deny(
++            preview_gate,
++            database_url=url,
++            tenant_id="visitor-preview",
++            session_id="sess-b-visitor-preview",
++            message="hello",
++            request_id="req-preview-2",
++            credentials="cred-present",
++            budget=10,
++            model=preview_boom,
++            quota=preview_gate,
++        )
++        assert preview_hit.decision.event["kind"] == "preview"
++        assert preview_boom.calls == 0
++        assert len(preview_cap.workers) == 1
++        assert preview_cap.live_ids == []
++        assert count("visitor-preview") == 1
++
++        sandbox_cap = Capacity()
++        sandbox_gate = QuotaGate(limits=Limits(tasks=5, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=1), capacity=sandbox_cap)
++        sandbox_ok = OkModel()
++        admit("visitor-sandbox", sandbox_gate, sandbox_ok, "req-sandbox-1", "sess-a-visitor-sandbox")
++        sandbox_boom = BoomModel()
++        sandbox_hit = deny(
++            sandbox_gate,
++            database_url=url,
++            tenant_id="visitor-sandbox",
++            session_id="sess-b-visitor-sandbox",
++            message="hello",
++            request_id="req-sandbox-2",
++            credentials="cred-present",
++            budget=10,
++            model=sandbox_boom,
++            quota=sandbox_gate,
++        )
++        assert sandbox_hit.decision.event["kind"] == "sandbox"
++        assert sandbox_boom.calls == 0
++        assert len(sandbox_cap.workers) == 1
++        assert count("visitor-sandbox") == 1
++
++        task_cap = Capacity()
++        task_gate = QuotaGate(limits=Limits(tasks=1, tokens=100, concurrency=5, preview_fee=5, sandbox_fee=5), capacity=task_cap)
++        install_gate(task_gate)
++        try:
++            task_ok = OkModel()
++            accepted = create_run(
++                url,
++                tenant_id="visitor-task",
++                user_id="visitor-user",
++                session_id="sess-a-visitor-task",
++                message="hello",
++                target_id="target-1",
++                permission_profile="default",
++                request_id="req-task-1",
++                headers=headers,
++                claimed_tenant_id="tenant-b",
++                credentials="cred-present",
++                budget=10,
++                model=task_ok,
++            )
++            assert accepted.http_status == 202
++            assert task_ok.calls == 1
++            task_boom = BoomModel()
++            with pytest.raises(QuotaRefused) as task_caught:
++                create_run(
++                    url,
++                    tenant_id="visitor-task",
++                    user_id="visitor-user",
++                    session_id="sess-b-visitor-task",
++                    message="hello",
++                    target_id="target-1",
++                    permission_profile="default",
++                    request_id="req-task-2",
++                    headers=headers,
++                    claimed_tenant_id="tenant-b",
++                    credentials="cred-present",
++                    budget=10,
++                    model=task_boom,
++                )
++            task_decision = task_caught.value.decision
++            assert task_decision.http_status == 429
++            assert task_decision.body["error"] == "quota.exceeded"
++            assert task_decision.body["kind"] == "task"
++            assert task_decision.body["limit"] == 1
++            assert task_decision.event["type"] == "quota.exceeded"
++            assert task_decision.event["tenant_id"] == "visitor-task"
++            assert task_decision.event["user_id"] == "visitor-user"
++            assert task_decision.event in task_gate.events_for("visitor-task")
++            assert task_boom.calls == 0
++            assert len(task_cap.workers) == 1
++            assert count("visitor-task") == 1
++            checker = create_engine(url)
++            try:
++                with Session(checker) as db:
++                    row = db.scalars(select(Run).where(Run.tenant_id == "visitor-task")).one()
++            finally:
++                checker.dispose()
++            assert row.tenant_id == "visitor-task"
++        finally:
++            install_gate(None)
++    finally:
++        _stop_postgres()
++
++
++def test_w5_c06_negative() -> None:
++    """GC removes a sandbox created before an exception and an expired one."""
++    from rxycode_worker.scheduler.capacity import Capacity
++
++    capacity = Capacity()
++    failed_id = ""
++    short_id = ""
++    healthy_id = ""
++    try:
++        healthy = capacity.provision(tenant_id="tenant-ok", workspace_id="ws-ok")
++        healthy_id = healthy.sandbox_id
++        try:
++            with capacity.sandbox(tenant_id="tenant-bad", workspace_id="ws-bad") as failed:
++                failed_id = failed.sandbox_id
++                assert _inspect(failed_id).returncode == 0
++                raise RuntimeError("after sandbox create")
++        except RuntimeError as exc:
++            assert str(exc) == "after sandbox create"
++        assert _inspect(failed_id).returncode != 0
++        short = capacity.provision(
++            tenant_id="tenant-ttl",
++            workspace_id="ws-ttl",
++            ttl_seconds=1,
++        )
++        short_id = short.sandbox_id
++        time.sleep(2.5)
++        assert _inspect(short_id).returncode != 0
++        alive = json.loads(_inspect(healthy_id).stdout)[0]
++        assert alive["State"]["Status"] == "running"
++        assert alive["Config"]["Labels"]["rxy.tenant"] == "tenant-ok"
++        samples = capacity.cold_start_samples()
++        assert len(samples) >= 3
++        assert all(sample > 0 for sample in samples)
++        assert capacity.cold_start_p50() == _nearest_rank(samples, 50)
++        assert capacity.cold_start_p95() == _nearest_rank(samples, 95)
++    finally:
++        capacity.destroy_all()
++        for sandbox_id in (failed_id, short_id, healthy_id):
++            if sandbox_id:
++                assert _inspect(sandbox_id).returncode != 0
++
++
++def _nearest_rank(samples: list[float], percentile: int) -> float:
++    ordered = sorted(samples)
++    index = max(0, -(-len(ordered) * percentile // 100) - 1)
++    return ordered[min(index, len(ordered) - 1)]

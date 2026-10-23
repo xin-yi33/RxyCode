@@ -77,8 +77,13 @@ class ToolEvidence(BaseModel):
     risk: str | None = None
     approval: str = ""
     exit_code: int | None = None
+    call_id: str | None = None
     artifacts: list[ArtifactEvidence] = Field(default_factory=list)
     detail: str = ""
+    # Bounded projection of the invocation args (small scalars only — enough
+    # to classify the call, e.g. a git ``operation``; file contents and big
+    # payloads are dropped so nothing new leaks into the journal).
+    args: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -93,6 +98,7 @@ def build_tool_evidence(
     executed: bool,
     approval: str = "",
     risk: Any | None = None,
+    call_id: str | None = None,
 ) -> ToolEvidence:
     text = str(result)
     lowered = text.strip().lower()
@@ -147,7 +153,7 @@ def build_tool_evidence(
                 except UnicodeDecodeError:
                     decoded = None
 
-                if tool.lower() == "write" and "content" in args:
+                if tool.lower() in {"write", "edit"} and "content" in args and args["content"] is not None:
                     expected = str(args.get("content", ""))
                     # Normalize BOM + newlines so Windows CRLF / UTF-8 BOM
                     # writers do not false-fail artifact validation.
@@ -159,7 +165,7 @@ def build_tool_evidence(
                     artifact.valid = (
                         decoded is not None and _norm(decoded) == _norm(expected)
                     )
-                elif tool.lower() == "edit" and "newString" in args:
+                elif tool.lower() == "edit" and "newString" in args and args["newString"] is not None:
                     replacement = str(args.get("newString", ""))
                     old = str(args.get("oldString", ""))
                     if decoded is None:
@@ -168,7 +174,7 @@ def build_tool_evidence(
                         artifact.valid = replacement in decoded
                     else:
                         artifact.valid = old not in decoded
-                elif tool.lower() == "patch" and isinstance(args.get("diff"), str):
+                elif tool.lower() in {"patch", "edit"} and isinstance(args.get("diff"), str):
                     added_lines = [
                         line[1:]
                         for line in args["diff"].splitlines()
@@ -229,9 +235,27 @@ def build_tool_evidence(
         ),
         approval=approval,
         exit_code=exit_code,
+        call_id=str(call_id) if call_id else None,
         artifacts=artifacts,
         detail=text[:500],
+        args=_evidence_args_projection(args),
     )
+
+
+def _evidence_args_projection(args: Any) -> dict | None:
+    """Small-scalar projection of tool args for the evidence record.
+
+    Enough to classify the invocation (git ``operation``, git ``args``
+    flags) without copying file contents or payloads into the journal."""
+    if not isinstance(args, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) <= 200:
+            out[str(key)] = value
+        elif isinstance(value, (int, float, bool)) or value is None:
+            out[str(key)] = value
+    return out or None
 
 
 def _is_rejected_helper_path(path: str) -> bool:

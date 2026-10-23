@@ -1,0 +1,161 @@
+{
+  "collected_at": "2026-10-18T12:40:47Z",
+  "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
+  "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+  "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+  "span_count": 4,
+  "elapsed_ms": 396.24,
+  "total_span_work_ms": 542.912,
+  "spans": [
+    {
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "14d9f906c7854632",
+      "parent_span_id": "",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "tool_call_id": "",
+      "name": "http POST /api/v1/runs",
+      "kind": "server",
+      "otel_kind": "SERVER",
+      "status": "ok",
+      "detail": "",
+      "duration_ms": 33.294,
+      "start_epoch": 1792327247.056183,
+      "end_epoch": 1792327247.089476,
+      "attrs": {
+        "tenant_id": "eval-w7c03-w7c04evidence-4660faa3",
+        "http.route": "/api/v1/runs",
+        "request_id": "w7c03-evidence-cc0fa271-web-solo-w7c04ev-costly",
+        "run.status": "queued",
+        "http.method": "POST",
+        "service.name": "rxycode-server",
+        "http.status_code": 202
+      }
+    },
+    {
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "7ae5fc5a6e9580a2",
+      "parent_span_id": "215b0d013b32914f",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "tool_call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+      "name": "tool.write_file",
+      "kind": "tool",
+      "otel_kind": "CLIENT",
+      "status": "ok",
+      "detail": "",
+      "duration_ms": 62.962,
+      "start_epoch": 1792327247.169316,
+      "end_epoch": 1792327247.232276,
+      "attrs": {
+        "call_id": "call_bf2c9b4259721d784b3b4975edcc6f6a3dfb76e502f9d00048d5c6e404bae172",
+        "agent_id": "eval-primary",
+        "tool_name": "write_file",
+        "attempt_id": "att_0c8f164fd40a4f668332b9edee073638",
+        "cache.hits": 2,
+        "cache.misses": 1,
+        "service.name": "rxycode-worker",
+        "tool.executed": true
+      }
+    },
+    {
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "215b0d013b32914f",
+      "parent_span_id": "574c0925da76d6fb",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "tool_call_id": "",
+      "name": "graph.agent.eval-primary",
+      "kind": "worker",
+      "otel_kind": "INTERNAL",
+      "status": "ok",
+      "detail": "",
+      "duration_ms": 138.498,
+      "start_epoch": 1792327247.168705,
+      "end_epoch": 1792327247.307202,
+      "attrs": {
+        "agent.id": "eval-primary",
+        "agent_id": "eval-primary",
+        "parent_id": "b972d5ca5ffc412894029f35944880fa",
+        "budget_used": 9876543,
+        "tokens_used": 9876543,
+        "service.name": "rxycode-worker"
+      }
+    },
+    {
+      "trace_id": "8b54fa14a09b43a3aeadf259eb31a056",
+      "span_id": "574c0925da76d6fb",
+      "parent_span_id": "14d9f906c7854632",
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "tool_call_id": "",
+      "name": "worker.run",
+      "kind": "worker",
+      "otel_kind": "INTERNAL",
+      "status": "ok",
+      "detail": "",
+      "duration_ms": 308.158,
+      "start_epoch": 1792327247.144266,
+      "end_epoch": 1792327247.452423,
+      "attrs": {
+        "worker.id": "eval-worker-01fa0697",
+        "service.name": "rxycode-worker",
+        "worker.epoch": 1,
+        "run.terminal_status": "ok"
+      }
+    }
+  ],
+  "layers": {
+    "server": {
+      "count": 1,
+      "duration_ms": 33.294
+    },
+    "tool": {
+      "count": 1,
+      "duration_ms": 62.962
+    },
+    "worker": {
+      "count": 2,
+      "duration_ms": 446.656
+    }
+  },
+  "ledger": {
+    "tokens": 9876543,
+    "amount": "19.75308600",
+    "currency": "USD",
+    "price_version": "2026-10",
+    "model_id": "eval-stub",
+    "cost_kind": "confirmed",
+    "row_count": 1,
+    "usage_record_id": "6770d02db660426aa3f02857d8f20752",
+    "usage_record_ids": [
+      "6770d02db660426aa3f02857d8f20752"
+    ]
+  },
+  "provider": {
+    "tokens_used": 9876543,
+    "budget_used": 9876543,
+    "agent_id": "eval-primary",
+    "seq": 6
+  },
+  "cache": {
+    "hits": 2,
+    "misses": 1,
+    "hit_rate": 0.6666666666666666
+  },
+  "cost": {
+    "amount": "19.75308600",
+    "currency": "USD",
+    "abnormal": true,
+    "threshold_usd": "1.0"
+  },
+  "abnormal": [
+    {
+      "run_id": "bef36c15a7694628b9aa462ee9d6ef1d",
+      "amount": "19.75308600",
+      "currency": "USD",
+      "reason": "amount exceeds 1.0 USD threshold"
+    }
+  ],
+  "export_probe_ms": [
+    44.47049999726005,
+    29.64629999769386
+  ],
+  "events_url": "/api/v1/runs/bef36c15a7694628b9aa462ee9d6ef1d/events"
+}

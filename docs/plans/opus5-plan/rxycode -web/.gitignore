@@ -1,0 +1,14 @@
+.env
+.env.*
+credentials.yaml
+*.secret
+*.key
+*.token
+config.local.yaml
+secrets.json
+secret.txt
+live_credentials.*
+rxycode_gh_secret.txt
+*.rar
+__pycache__/
+*.pyc

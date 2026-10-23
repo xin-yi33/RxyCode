@@ -18,11 +18,20 @@ def _free_port() -> int:
 
 def test_real_api_subprocess_reaches_status_endpoint(isolated_runtime):
     project_root = Path(__file__).resolve().parents[2]
-    package_parent = project_root.parents[1]
+    # Deep checkouts (<base>/RxyCode/RxyCode1_1_0) add the grandparent so the
+    # child can import the synthesized ``RxyCode.RxyCode1_1_0`` package without
+    # an editable install. Flat checkouts (CI /src, container roots) have no
+    # grandparent segment — the installed package already resolves.
+    package_parent = (
+        project_root.parents[1] if len(project_root.parents) > 1 else None
+    )
     port = _free_port()
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
-        filter(None, [str(package_parent), env.get("PYTHONPATH", "")])
+        filter(
+            None,
+            [str(package_parent) if package_parent else "", env.get("PYTHONPATH", "")],
+        )
     )
     env["RXYCODE_DATA_DIR"] = str(isolated_runtime.data_dir)
     api_token = "system-test-api-token"

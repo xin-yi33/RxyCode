@@ -1,0 +1,204 @@
+diff --git a/appserver/agent_worker.py b/appserver/agent_worker.py
+index 8941d517..ac725910 100644
+--- a/appserver/agent_worker.py
++++ b/appserver/agent_worker.py
+@@ -350,6 +350,13 @@ def _question_timeout_from_config() -> float | None:
+         return None
+ 
+ 
++def session_type_for_worker():
++    """Desktop/worker prompts use the same Session class as the other surfaces."""
++    from RxyCode.RxyCode1_1_0.main import core_for_surface
++
++    return core_for_surface("desktop")["session"]
++
++
+ class AgentWorker:
+     def __init__(self) -> None:
+         install_tui_context_hook()
+@@ -410,7 +417,7 @@ class AgentWorker:
+             existing.emit = emit
+             existing.drain_steers = self._take_steers
+             return existing
+-        session = Session(
++        session = session_type_for_worker()(
+             session_id=session_id,
+             workspace_root=workspace_root,
+             emit=emit,
+@@ -1213,7 +1220,7 @@ class AgentWorker:
+             cancelled = True
+             asyncio.create_task(self._await_cancelled_prompt(run_task))
+         elif self._agent is not None:
+-            session = Session(
++            session = session_type_for_worker()(
+                 session_id=self._session_id,
+                 workspace_root=self._workspace_root,
+                 emit=lambda _n: None,
+diff --git a/frontend/protocol-client/src/index.ts b/frontend/protocol-client/src/index.ts
+index 26b99e20..3862f85e 100644
+--- a/frontend/protocol-client/src/index.ts
++++ b/frontend/protocol-client/src/index.ts
+@@ -1,3 +1,8 @@
++export {
++  webTransportAdapter,
++  type WebTransportAdapter,
++} from "./webTransport.ts";
++
+ export {
+   ProtocolClient,
+   ProtocolDisconnectError,
+diff --git a/frontend/protocol-client/src/webTransport.ts b/frontend/protocol-client/src/webTransport.ts
+new file mode 100644
+index 00000000..0def4cdf
+--- /dev/null
++++ b/frontend/protocol-client/src/webTransport.ts
+@@ -0,0 +1,10 @@
++/** Reserved browser transport. This card does not connect a device. */
++export interface WebTransportAdapter {
++  readonly kind: "web";
++  readonly delivered: false;
++}
++
++export const webTransportAdapter: WebTransportAdapter = {
++  kind: "web",
++  delivered: false,
++};
+diff --git a/main.py b/main.py
+index 9e1c6038..12264973 100644
+--- a/main.py
++++ b/main.py
+@@ -1,5 +1,6 @@
+ """RxyCode CLI and Ink frontend launcher."""
+ 
++import re
+ import sys
+ import os
+ 
+@@ -688,6 +689,40 @@ def _resolve_model_label(model):
+     return "default"
+ 
+ 
++_ENTRY_SURFACES = ("cli", "opentui", "desktop", "web")
++_ELECTRON_PRELOAD = re.compile(
++    r"""(?:from\s+['\"]electron['\"]|require\(\s*['\"]electron['\"]|['\"][^'\"]*preload[^'\"]*['\"])""",
++    re.IGNORECASE,
++)
++
++
++def core_facade() -> dict[str, type]:
++    """The one Session, AgentRuntime, and ToolOrchestrator for every surface."""
++    from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
++    from RxyCode.RxyCode1_1_0.core.session import Session
++    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
++
++    return {
++        "session": Session,
++        "agent_runtime": AgentRuntime,
++        "tool_orchestrator": ToolOrchestrator,
++    }
++
++
++def core_for_surface(surface: str) -> dict[str, type]:
++    """CLI, OpenTUI, Desktop, and Web initialize this same facade."""
++    if surface not in _ENTRY_SURFACES:
++        raise ValueError(f"unknown surface: {surface}")
++    return core_facade()
++
++
++def browser_entry_status(source: str) -> str:
++    """Reject a browser entry that imports Electron or a preload script."""
++    if _ELECTRON_PRELOAD.search(source):
++        return "BLOCKED"
++    return "OK"
++
++
+ class _CaseInsensitiveCommandGroup(click.Group):
+     """Resolve registered subcommands without changing option values.
+ 
+@@ -942,5 +977,19 @@ def _config_model_limits(action: str, model_name: str, *, dry_run: bool = False)
+     print("model-limits actions: inspect, set-auto")
+ 
+ 
++@cli.group("web")
++def web():
++    """Web core facade entry. Device connect is not delivered in this card."""
++
++
++@web.command("connect")
++def web_connect():
++    """Reserved device connect. Not implemented in this card."""
++    raise click.ClickException(
++        "rxycode web connect is not implemented in this card. "
++        "No device session is started."
++    )
++
++
+ if __name__ == "__main__":
+     cli()
+diff --git a/tests/web/w1/test_w1_c05_module.py b/tests/web/w1/test_w1_c05_module.py
+new file mode 100644
+index 00000000..3c00fb22
+--- /dev/null
++++ b/tests/web/w1/test_w1_c05_module.py
+@@ -0,0 +1,23 @@
++"""WEB-W1-C05. Existing CLI help stays, and web help says it is not delivered."""
++from __future__ import annotations
++
++from click.testing import CliRunner
++
++from RxyCode.RxyCode1_1_0.main import cli
++
++
++def test_w1_c05_integration():
++    """rxycode --help keeps gui/config, and web --help states the reserved command."""
++    runner = CliRunner()
++    top = runner.invoke(cli, ["--help"])
++    assert top.exit_code == 0, top.output
++    assert "gui" in top.output
++    assert "config" in top.output
++    assert "--model" in top.output
++    web = runner.invoke(cli, ["web", "--help"])
++    assert web.exit_code == 0, web.output
++    assert "connect" in web.output
++    assert "not delivered" in web.output.casefold()
++    connect = runner.invoke(cli, ["web", "connect", "--help"])
++    assert connect.exit_code == 0, connect.output
++    assert "not implemented" in connect.output.casefold()
+diff --git a/tests/web/w1/test_w1_c05_unit.py b/tests/web/w1/test_w1_c05_unit.py
+new file mode 100644
+index 00000000..924a06fe
+--- /dev/null
++++ b/tests/web/w1/test_w1_c05_unit.py
+@@ -0,0 +1,32 @@
++"""WEB-W1-C05. CLI, OpenTUI, Desktop, and Web share one core facade."""
++from __future__ import annotations
++
++from pathlib import Path
++
++from RxyCode.RxyCode1_1_0.core.agents.runtime import AgentRuntime
++from RxyCode.RxyCode1_1_0.core.session import Session
++from RxyCode.RxyCode1_1_0.main import browser_entry_status, core_for_surface
++
++
++def test_w1_c05_contract():
++    """Every surface initializes the same AgentRuntime and Session classes."""
++    from appserver.agent_worker import session_type_for_worker
++
++    facades = [
++        core_for_surface(name)
++        for name in ("cli", "opentui", "desktop", "web")
++    ]
++    assert {id(item["agent_runtime"]) for item in facades} == {id(AgentRuntime)}
++    assert {id(item["session"]) for item in facades} == {id(Session)}
++    assert session_type_for_worker() is Session
++    assert session_type_for_worker() is facades[0]["session"]
++
++
++def test_w1_c05_negative(tmp_path: Path):
++    """A browser entry that imports Electron preload is rejected."""
++    repo = Path(__file__).resolve().parents[3]
++    adapter = repo / "frontend" / "protocol-client" / "src" / "webTransport.ts"
++    assert browser_entry_status(adapter.read_text(encoding="utf-8")) == "OK"
++    blocked = tmp_path / "bad-entry.ts"
++    blocked.write_text('import preload from "electron";\n', encoding="utf-8")
++    assert browser_entry_status(blocked.read_text(encoding="utf-8")) == "BLOCKED"

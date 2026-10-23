@@ -1,4 +1,5 @@
 import type { ChatMessage, Mode, ToolStatus } from "../types.ts";
+import { validateClipboardAttachments } from "../clipboardAttachments.ts";
 
 export type SessionEventLike = {
   method?: string;
@@ -18,17 +19,44 @@ function eventTime(ev: SessionEventLike, fallback: number): number {
   return fallback;
 }
 
-function findOpenTool(messages: ChatMessage[], callId: string, toolName: string): ChatMessage | undefined {
-  const wantedId = String(callId || "");
-  return [...messages].reverse().find((m) => {
-    if (m.role !== "tool" || m.toolStatus !== "running") return false;
-    if (wantedId && m.toolCallId) return m.toolCallId === wantedId;
-    return m.toolName === (toolName || m.toolName);
-  });
+function detachOpen(openOrder: ChatMessage[], row: ChatMessage): void {
+  const index = openOrder.lastIndexOf(row);
+  if (index >= 0) openOrder.splice(index, 1);
+}
+
+function takeOpenTool(
+  openByCall: Map<string, ChatMessage>,
+  openOrder: ChatMessage[],
+  callId: string,
+  toolName: string,
+): ChatMessage | undefined {
+  if (callId) {
+    const matched = openByCall.get(callId);
+    if (matched && matched.toolStatus === "running") {
+      openByCall.delete(callId);
+      detachOpen(openOrder, matched);
+      return matched;
+    }
+  }
+  for (let index = openOrder.length - 1; index >= 0; index -= 1) {
+    const candidate = openOrder[index];
+    if (!candidate || candidate.toolStatus !== "running") continue;
+    if (callId && candidate.toolCallId) {
+      if (candidate.toolCallId !== callId) continue;
+    } else if (toolName && candidate.toolName !== toolName) {
+      continue;
+    }
+    if (candidate.toolCallId) openByCall.delete(candidate.toolCallId);
+    openOrder.splice(index, 1);
+    return candidate;
+  }
+  return undefined;
 }
 
 export function sessionEventsToMessages(events: SessionEventLike[]): ChatMessage[] {
   const messages: ChatMessage[] = [];
+  const openByCall = new Map<string, ChatMessage>();
+  const openOrder: ChatMessage[] = [];
   let buf = "";
   const stamp = Date.now();
 
@@ -64,7 +92,17 @@ export function sessionEventsToMessages(events: SessionEventLike[]): ChatMessage
     if (method === "session/prompt" || method === "event/user_message") {
       flushAssistant(at);
       const text = String(p.text ?? p.content ?? "");
-      if (text) push("user", text, {}, at);
+      if (text) {
+        let attachments: ChatMessage["attachments"];
+        try {
+          attachments = validateClipboardAttachments(p.attachments);
+        } catch {
+          // Historical events have no attachment field; malformed metadata is
+          // ignored as one unit and never copied into transcript state.
+          attachments = undefined;
+        }
+        push("user", text, attachments?.length ? { attachments } : {}, at);
+      }
       continue;
     }
     if (method === "event/message_delta") {
@@ -95,25 +133,28 @@ export function sessionEventsToMessages(events: SessionEventLike[]): ChatMessage
     if (method === "event/tool_begin") {
       flushAssistant(at);
       const args = p.arguments;
-      push(
+      const callId = String(p.call_id ?? "");
+      const row = push(
         "tool",
         "",
         {
           toolName: String(p.tool_name ?? "tool"),
-          toolCallId: String(p.call_id ?? ""),
+          toolCallId: callId,
           toolStatus: "running",
           toolArgs: typeof args === "string" ? args : args != null ? JSON.stringify(args) : "",
           toolExpanded: true,
         },
         at,
       );
+      openOrder.push(row);
+      if (callId) openByCall.set(callId, row);
       continue;
     }
     if (method === "event/tool_end") {
       const callId = String(p.call_id ?? "");
       const toolName = String(p.tool_name ?? "");
       const status: ToolStatus = p.ok === false ? "error" : "success";
-      const existing = findOpenTool(messages, callId, toolName);
+      const existing = takeOpenTool(openByCall, openOrder, callId, toolName);
       if (existing) {
         existing.content = String(p.summary ?? existing.content);
         existing.toolStatus = status;
@@ -186,6 +227,14 @@ export function normalizeLoadedMessages(raw: unknown[]): ChatMessage[] {
       id: row.id || `loaded-${i}-${stamp}`,
       role,
       content: String(row.content ?? row.text ?? ""),
+      attachments: (() => {
+        try {
+          const attachments = validateClipboardAttachments(row.attachments);
+          return attachments.length ? attachments : undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
       timestamp,
       done: row.done ?? true,
       live: false,

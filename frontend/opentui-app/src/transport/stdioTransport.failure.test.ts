@@ -70,6 +70,72 @@ describe("stdio transport startup failures", () => {
     expect(result.progress).toBe("");
   }, 20_000);
 
+  test("rejects attachments before prompt when initialize omits the capability", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rxy-old-clipboard-server-"));
+    const script = path.join(dir, "old_appserver.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "for line in sys.stdin:",
+      "    msg = json.loads(line)",
+      "    method = msg.get('method')",
+      "    if method == 'initialize': result = {'capabilities': {}}",
+      "    elif method == 'session/new': result = {'session_id': 'old-server-session'}",
+      "    else: result = {}",
+      "    if 'id' in msg:",
+      "        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}) + '\\n')",
+      "        sys.stdout.flush()",
+      "    if method == 'shutdown': break",
+      "",
+    ].join("\n"), "utf-8");
+    process.env.RXYCODE_TRANSPORT = "stdio";
+    process.env.RXYCODE_PROJECT_ROOT = repoRoot;
+    process.env.RXYCODE_APPSERVER_INIT_TIMEOUT_MS = "1000";
+    process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS = "1000";
+    __setPythonCmdForTests([python, script]);
+    const transport = getChatTransport();
+    const messages: import("../types.ts").ChatMessage[] = [];
+    await expect(transport.sendChatMessage("inspect", "build", {
+      onMessages: (updater) => messages.splice(0, messages.length, ...updater(messages)),
+      onStreaming: () => {},
+      onStatus: () => {},
+    }, undefined, undefined, [{ path: "C:\\tmp\\missing.png" }])).rejects.toThrow(/prompt_attachments/);
+    expect(messages).toHaveLength(0);
+    await transport.shutdown?.();
+  }, 20_000);
+
+  test("rejects attachments before prompt when initialize explicitly disables the capability", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "rxy-disabled-clipboard-server-"));
+    const script = path.join(dir, "disabled_appserver.py");
+    writeFileSync(script, [
+      "import json, sys",
+      "for line in sys.stdin:",
+      "    msg = json.loads(line)",
+      "    method = msg.get('method')",
+      "    if method == 'initialize': result = {'capabilities': {'prompt_attachments': False}}",
+      "    elif method == 'session/new': result = {'session_id': 'old-server-session'}",
+      "    else: result = {}",
+      "    if 'id' in msg:",
+      "        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': msg['id'], 'result': result}) + '\\n')",
+      "        sys.stdout.flush()",
+      "    if method == 'shutdown': break",
+      "",
+    ].join("\n"), "utf-8");
+    process.env.RXYCODE_TRANSPORT = "stdio";
+    process.env.RXYCODE_PROJECT_ROOT = repoRoot;
+    process.env.RXYCODE_APPSERVER_INIT_TIMEOUT_MS = "1000";
+    process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS = "1000";
+    __setPythonCmdForTests([python, script]);
+    const transport = getChatTransport();
+    const messages: import("../types.ts").ChatMessage[] = [];
+    await expect(transport.sendChatMessage("inspect", "build", {
+      onMessages: (updater) => messages.splice(0, messages.length, ...updater(messages)),
+      onStreaming: () => {},
+      onStatus: () => {},
+    }, undefined, undefined, [{ path: "C:\\tmp\\missing.png" }])).rejects.toThrow(/prompt_attachments/);
+    expect(messages).toHaveLength(0);
+    await transport.shutdown?.();
+  }, 20_000);
+
   test("listSessions restarts a dead appserver and still returns the catalog", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "rxy-appserver-restart-"));
     const marker = path.join(dir, "seen");
@@ -87,7 +153,7 @@ describe("stdio transport startup failures", () => {
         "    mid = msg.get('id')",
         "    method = msg.get('method')",
         "    if method == 'initialize':",
-        "        result = {'protocol_version': '1.1.0', 'protocol_min': '1.0.0', 'protocol_max': '1.1.0', 'server_name': 'rxycode-appserver', 'server_version': '1.4.2', 'capabilities': {}}",
+        "        result = {'protocol_version': '1.1.0', 'protocol_min': '1.0.0', 'protocol_max': '1.1.0', 'server_name': 'rxycode-appserver', 'server_version': '1.4.4', 'capabilities': {}}",
         "    elif method == 'session/new':",
         "        result = {'session_id': 's1', 'workspace_root': '.'}",
         "    elif method == 'sessions/list':",

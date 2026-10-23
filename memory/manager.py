@@ -10,6 +10,7 @@ from typing import Any
 
 from RxyCode.RxyCode1_1_0.config.settings import load_config
 
+from ._scope import memory_key
 from .short_term import ShortTermMemory
 from .long_term import LongTermMemory
 from .compressor import ContextCompressor
@@ -176,7 +177,7 @@ class MemoryManager:
         )
         self._project_root = Path.cwd().resolve()
         self.experience = ExperienceVectorMemory(
-            project=str(self._project_root),
+            project=memory_key(str(self._project_root)),
             dimension=dimension,
             max_entries=max_entries,
         )

@@ -39,3 +39,14 @@ OpenTUI `/loop` 的进程外时钟权威是 `appserver/schedule_service.py`（`s
 - `CronExpression.matches(dt) -> bool`: Check if the expression fires at a datetime
 - `CronExpression.next_run(after) -> datetime`: Compute the next fire time
 - Supports: *, */N, ranges (1-5), lists (1,3,5), @hourly/@daily/@weekly/@monthly/@yearly/@every
+
+## rules.py — web 调度规则引擎（rxycode-server 共用）
+
+`scheduler/rules.py` 是 `rxycode_server.api.schedules` 与调度服务共用的唯一规则
+引擎（与 manager.py 的 cron 实现并存；web 侧禁止再长第三套）。规则类型：
+`interval`（分钟）、`at`（一次性，带 offset 的时间戳按其自身时区执行，naive
+时间按任务 timezone 解析）、`weekly`（days-of-week + time-of-day，时区感知、
+正确处理 DST）。`parse_rule` / `next_fire` / `preview` 供 API 校验与
+`service.fire_due_schedules` tick 使用；执行幂等走 `schedule_executions` 台账
+（schedule_id + scheduled_slot 唯一，run-now 用 `manual:{request_id}` 槽位），
+目标会话忙碌时记录 `skipped_busy` 而非并发放火。

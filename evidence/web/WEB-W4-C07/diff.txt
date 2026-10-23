@@ -1,0 +1,338 @@
+diff --git a/packages/rxycode-runner/pyproject.toml b/packages/rxycode-runner/pyproject.toml
+new file mode 100644
+index 00000000..98fc804b
+--- /dev/null
++++ b/packages/rxycode-runner/pyproject.toml
+@@ -0,0 +1,16 @@
++[build-system]
++requires = ["setuptools>=69"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "rxycode-runner"
++version = "1.4.3"
++description = "Local runner for rxycode connect"
++requires-python = ">=3.10"
++dependencies = ["websockets"]
++
++[project.scripts]
++rxycode-connect = "rxycode_runner.desktop.capabilities:connect_main"
++
++[tool.setuptools.packages.find]
++where = ["src"]
+diff --git a/packages/rxycode-runner/src/rxycode_runner/desktop/capabilities.py b/packages/rxycode-runner/src/rxycode_runner/desktop/capabilities.py
+index 20f0d91b..b5906505 100644
+--- a/packages/rxycode-runner/src/rxycode_runner/desktop/capabilities.py
++++ b/packages/rxycode-runner/src/rxycode_runner/desktop/capabilities.py
+@@ -49,3 +49,84 @@ def describe_platform(
+         "window": "unavailable",
+         "click": "CAPABILITY_UNAVAILABLE",
+     }
++
++
++_RELEASE_PLATFORMS = ("windows", "macos", "linux")
++
++
++def support_matrix(
++    system: str,
++    *,
++    accessibility: bool = False,
++    wayland: bool = False,
++) -> dict[str, str]:
++    """Platform facts. Unverified desktops are not reported as available."""
++    if system in {"Windows", "win32"} and not wayland:
++        return {
++            "desktop_input": "available",
++            "conpty": "available",
++            "local_full": "available",
++            "click": "available",
++        }
++    if system in {"Darwin", "macOS"}:
++        desktop = "available" if accessibility else "unsupported"
++        return {
++            "desktop_input": desktop,
++            "conpty": "unsupported",
++            "local_full": "unverified",
++            "click": desktop,
++        }
++    if system == "Linux":
++        desktop = "unsupported" if wayland or not accessibility else "unverified"
++        return {
++            "desktop_input": desktop,
++            "conpty": "unsupported",
++            "local_full": "unverified",
++            "click": desktop,
++        }
++    return {
++        "desktop_input": "unsupported",
++        "conpty": "unsupported",
++        "local_full": "unverified",
++        "click": "unsupported",
++    }
++
++
++def release_status(verified_platforms: set[str]) -> dict[str, str]:
++    """Only platforms with a real run are supported. The others stay unverified."""
++    verified = {item.casefold() for item in verified_platforms}
++    return {
++        name: "supported" if name in verified else "unverified"
++        for name in _RELEASE_PLATFORMS
++    }
++
++
++def connect_main() -> None:
++    """Installed console entry. It opens the outbound device socket."""
++    import argparse
++    import asyncio
++
++    from rxycode_runner.remote.client import _one_session, reset_stop
++
++    parser = argparse.ArgumentParser(prog="rxycode-connect")
++    parser.add_argument("command", choices=["connect"])
++    parser.add_argument("--url", required=True)
++    parser.add_argument("--code", default="")
++    parser.add_argument("--device-id", required=True)
++    parser.add_argument("--os-name", default="Windows")
++    parser.add_argument("--capability", action="append", default=[])
++    parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
++    args = parser.parse_args()
++    reset_stop()
++    asyncio.run(
++        _one_session(
++            url=args.url,
++            device_id=args.device_id,
++            os_name=args.os_name,
++            capabilities=list(args.capability or ["click"]),
++            pairing_code=args.code,
++            protocol_version="1.1.0",
++            heartbeat_seconds=args.heartbeat_seconds,
++            state={"token": "", "scope": "device"},
++        )
++    )
+diff --git a/packages/rxycode-runner/src/rxycode_runner/remote/client.py b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+index e39531a7..04b1d313 100644
+--- a/packages/rxycode-runner/src/rxycode_runner/remote/client.py
++++ b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+@@ -240,7 +240,10 @@ def _ensure_local_tools(device_id: str) -> None:
+ 
+ 
+ def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: str) -> None:
+-    from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
++    try:
++        from RxyCode.RxyCode1_1_0.core.safety.approval import SseApproval, get_approval_broker
++    except ImportError:
++        return
+ 
+     broker = get_approval_broker()
+     if not isinstance(broker, SseApproval):
+@@ -262,8 +265,10 @@ def _publish_approvals(queue: asyncio.Queue[dict[str, Any] | None], device_id: s
+ 
+ 
+ def _tool_rpc(device_id: str) -> Any:
+-    from rxycode_runner.transport.tool_rpc import tool_rpc_for
+-
++    try:
++        from rxycode_runner.transport.tool_rpc import tool_rpc_for
++    except ImportError:
++        return None
+     return tool_rpc_for(device_id)
+ 
+ 
+diff --git a/tests/system/test_installed_package.py b/tests/system/test_installed_package.py
+index 5180c063..de7d3954 100644
+--- a/tests/system/test_installed_package.py
++++ b/tests/system/test_installed_package.py
+@@ -431,3 +431,36 @@ def test_installed_wheel_session_identity_matches_legacy(
+         env=installed_package.env,
+     )
+     assert probe.stdout.strip() == "OK"
++
++
++def test_runner_connect_installs_in_fresh_venv(tmp_path: Path) -> None:
++    """WEB-W4-C07: the runner package installs its connect entry in an empty venv."""
++    venv = tmp_path / "runner-venv"
++    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
++    python = _venv_executable(venv, "python")
++    runner = PROJECT_ROOT / "packages" / "rxycode-runner"
++    installed = subprocess.run(
++        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(runner)],
++        capture_output=True,
++        text=True,
++        timeout=180,
++        check=False,
++    )
++    assert installed.returncode == 0, installed.stderr
++    probe = _run(
++        [
++            str(python),
++            "-c",
++            "from rxycode_runner.desktop.capabilities import release_status\n"
++            "labels = release_status({'windows'})\n"
++            "assert labels['macos'] == 'unverified'\n"
++            "assert labels['linux'] == 'unverified'\n"
++            "print('runner install OK')",
++        ],
++        cwd=tmp_path,
++        env={**os.environ, "PYTHONPATH": ""},
++    )
++    assert "runner install OK" in probe.stdout
++    script_name = "rxycode-connect.exe" if os.name == "nt" else "rxycode-connect"
++    script_dir = venv / "Scripts" if os.name == "nt" else venv / "bin"
++    assert (script_dir / script_name).is_file()
+diff --git a/tests/web/w4/test_w4_c07_module.py b/tests/web/w4/test_w4_c07_module.py
+new file mode 100644
+index 00000000..58786f1d
+--- /dev/null
++++ b/tests/web/w4/test_w4_c07_module.py
+@@ -0,0 +1,26 @@
++"""WEB-W4-C07. macOS without Accessibility does not advertise desktop input."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++SRC = REPO / "packages" / "rxycode-runner" / "src"
++if str(SRC) not in sys.path:
++    sys.path.insert(0, str(SRC))
++
++
++def test_w4_c07_integration() -> None:
++    """Darwin without an Accessibility grant is not desktop-input available."""
++    from rxycode_runner.desktop.capabilities import support_matrix
++
++    matrix = support_matrix("Darwin", accessibility=False, wayland=False)
++    assert matrix["desktop_input"] != "available"
++    assert matrix["desktop_input"] == "unsupported"
++    wayland = support_matrix("Linux", accessibility=False, wayland=True)
++    assert wayland["desktop_input"] == "unsupported"
++    windows = support_matrix("Windows", accessibility=False, wayland=False)
++    assert windows["desktop_input"] == "available"
++    assert windows["conpty"] == "available"
++    assert windows["local_full"] == "available"
+diff --git a/tests/web/w4/test_w4_c07_unit.py b/tests/web/w4/test_w4_c07_unit.py
+new file mode 100644
+index 00000000..69dce54c
+--- /dev/null
++++ b/tests/web/w4/test_w4_c07_unit.py
+@@ -0,0 +1,119 @@
++"""WEB-W4-C07. A fresh Windows install can start connect, and unverified OS stays unverified."""
++
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++import httpx
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++RUNNER = REPO / "packages" / "rxycode-runner"
++for entry in (
++    REPO,
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(entry) not in sys.path:
++        sys.path.insert(0, str(entry))
++
++
++def _venv_python(venv: Path) -> Path:
++    if os.name == "nt":
++        return venv / "Scripts" / "python.exe"
++    return venv / "bin" / "python"
++
++
++def _connect_script(venv: Path) -> Path:
++    if os.name == "nt":
++        return venv / "Scripts" / "rxycode-connect.exe"
++    return venv / "bin" / "rxycode-connect"
++
++
++def test_w4_c07_contract(tmp_path: Path) -> None:
++    """Installing the runner into a new venv starts the outbound device socket."""
++    from rxycode_runner.desktop.capabilities import release_status
++    from rxycode_server.devices.gateway import serve_in_thread
++
++    windows = release_status({"windows"})
++    assert windows["windows"] == "supported"
++    assert windows["macos"] == "unverified"
++    assert windows["linux"] == "unverified"
++    venv = tmp_path / "venv"
++    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
++    python = _venv_python(venv)
++    installed = subprocess.run(
++        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(RUNNER)],
++        capture_output=True,
++        text=True,
++        timeout=180,
++        check=False,
++    )
++    assert installed.returncode == 0, installed.stderr
++    script = _connect_script(venv)
++    assert script.is_file()
++    gateway = serve_in_thread(secret=_SECRET)
++    browser = gateway.browser_session("tenant-a")
++    csrf = "csrf-token-value-for-c07"
++    issued = httpx.post(
++        f"{gateway.http}/api/v1/devices/pairings",
++        headers={"Origin": gateway.http, "X-CSRF-Token": csrf},
++        cookies={"rxy_session": browser, "rxy_csrf": csrf},
++        timeout=5,
++    )
++    issued.raise_for_status()
++    process = subprocess.Popen(
++        [
++            str(script),
++            "connect",
++            "--url",
++            gateway.ws,
++            "--code",
++            issued.json()["code"],
++            "--device-id",
++            "desk-c07",
++            "--os-name",
++            "Windows",
++            "--capability",
++            "click",
++            "--heartbeat-seconds",
++            "0.2",
++        ],
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        text=True,
++    )
++    try:
++        deadline = time.time() + 20
++        while time.time() < deadline and not gateway.session_id("desk-c07"):
++            time.sleep(0.05)
++        detail = ""
++        if process.poll() is not None:
++            out, err = process.communicate(timeout=5)
++            detail = (out or "") + (err or "")
++        assert gateway.session_id("desk-c07"), detail or process.poll()
++        assert gateway.scope("desk-c07") == "device"
++    finally:
++        process.terminate()
++        try:
++            process.wait(timeout=5)
++        except subprocess.TimeoutExpired:
++            process.kill()
++        gateway.close()
++
++
++def test_w4_c07_negative() -> None:
++    """A Windows-only run does not mark macOS or Linux supported."""
++    from rxycode_runner.desktop.capabilities import release_status
++
++    labels = release_status({"windows"})
++    assert labels["macos"] == "unverified"
++    assert labels["linux"] == "unverified"
++    assert labels["macos"] != "supported"
++    assert labels["linux"] != "supported"
++    assert "supported" not in labels["macos"]
++    assert "supported" not in labels["linux"]

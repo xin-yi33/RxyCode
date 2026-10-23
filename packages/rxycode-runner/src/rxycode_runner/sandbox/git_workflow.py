@@ -1,0 +1,171 @@
+"""Branch, commit, and push inside a sandbox. Protected main is not pushed."""
+
+from __future__ import annotations
+
+import subprocess
+import uuid
+
+from rxycode_runner.sandbox.gvisor import docker_executable
+
+_PROTECTED = {"main", "master"}
+
+
+class ProtectedBranch(PermissionError):
+    """main and master are not push targets."""
+
+    def __init__(self, branch: str) -> None:
+        self.branch = branch
+        super().__init__(f"protected branch refused: {branch}")
+
+
+class SandboxRepo:
+    def __init__(self, name: str, tenant_id: str) -> None:
+        self.name = name
+        self.tenant_id = tenant_id
+
+
+class GitWorkflow:
+    def open_sandbox(self, *, tenant_id: str) -> SandboxRepo:
+        name = "rxy-git-" + uuid.uuid4().hex[:12]
+        docker = docker_executable()
+        created = _run(
+            docker,
+            [
+                "create",
+                "--name",
+                name,
+                "--entrypoint",
+                "sleep",
+                "--user",
+                "65534:65534",
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--label",
+                f"rxy.tenant={tenant_id}",
+                "--workdir",
+                "/tmp",
+                "alpine/git",
+                "infinity",
+            ],
+        )
+        if created.returncode != 0:
+            raise RuntimeError((created.stderr or "git sandbox create failed").strip())
+        if _run(docker, ["start", name]).returncode != 0:
+            _run(docker, ["rm", "-f", name])
+            raise RuntimeError("git sandbox failed to start")
+        return SandboxRepo(name, tenant_id)
+
+    def clone_remote(self, box: SandboxRepo, remote: str, *, token: str) -> str:
+        _git(box, ["clone", remote, "/tmp/ws"], token=token)
+        return self.rev(box, "HEAD")
+
+    def commit_fix(
+        self,
+        box: SandboxRepo,
+        *,
+        branch: str,
+        path: str,
+        content: str,
+        message: str,
+    ) -> str:
+        if branch in _PROTECTED:
+            raise ProtectedBranch(branch)
+        _git(box, ["-C", "/tmp/ws", "checkout", "-b", branch])
+        _write(box, f"/tmp/ws/{path}", content)
+        _git(box, ["-C", "/tmp/ws", "add", path])
+        _git(
+            box,
+            [
+                "-C",
+                "/tmp/ws",
+                "-c",
+                "user.email=c05@example.test",
+                "-c",
+                "user.name=c05",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        return self.rev(box, "HEAD")
+
+    def push(
+        self,
+        box: SandboxRepo,
+        *,
+        branch: str,
+        remote: str,
+        journal: object,
+        token: str,
+    ) -> None:
+        if branch in _PROTECTED:
+            raise ProtectedBranch(branch)
+        reserve = getattr(journal, "reserve_remote", None)
+        complete = getattr(journal, "complete_remote", None)
+        if not callable(reserve) or not callable(complete):
+            raise RuntimeError("tool journal required")
+        call = reserve(action="git.push", branch=branch, remote=remote)
+        _git(box, ["-C", "/tmp/ws", "push", remote, f"HEAD:refs/heads/{branch}"], token=token)
+        complete(call, f"pushed {branch}")
+
+    def rev(self, box: SandboxRepo, ref: str) -> str:
+        done = _git(box, ["-C", "/tmp/ws", "rev-parse", ref])
+        return done.stdout.strip()
+
+    def close(self, box: SandboxRepo) -> None:
+        _run(docker_executable(), ["rm", "-f", box.name])
+
+
+def _write(box: SandboxRepo, path: str, content: str) -> None:
+    done = subprocess.run(
+        [docker_executable(), "exec", "-i", box.name, "sh", "-c", f"cat > {path}"],
+        input=content,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise RuntimeError((done.stderr or "write failed").strip())
+
+
+def _git(
+    box: SandboxRepo,
+    args: list[str],
+    token: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    command = ["git"]
+    if token:
+        command.extend(["-c", f"http.extraHeader=Authorization: Bearer {token}"])
+    command.extend(args)
+    try:
+        done = _run(docker_executable(), ["exec", box.name, *command])
+    except subprocess.TimeoutExpired as exc:
+        raise _redacted_failure(exc, token) from None
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "git failed").strip()
+        raise _redacted_failure(RuntimeError(detail), token) from None
+    return done
+
+
+def _redacted_failure(exc: BaseException, token: str | None) -> RuntimeError:
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return RuntimeError("git command timed out")
+    detail = str(exc)
+    if token and token in detail:
+        detail = detail.replace(token, "[redacted]")
+    return RuntimeError(detail)
+
+
+def _run(docker: str, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [docker, *args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )

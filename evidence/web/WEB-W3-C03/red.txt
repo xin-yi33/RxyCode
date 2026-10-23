@@ -1,0 +1,9 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c03_unit.py:27: AssertionError: eventReducer.ts is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c03_unit.py:27: AssertionError: eventReducer.ts is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c03_module.py:111: AssertionError: ChatPage.tsx is missing
+FAILED tests/web/w3/test_w3_c03_unit.py::test_w3_c03_contract
+FAILED tests/web/w3/test_w3_c03_unit.py::test_w3_c03_negative
+FAILED tests/web/w3/test_w3_c03_module.py::test_w3_c03_integration
+3 failed in 0.85s

@@ -6,6 +6,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool" | "system" | "thinking" | "child_session";
   content: string;
+  /** Lightweight file references only; clipboard image bytes never enter transcript state. */
+  attachments?: Array<{ path: string; name?: string }>;
   timestamp: number;
   /** Mode at send time — user frame color must not follow live Tab switches. */
   mode?: Mode;
@@ -18,7 +20,7 @@ export interface ChatMessage {
   toolExpanded?: boolean;
   done?: boolean;
   live?: boolean;
-  /** Per-thought display. Ctrl+E only seeds the next thought; click overrides this id. */
+  /** Per-thought display. Ctrl+T only seeds the next thought; click overrides this id. */
   expanded?: boolean;
   endedAt?: number;
   hasReasoning?: boolean;
@@ -43,6 +45,8 @@ export interface ChildSessionInfo {
 }
 
 export interface StatusInfo {
+  /** Capabilities advertised by the existing HTTP /status endpoint. */
+  capabilities?: Record<string, unknown> | null;
   memory_mb?: number;
   memory_pct?: number;
   billing?: number;

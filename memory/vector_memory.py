@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.memory._scope import memory_root
 from RxyCode.RxyCode1_1_0.utils.atomic_file import atomic_write_text
 
 
@@ -107,7 +107,7 @@ class ExperienceVectorMemory:
         self.dimension = max(32, min(int(dimension), 4096))
         self.max_entries = max(1, min(int(max_entries), 20_000))
         self.path = Path(path) if path else (
-            get_data_dir() / "memory" / "experiences" / "vectors.jsonl"
+            memory_root() / "experiences" / "vectors.jsonl"
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -80,13 +80,25 @@ class TestRunBash:
 
 
 class TestBashOutputTruncation:
-    """Output longer than 30000 chars is middle-truncated, keeping head+tail."""
+    """超过 200 行时，上下文只留首尾，全文在 spill 文件。"""
 
     def _run_with_output(self, text):
         from unittest.mock import patch, MagicMock
         from RxyCode.RxyCode1_1_0.tools import bash as bash_mod
+        from RxyCode.RxyCode1_1_0.utils.output_capture import BoundedOutputCapture
 
-        fake = {"stdout": text, "stderr": "", "success": True, "exit_code": 0}
+        capture = BoundedOutputCapture()
+        raw = text.encode("utf-8")
+        for offset in range(0, len(raw), 8192):
+            capture.feed("stdout", raw[offset : offset + 8192])
+        capture.end_stream("stdout")
+        capture.end_stream("stderr")
+        fake = {
+            **capture.finish(),
+            "success": True,
+            "exit_code": 0,
+            "error_type": None,
+        }
         with patch.object(bash_mod, "shell_executor") as mock_exec:
             mock_exec.execute = MagicMock(return_value=fake)
             return bash_mod.run_bash("whatever")
@@ -95,29 +107,44 @@ class TestBashOutputTruncation:
         out = self._run_with_output("hello")
         assert out == "hello"
 
-    def test_long_output_truncated_with_hint(self):
+    def test_long_single_line_is_not_cut_by_line_rule(self):
         big = "A" * 40000
         out = self._run_with_output(big)
-        assert len(out) < 32000
-        assert "输出已截断" in out
+        assert "省略" not in out
+        assert "Full output saved to:" in out
 
-    def test_truncation_keeps_head_and_tail(self):
+    def test_byte_spill_keeps_head_and_tail_without_line_cut(self):
         head = "H" * 15000
         tail = "T" * 15000
         big = head + ("M" * 20000) + tail
         out = self._run_with_output(big)
         preview, spill_path_text = out.rsplit("\nFull output saved to: ", 1)
         assert preview.startswith("H" * 100)
-        assert preview.rstrip().endswith("T" * 100)
+        assert "T" * 100 in preview
+        assert "省略" not in preview
         spill_path = Path(spill_path_text.strip())
         assert spill_path.is_absolute()
         assert spill_path.read_text(encoding="utf-8") == big
 
-    def test_exactly_30000_not_truncated(self):
-        big = "B" * 30000
+    def test_exactly_200_lines_stay_inline(self):
+        big = "\n".join(f"line-{index:04d}" for index in range(200))
         out = self._run_with_output(big)
-        assert "输出已截断" not in out
-        assert len(out) == 30000
+        assert "省略" not in out
+        assert "line-0000" in out
+        assert "line-0199" in out
+
+    def test_over_200_lines_keeps_50_each_end(self):
+        lines = [f"line-{index:04d}" for index in range(260)]
+        big = "\n".join(lines)
+        out = self._run_with_output(big)
+        assert "line-0000" in out
+        assert "line-0049" in out
+        assert "line-0259" in out
+        assert "line-0120" not in out
+        assert "省略 160 行" in out
+        assert "请使用 read 工具读取该文件" in out
+        saved = out.rsplit("Full output saved to: ", 1)[1].strip()
+        assert Path(saved).read_text(encoding="utf-8") == big
 
 
 class TestBashTool:

@@ -1,0 +1,9 @@
+First collection, before rxycode_server.events existed:
+
+ERROR tests/web/w2/test_w2_c04_unit.py
+ModuleNotFoundError: No module named 'rxycode_server.events'
+
+ERROR tests/web/w2/test_w2_c04_module.py
+ModuleNotFoundError: No module named 'rxycode_server.events'
+
+2 errors in 0.48s. The later green runs are unit.txt and integration.txt.

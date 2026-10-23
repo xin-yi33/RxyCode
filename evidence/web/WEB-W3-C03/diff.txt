@@ -1,0 +1,514 @@
+diff --git a/apps/web/src/app/App.tsx b/apps/web/src/app/App.tsx
+index 0f0f18d1..90da72ef 100644
+--- a/apps/web/src/app/App.tsx
++++ b/apps/web/src/app/App.tsx
+@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router"
+ 
+ import { sessionVisualState } from "@desktop/sessionVisualState"
+ import { Button } from "../components/ui/button"
++import { ChatPage } from "../features/chat/ChatPage"
+ import { OAuthCallbackPage, OnboardingPage } from "../features/onboarding/OnboardingPage"
+ import { createClient } from "../sdk/client"
+ import { useUi } from "../state/ui"
+@@ -195,6 +196,7 @@ const router = createBrowserRouter([
+   { path: "/onboarding", element: <OnboardingPage /> },
+   { path: "/oauth/callback", element: <OAuthCallbackPage /> },
+   { path: "/projects", element: <ProjectsPage /> },
++  { path: "/runs/:runId", element: <ChatPage /> },
+ ])
+ 
+ export function App() {
+diff --git a/apps/web/src/features/chat/ChatPage.tsx b/apps/web/src/features/chat/ChatPage.tsx
+new file mode 100644
+index 00000000..acc270d5
+--- /dev/null
++++ b/apps/web/src/features/chat/ChatPage.tsx
+@@ -0,0 +1,45 @@
++import { useParams } from "react-router"
++
++import { useRunEvents } from "../runs/useRunEvents"
++
++export function ChatPage() {
++  const { runId = "" } = useParams()
++  const live = useRunEvents(runId)
++  if (live.cursorExpired) {
++    return (
++      <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
++        <p role="alert">重新同步 {live.snapshotSeq ?? ""}</p>
++      </main>
++    )
++  }
++  const { projection } = live
++  return (
++    <main className="mx-auto min-h-screen max-w-3xl px-4 py-6">
++      <p data-connection={live.connected ? "open" : "closed"}>
++        {live.connected ? "已连接" : "正在连接"}
++      </p>
++      <section data-answer>{projection.answer}</section>
++      <ul>
++        {projection.intermediate.map((text) => (
++          <li key={text} data-intermediate>
++            {text}
++          </li>
++        ))}
++      </ul>
++      <ul>
++        {projection.tools.map((tool) => (
++          <li key={tool.callId} data-tool-id={tool.callId} data-tool-status={tool.status}>
++            {tool.name} {tool.status === "failed" ? "失败" : "完成"}
++          </li>
++        ))}
++      </ul>
++      <ul>
++        {projection.approvals.map((item) => (
++          <li key={item.id} data-approval-id={item.id}>
++            {item.status === "pending" ? "等待审批" : item.status}
++          </li>
++        ))}
++      </ul>
++    </main>
++  )
++}
+diff --git a/apps/web/src/features/runs/eventReducer.ts b/apps/web/src/features/runs/eventReducer.ts
+new file mode 100644
+index 00000000..fc73e34c
+--- /dev/null
++++ b/apps/web/src/features/runs/eventReducer.ts
+@@ -0,0 +1,98 @@
++export type RunEvent = {
++  seq: number
++  type: string
++  payload: Record<string, unknown>
++}
++
++export type ToolCard = {
++  callId: string
++  name: string
++  status: "failed" | "completed"
++}
++
++export type ApprovalCard = {
++  id: string
++  status: string
++}
++
++export type Projection = {
++  order: number[]
++  answer: string
++  intermediate: string[]
++  tools: ToolCard[]
++  approvals: ApprovalCard[]
++}
++
++function textOf(payload: Record<string, unknown>): string {
++  return String(payload.text ?? "")
++}
++
++export function reduceEvents(events: RunEvent[]): Projection {
++  const seen = new Set<number>()
++  const pending = new Map<number, RunEvent>()
++  let next = 1
++  const projection: Projection = {
++    order: [],
++    answer: "",
++    intermediate: [],
++    tools: [],
++    approvals: [],
++  }
++
++  const apply = (event: RunEvent) => {
++    projection.order.push(event.seq)
++    const payload = event.payload ?? {}
++    if (event.type === "assistant.final") {
++      projection.answer = textOf(payload)
++      return
++    }
++    if (event.type === "assistant.delta" && payload.intermediate === true) {
++      projection.intermediate.push(textOf(payload))
++      return
++    }
++    if (event.type === "tool.failed" || event.type === "tool.completed") {
++      projection.tools.push({
++        callId: String(payload.call_id ?? ""),
++        name: String(payload.tool ?? ""),
++        status: event.type === "tool.failed" ? "failed" : "completed",
++      })
++      return
++    }
++    if (event.type === "approval.requested") {
++      projection.approvals.push({
++        id: String(payload.approval_id ?? ""),
++        status: "pending",
++      })
++      return
++    }
++    if (event.type === "approval.resolved") {
++      const id = String(payload.approval_id ?? "")
++      const status = String(payload.status ?? "")
++      const found = projection.approvals.find((item) => item.id === id)
++      if (found) found.status = status
++      else projection.approvals.push({ id, status })
++    }
++  }
++
++  const flush = () => {
++    while (pending.has(next)) {
++      const event = pending.get(next)
++      pending.delete(next)
++      if (event) apply(event)
++      next += 1
++    }
++  }
++
++  for (const event of events) {
++    if (!Number.isInteger(event.seq) || event.seq < 1 || seen.has(event.seq)) continue
++    seen.add(event.seq)
++    if (event.seq > next) {
++      pending.set(event.seq, event)
++      continue
++    }
++    apply(event)
++    next += 1
++    flush()
++  }
++  return projection
++}
+diff --git a/apps/web/src/features/runs/useRunEvents.ts b/apps/web/src/features/runs/useRunEvents.ts
+new file mode 100644
+index 00000000..247a6f1f
+--- /dev/null
++++ b/apps/web/src/features/runs/useRunEvents.ts
+@@ -0,0 +1,99 @@
++import { useEffect, useState } from "react"
++
++import { reduceEvents, type Projection, type RunEvent } from "./eventReducer"
++
++export type LiveRun = {
++  projection: Projection
++  cursorExpired: boolean
++  snapshotSeq: number | null
++  connected: boolean
++}
++
++function parseFrames(text: string): RunEvent[] {
++  const events: RunEvent[] = []
++  for (const block of text.split("\n\n")) {
++    const dataLine = block.split("\n").find((line) => line.startsWith("data:"))
++    if (!dataLine) continue
++    try {
++      const body = JSON.parse(dataLine.slice(5).trim()) as RunEvent & { code?: string }
++      if (body.code || typeof body.seq !== "number") continue
++      events.push({ seq: body.seq, type: body.type, payload: body.payload ?? {} })
++    } catch {
++      continue
++    }
++  }
++  return events
++}
++
++export function useRunEvents(runId: string): LiveRun {
++  const [events, setEvents] = useState<RunEvent[]>([])
++  const [cursorExpired, setCursorExpired] = useState(false)
++  const [snapshotSeq, setSnapshotSeq] = useState<number | null>(null)
++  const [connected, setConnected] = useState(false)
++
++  useEffect(() => {
++    let source: EventSource | null = null
++    let stopped = false
++    const load = async () => {
++      const path = `/api/v1/runs/${encodeURIComponent(runId)}/events?after_seq=0&follow=0`
++      const response = await fetch(path, {
++        credentials: "same-origin",
++        headers: { accept: "text/event-stream" },
++      })
++      if (stopped) return
++      if (response.status === 409) {
++        const body = (await response.json()) as { code?: string; snapshot_seq?: number }
++        if (body.code === "CURSOR_EXPIRED") {
++          setCursorExpired(true)
++          setSnapshotSeq(typeof body.snapshot_seq === "number" ? body.snapshot_seq : null)
++          setEvents([])
++        }
++        return
++      }
++      if (!response.ok) return
++      const snapshot = parseFrames(await response.text())
++      if (stopped) return
++      setEvents(snapshot)
++      setConnected(true)
++      source = new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events?follow=1`)
++      source.onmessage = (message) => {
++        try {
++          const body = JSON.parse(message.data) as RunEvent
++          if (typeof body.seq !== "number") return
++          setEvents((current) => [...current, { ...body, payload: body.payload ?? {} }])
++        } catch {
++          return
++        }
++      }
++      source.addEventListener("error", (event) => {
++        const data = (event as MessageEvent).data
++        if (typeof data !== "string") {
++          setConnected(false)
++          return
++        }
++        try {
++          const body = JSON.parse(data) as { code?: string; snapshot_seq?: number }
++          if (body.code !== "CURSOR_EXPIRED") return
++          setCursorExpired(true)
++          setSnapshotSeq(typeof body.snapshot_seq === "number" ? body.snapshot_seq : null)
++          setEvents([])
++          source?.close()
++        } catch {
++          setConnected(false)
++        }
++      })
++    }
++    void load()
++    return () => {
++      stopped = true
++      source?.close()
++    }
++  }, [runId])
++
++  return {
++    projection: reduceEvents(events),
++    cursorExpired,
++    snapshotSeq,
++    connected,
++  }
++}
+diff --git a/tests/web/w3/test_w3_c03_module.py b/tests/web/w3/test_w3_c03_module.py
+new file mode 100644
+index 00000000..5aa7fcbc
+--- /dev/null
++++ b/tests/web/w3/test_w3_c03_module.py
+@@ -0,0 +1,129 @@
++"""WEB-W3-C03. Reloading the chat keeps the server tool failure, approval, and answer."""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++import uuid
++from pathlib import Path
++
++from playwright.sync_api import expect, sync_playwright
++from sqlalchemy import create_engine, select
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++if str(_SERVER) not in sys.path:
++    sys.path.insert(0, str(_SERVER))
++
++from rxycode_server.events.store import append_event, prune_through  # noqa: E402
++from rxycode_server.persistence.models import (  # noqa: E402
++    Membership,
++    Project,
++    SessionRow,
++    User,
++)
++from rxycode_server.runs.service import create_run  # noqa: E402
++
++_UNIT = Path(__file__).with_name("test_w3_c02_unit.py")
++_spec = importlib.util.spec_from_file_location("w3c02_stack", _UNIT)
++assert _spec is not None and _spec.loader is not None
++_c02 = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_c02)
++
++CHAT = REPO / "apps" / "web" / "src" / "features" / "chat" / "ChatPage.tsx"
++
++
++def _seed() -> tuple[str, str]:
++    engine = create_engine(_c02.URL)
++    with Session(engine) as db:
++        user = db.scalars(select(User).where(User.kind == "local")).one()
++        tenant_id = db.scalars(
++            select(Membership.tenant_id).where(Membership.user_id == user.id)
++        ).one()
++        project_id = uuid.uuid4().hex
++        session_id = uuid.uuid4().hex
++        db.add(Project(id=project_id, tenant_id=tenant_id, name="chat", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id=tenant_id,
++                project_id=project_id,
++                title="chat",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        _c02.URL,
++        tenant_id=tenant_id,
++        session_id=session_id,
++        message="show the run",
++        target_id="local:c03",
++        permission_profile="workspace-write",
++        request_id="req-c03-chat",
++    )
++    run_id = created.run_id
++    append_event(
++        _c02.URL,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        event_type="tool.failed",
++        payload={"call_id": "call-1", "tool": "shell.exec", "error": "exit 1"},
++    )
++    append_event(
++        _c02.URL,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        event_type="assistant.delta",
++        payload={"text": "hidden reasoning", "intermediate": True},
++    )
++    append_event(
++        _c02.URL,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        event_type="assistant.final",
++        payload={"text": "final user answer"},
++    )
++    append_event(
++        _c02.URL,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        event_type="approval.requested",
++        payload={"approval_id": "appr-1", "tool": "shell.exec"},
++    )
++    return tenant_id, run_id
++
++
++def _expect_run(page) -> None:
++    tool = page.locator("[data-tool-id='call-1']")
++    expect(tool).to_contain_text("shell.exec", timeout=10000)
++    expect(tool).to_contain_text("失败")
++    expect(tool).not_to_contain_text("成功")
++    expect(page.locator("[data-approval-id='appr-1']")).to_contain_text("等待审批")
++    answer = page.locator("[data-answer]")
++    expect(answer).to_have_text("final user answer")
++    expect(answer).not_to_contain_text("hidden reasoning")
++
++
++def test_w3_c03_integration() -> None:
++    """Reload shows the same server tool failure, approval, and final answer."""
++    assert CHAT.is_file(), "ChatPage.tsx is missing"
++    stack = _c02._Stack()
++    try:
++        with sync_playwright() as playwright:
++            browser = playwright.chromium.launch()
++            page = browser.new_page()
++            _c02._login(page, stack.origin)
++            _tenant, run_id = _seed()
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            _expect_run(page)
++            page.reload(wait_until="domcontentloaded")
++            _expect_run(page)
++            prune_through(_c02.URL, tenant_id=_tenant, run_id=run_id, through_seq=1)
++            page.goto(f"{stack.origin}/runs/{run_id}", wait_until="domcontentloaded")
++            expect(page.get_by_role("alert")).to_contain_text("重新同步", timeout=10000)
++            expect(page.locator("[data-answer]")).to_have_count(0)
++            browser.close()
++    finally:
++        stack.close()
+diff --git a/tests/web/w3/test_w3_c03_unit.py b/tests/web/w3/test_w3_c03_unit.py
+new file mode 100644
+index 00000000..68d206e3
+--- /dev/null
++++ b/tests/web/w3/test_w3_c03_unit.py
+@@ -0,0 +1,93 @@
++"""WEB-W3-C03. The shipped reducer orders events once and keeps the final answer clean."""
++
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++REDUCER = REPO / "apps" / "web" / "src" / "features" / "runs" / "eventReducer.ts"
++_BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++_SCRATCH = Path(r"C:\Users\Administrator\AppData\Local\Temp\grok-goal-633d8463e340\implementer")
++
++
++def _bun() -> str:
++    found = shutil.which("bun")
++    if found:
++        return found
++    if _BUN.exists():
++        return str(_BUN)
++    raise FileNotFoundError("bun")
++
++
++def reduce_events(events: list[dict]) -> dict:
++    """Run the shipped reducer. The assertions stay in this test."""
++    assert REDUCER.is_file(), "eventReducer.ts is missing"
++    _SCRATCH.mkdir(parents=True, exist_ok=True)
++    driver = _SCRATCH / "c03-reduce.ts"
++    driver.write_text(
++        "import { reduceEvents } from "
++        + json.dumps(REDUCER.as_posix())
++        + "\nconst events = "
++        + json.dumps(events)
++        + "\nconsole.log(JSON.stringify(reduceEvents(events)))\n",
++        encoding="utf-8",
++    )
++    proc = subprocess.run([_bun(), str(driver)], capture_output=True, text=True, check=False)
++    assert proc.returncode == 0, proc.stderr or proc.stdout
++    return json.loads(proc.stdout)
++
++
++def test_w3_c03_contract() -> None:
++    """Events 1,2,2,4,3 become 1,2,3,4, and seq 2 is kept once."""
++    prefix = reduce_events(
++        [
++            {"seq": 1, "type": "assistant.delta", "payload": {"text": "one"}},
++            {"seq": 2, "type": "assistant.delta", "payload": {"text": "two"}},
++            {"seq": 2, "type": "assistant.delta", "payload": {"text": "dup"}},
++            {"seq": 4, "type": "assistant.final", "payload": {"text": "four"}},
++        ]
++    )
++    assert prefix["order"] == [1, 2]
++    assert prefix["order"].count(2) == 1
++    assert 4 not in prefix["order"]
++    done = reduce_events(
++        [
++            {"seq": 1, "type": "assistant.delta", "payload": {"text": "one"}},
++            {"seq": 2, "type": "assistant.delta", "payload": {"text": "two"}},
++            {"seq": 2, "type": "assistant.delta", "payload": {"text": "dup"}},
++            {"seq": 4, "type": "assistant.final", "payload": {"text": "four"}},
++            {"seq": 3, "type": "assistant.delta", "payload": {"text": "three"}},
++        ]
++    )
++    assert done["order"] == [1, 2, 3, 4]
++    assert done["order"].count(2) == 1
++
++
++def test_w3_c03_negative() -> None:
++    """Out-of-order intermediate text stays out of the final answer."""
++    done = reduce_events(
++        [
++            {
++                "seq": 2,
++                "type": "assistant.delta",
++                "payload": {"text": "child thought", "intermediate": True},
++            },
++            {
++                "seq": 1,
++                "type": "assistant.delta",
++                "payload": {"text": "earlier thought", "intermediate": True},
++            },
++            {
++                "seq": 3,
++                "type": "assistant.final",
++                "payload": {"text": "final user answer"},
++            },
++        ]
++    )
++    assert done["answer"] == "final user answer"
++    assert done["answer"].endswith("final user answer")
++    assert "thought" not in done["answer"]
++    assert done["intermediate"] == ["earlier thought", "child thought"]

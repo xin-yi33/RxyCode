@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { normalizeLoadedMessages, sessionEventsToMessages } from "./sessionEventsToMessages.ts";
+import { formatAllMessagesForCopy } from "../transcriptMountBudget.ts";
 
 describe("sessionEventsToMessages", () => {
   test("settles unmatched tools and restores thought plus markdown-ready assistant", () => {
@@ -50,6 +51,85 @@ describe("sessionEventsToMessages", () => {
     expect(tool?.toolArgs).toContain("a");
     expect(loaded.find((m) => m.role === "assistant")?.done).toBe(true);
     expect(loaded.find((m) => m.role === "assistant")?.content).toBe("# Hello");
+  });
+
+  test("replay and transcript copy retain only lightweight attachment labels", () => {
+    const eventMessages = sessionEventsToMessages([
+      {
+        method: "event/user_message",
+        params: {
+          text: "请查看附件。",
+          attachments: [{ path: "C:\\fixtures\\diagram.png", name: "diagram.png", rawBytes: "A".repeat(100_000) }],
+        },
+      },
+    ]);
+    expect(eventMessages[0]?.attachments).toEqual([
+      { path: "C:\\fixtures\\diagram.png", name: "diagram.png" },
+    ]);
+    expect(JSON.stringify(eventMessages)).not.toContain("rawBytes");
+
+    const loaded = normalizeLoadedMessages([{
+      role: "user",
+      content: "请查看附件。",
+      attachments: [{ path: "C:\\fixtures\\diagram.png", name: "diagram.png", bytes: "A".repeat(100_000) }],
+    }]);
+    expect(loaded[0]?.attachments).toEqual([
+      { path: "C:\\fixtures\\diagram.png", name: "diagram.png" },
+    ]);
+    const copied = formatAllMessagesForCopy(loaded);
+    expect(copied).toContain("请查看附件。");
+    expect(copied).toContain("[附件] diagram.png · image");
+    expect(copied).not.toContain("C:\\fixtures");
+    expect(copied).not.toContain("AAAA");
+  });
+
+  test("out-of-order tool_end updates the matching call, not the latest tool", () => {
+    const messages = sessionEventsToMessages([
+      { method: "event/tool_begin", params: { call_id: "a", tool_name: "read", arguments: { path: "a" } } },
+      { method: "event/tool_begin", params: { call_id: "b", tool_name: "bash", arguments: { command: "ls" } } },
+      { method: "event/tool_end", params: { call_id: "a", ok: true, summary: "file" } },
+      { method: "event/tool_end", params: { call_id: "b", ok: false, summary: "fail" } },
+      { method: "event/message_delta", params: { text: "after" } },
+      { method: "event/final", params: { text: "after", thinking: "thought" } },
+    ]);
+    expect(messages.map((m) => m.role)).toEqual(["tool", "tool", "thinking", "assistant"]);
+    expect(messages[0]?.toolStatus).toBe("success");
+    expect(messages[0]?.content).toBe("file");
+    expect(messages[1]?.toolStatus).toBe("error");
+    expect(messages[1]?.content).toBe("fail");
+    expect(messages[3]?.content).toBe("after");
+  });
+
+  test("a tool_end whose begin is on an earlier page stays a real tool row", () => {
+    const page = sessionEventsToMessages([
+      { method: "event/tool_end", params: { call_id: "late", ok: true, summary: "kept", tool_name: "read" } },
+      { method: "event/final", params: { text: "done" } },
+    ]);
+    expect(page.map((m) => m.role)).toEqual(["tool", "assistant"]);
+    expect(page[0]?.toolCallId).toBe("late");
+    expect(page[0]?.content).toBe("kept");
+    expect(page[0]?.toolStatus).toBe("success");
+  });
+
+  test("twenty thousand tool pairs settle without a full-list scan", () => {
+    const events = [];
+    for (let i = 0; i < 20000; i += 1) {
+      events.push({
+        method: "event/tool_begin",
+        params: { call_id: `c${i}`, tool_name: "read", arguments: { path: "a" } },
+      });
+      events.push({
+        method: "event/tool_end",
+        params: { call_id: `c${i}`, ok: true, summary: "ok" },
+      });
+    }
+    const started = performance.now();
+    const messages = sessionEventsToMessages(events);
+    const elapsed = performance.now() - started;
+    expect(messages.length).toBe(20000);
+    expect(messages[0]?.toolStatus).toBe("success");
+    expect(messages[19999]?.toolCallId).toBe("c19999");
+    expect(elapsed).toBeLessThan(200);
   });
 
   test("matched tool_end error is settled with endedAt", () => {

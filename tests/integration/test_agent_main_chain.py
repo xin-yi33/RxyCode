@@ -58,7 +58,7 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
         result=executor_result,
         evidence=[
             {
-                "tool": "write",
+                "tool": "edit",
                 "status": "succeeded",
                 "executed": True,
                 "detail": write_result,
@@ -156,7 +156,41 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
         user_message="Produce the verified calculator artifact",
     )
     monkeypatch.setattr(agent_v2_module, "get_tui", lambda: recording_tui)
+    captured_records: list[dict] = []
+    original_record = agent_v2_module.ToolOrchestrator._record_evidence
+
+    def _capture(evidence):
+        captured_records.append(evidence.model_dump())
+        return original_record(evidence)
+
+    monkeypatch.setattr(
+        agent_v2_module.ToolOrchestrator, "_record_evidence", staticmethod(_capture)
+    )
     agent = AgentV2()
+    # The build-workflow gate issues a real ``llm.ainvoke`` through
+    # ``_workflow_model_text`` before the graph runs.  Under the scripted
+    # model that call would consume the first scripted reply and shift the
+    # whole script by one.  Answer it through the ``_build_workflow_ask``
+    # seam with a minimal valid ``question`` contract instead.
+    agent._build_workflow_ask = lambda _prompt: json.dumps(
+        {
+            "workflow_id": "wf-scripted",
+            "goal_revision": 1,
+            "contract_revision": 1,
+            "task_kind": "question",
+            "difficulty": "simple",
+            "stage_actions": {
+                "project_docs": "skip",
+                "clarify": "skip",
+                "design": "skip",
+                "build_verify": "skip",
+                "doc_sync": "skip",
+            },
+            "reason": "scripted test run",
+            "acceptance": ["scripted reply returned to the user"],
+            "required_checks": [],
+        }
+    )
     monkeypatch.setattr(agent, "_detect_file_operation", lambda _text: None)
     monkeypatch.setattr(agent, "_detect_download_intent", lambda _text: None)
     monkeypatch.setattr(agent, "_is_simple_query", lambda _text: False)
@@ -197,6 +231,15 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
             }
             for task_id, task in (tree.nodes.items() if tree else [])
         },
+        "errors": {
+            task_id: list(task.error_history or [])
+            for task_id, task in (tree.nodes.items() if tree else [])
+        },
+        "reflections": {
+            task_id: list(task.reflections or [])
+            for task_id, task in (tree.nodes.items() if tree else [])
+        },
+        "tool_records": captured_records,
     }
     assert result == expected_final, repr(diagnostics)
     assert artifact.read_text(encoding="utf-8") == expected
@@ -211,17 +254,17 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
     audit_file = isolated_runtime.data_dir / "logs" / "audit.jsonl"
     assert audit_file.is_file()
     audit_text = audit_file.read_text(encoding="utf-8")
-    assert '"tool": "write"' in audit_text
+    assert '"tool": "edit"' in audit_text
     assert '"tool": "open_file"' in audit_text
     assert [item["tool"] for item in agent._last_evidence] == [
-        "write",
+        "edit",
         "open_file",
     ]
 
     for history in (native_history, stream_history):
         tool_messages = [message for message in history if message["role"] == "tool"]
         assert [message["toolName"] for message in tool_messages] == [
-            "write",
+            "edit",
             "open_file",
         ]
         assert len({message["id"] for message in tool_messages}) == 2
@@ -229,7 +272,12 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
         assert all(message["toolStatus"] == "success" for message in tool_messages)
         assert ast.literal_eval(tool_messages[0]["toolArgs"]) == {
             "filePath": str(artifact),
+            "operation": "write",
             "content": expected,
+            "oldString": None,
+            "newString": None,
+            "replaceAll": False,
+            "diff": None,
         }
         assert ast.literal_eval(tool_messages[1]["toolArgs"]) == {
             "filePath": str(artifact),
@@ -276,7 +324,7 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
     assert node_names == [
         "goal_planner",
         "decomposer",
-        "tool:write",
+        "tool:edit",
         "tool:open_file",
         "executor",
             "validator",

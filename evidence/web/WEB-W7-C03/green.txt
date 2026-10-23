@@ -1,0 +1,303 @@
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+
+...                                                                      [100%]
+3 passed in 3.12s
+
+== audit round 1 fixes ==
+
+Six audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test failed against the pre-fix code, then passed after):
+
+1. P1 gate_report (report.py): empty records now always a violation;
+   blocked_cells entries need a non-empty reason (empty reason also un-excuses
+   the cell); with --taskset every taskset task_id must appear per declared
+   non-blocked cell, unknown task_ids are violations, coverage/min_tasks count
+   DISTINCT task_ids (30 duplicate rows rejected), and a designed-fail task
+   never attempted (e.g. blocked-only) is a violation. Without --taskset the
+   weaker checks stay but empty records are still rejected.
+   Probes now gated: test_w7_c03_negative covers 30-dup-rows, unknown task_id,
+   empty blocked reason, empty records, missing designed-fail coverage.
+
+2. P1 budget enforcement (run.py): new _await_budgeted polls cumulative
+   in-flight spend (token_stats delta for CLI; max(token_stats delta,
+   runtime.token_usage) for web) and cancels the task at the first poll past
+   the remaining budget -> status=blocked, error starts "budget_exceeded:".
+   run.py also passes the declared cap into AgentConfig.budget_tokens
+   (replacing the unenforced 50M constant) and counts spend from ALL records
+   toward cell_tokens. manifest budget_scope documents the bound: recorded
+   cell usage may exceed budget by at most one in-flight task's overrun.
+   report.py adds per-cell/overall budget fields (declared, overrun_tokens,
+   largest_single_task_tokens, suspicious_overrun) rendered in a Budget
+   section. Tests: unit test_w7_c03_budget_enforced (mid-flight cancel +
+   run_cli_task honored cap + run_matrix stops the cell), module
+   test_w7_c03_budget_midrun (web cell cancelled mid-driver; usage row,
+   cancelled run row, eval.budget_exceeded event all landed).
+
+3. P2 fresh workdir (run.py _setup_workdir): existing <base>/<cell>/<task_id>
+   dir is rmtree'd before setup files are written — a stale artifact can no
+   longer satisfy the next oracle. Test: test_w7_c03_fresh_workdir seeds a
+   stale answer.txt, proves removal + oracle failure.
+
+4. P2 blocked spend (run.py web blocked path + report.py): provider-infra
+   blocked records now journal eval.turn_failed, persist usage_records via
+   _persist_usage, commit "failed", and carry measured token_usage + cost
+   (ledger first, price_table estimate when no row). report.py token/cost
+   totals now INCLUDE blocked records; new blocked_spend field + rendered
+   section. Test: test_w7_c03_blocked_spend_in_totals.
+
+5. P2 durable-spine failures (run.py): _append_spine_event (replaces
+   _append_safely), _persist_usage's None return, and _safe_commit's error
+   string all feed record["spine_errors"]; any missing durable write
+   (eval.* event / usage_records row / terminal commit) flips status to
+   "error" while "oracle_status" keeps the oracle verdict. Applies to all
+   exit paths incl. blocked and budget_exceeded. Module test
+   test_w7_c03_spine_failure_marks_error injects eval.checks and
+   commit_terminal failures -> status error, oracle_status passed, usage row
+   still written.
+
+6. P2 executed-source pinning (run.py build_manifest): manifest gains
+   "executed_sources" sha256 for evals/web/{run.py,report.py,taskset.jsonl}
+   (raw file bytes, at read time). When worktree_dirty, also
+   "evals_web_diff" (bounded git diff HEAD -- evals/web tests/web/w7,
+   200k cap) and "evals_web_dirty_paths". _git now decodes bytes as utf-8
+   itself (locale codecs broke on diff output). Old manifests still load —
+   report.py tolerates missing executed_sources. Test:
+   test_w7_c03_executed_sources.
+
+NOTE: the stricter --taskset gate means the pre-fix sample evidence
+(manifest/results_cli-solo + web-solo, sample=3/1) now correctly FAILS the
+gate — those runs never were full-suite evidence. They still parse and
+render fine; the wart NOTES.md documents (code_commit 606d7665 predates
+run.py) is exactly what executed_sources now fixes.
+
+Verify runs (HEAD e5c6b1c5, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+9 passed in 7.22s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.84s
+
+No real LLM calls were burned for these fixes (stub drivers + fault
+injection only); the pre-fix manifests/results keep their provenance and
+were not regenerated.
+
+== audit round 2 fixes ==
+
+Four audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test failed against the pre-fix code, then passed after):
+
+1. P1 manifest/results cell reconciliation (report.py gate_report): when the
+   manifest carries a "cells" list it is now authoritative in BOTH
+   directions — a manifest-declared cell absent from results.cells is a
+   violation (blocked_cells reasons do not excuse the missing cells entry),
+   and a results cell the manifest never declared is unaccounted
+   provenance. The per-cell coverage check below it then still requires
+   records or an honest blocked reason for every cell present.
+   Probe now gated: test_w7_c03_negative covers manifest=4-cells vs
+   results=cli-solo (all 3 missing cells listed), the blocked-but-absent
+   variant, and the reverse direction (undeclared results cell).
+
+2. P1 duplicate (cell, task_id) rows (report.py): gate_report now flags
+   every repeated pair and lists up to 5 of them (cell/task xN); _stats
+   computes by_status/attempted/blocked/durations/success_rate on the FIRST
+   row per distinct (cell, task_id) pair so repeats cannot inflate the
+   rate, while token/cost totals still sum all rows (that spend was real).
+   Stats expose "distinct_pairs" and "duplicate_rows"; render_markdown adds
+   a "Duplicate rows" section when non-zero. The 100-dup-passed-row probe
+   that lifted success 96.67% -> 99.23% now produces a gate violation and
+   leaves the rate unchanged. Test: test_w7_c03_duplicate_rows.
+
+3. P2 ledger-read exceptions (run.py _ledger_cost): the usage_records read
+   now takes spine_errors and returns None on any DB exception instead of
+   raising through finalization — the record flips to status=error with the
+   exception type in spine_errors. All five call sites pass spine_errors.
+   run_matrix also wraps the per-task run in a catch-all so even a
+   hypothetical future escape becomes an honest error record rather than
+   destroying the records already collected. Module test
+   test_w7_c03_ledger_read_failure_marks_error injects a raised
+   scalars(UsageRecord) on the second task's finalization: that record is
+   status=error with _InjectedLedgerRead in spine_errors, oracle_status
+   stays "passed", the first task's passed record survives, and the
+   results dict still serializes to a file.
+
+4. P2 usage-write failure losing cost (run.py): every web-cell cost path
+   now falls back to _estimate_cost(..., source="estimate/ledger_failed")
+   when the ledger row cannot be produced/read — oracle-completion path,
+   ordinary turn-error path, provider-infra path, budget-cancel path, and
+   the setup-exception path (which also records measured token_usage now).
+   _estimate_cost takes a source label (CLI cells keep "price_table").
+   Module test test_w7_c03_usage_write_failure_keeps_cost injects a
+   record_terminal_usage failure on 1000 consumed tokens: status=error
+   (spine honest), oracle_status=passed, cost.amount=0.00200000 with the
+   estimate/ledger_failed source, and the report totals carry the spend.
+
+Verify runs (HEAD 795ad2d9, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+12 passed
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7 -q
+21 passed in 144.85s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.10s
+
+git diff --check: clean on the four touched files. No real LLM calls
+(stub prompt drivers + Session.scalars/record_terminal_usage fault
+injection only); no records lost; no leaked processes.
+
+== audit round 3 fixes ==
+
+Three audit findings fixed in evals/web/{run.py,report.py} with TEST-first
+proof (each new test/assertion failed against the pre-fix code, then passed
+after):
+
+1. P1 per-record cell provenance (report.py gate_report ~395-426): the gate
+   reconciled the two cell LISTS but never a record's own "cell" — the
+   auditor appended 29 passed records with cell "web-team" while
+   results.cells and manifest.cells declared only cli-solo and got ZERO
+   violations (overall success inflated 96.67% -> 98.31%, web-team absent
+   from the per-cell table). Now every record's cell must be declared: in
+   results.cells always, and in manifest.cells when the manifest lists
+   cells; each direction emits its own violation with the record count.
+   build_report (241-283) unions undeclared record cells into the per-cell
+   table flagged "undeclared_cell", exposes report["undeclared_cells"] and
+   overall["undeclared_records"] so the totals stay honest-but-enumerable
+   (spend is real and still counted; the undeclared cap multiplier is NOT
+   granted — overall_budget uses declared cells only), and render_markdown
+   marks the row "(undeclared)" plus an "Undeclared cells" section
+   (589-598, 668-683). Probe now gated in test_w7_c03_negative: the exact
+   29-record web-team injection -> violations, cell listed/flagged in the
+   report, works with and without --taskset.
+
+2. P2 escaped runner failure losing spend (run.py run_matrix catch-all
+   ~1733-1792): the handler used to write a fresh _base_record — 0 tokens,
+   null cost — so consumed spend vanished and the cell budget ignored it.
+   Now the record carries the tokens actually consumed, measured via the
+   process-global token_stats delta (taken before workdir prep, so it
+   diffs correctly regardless of how the task exits) AND anything the
+   runner journaled into the new spend_sink (run_web_task publishes its
+   WebRunCtx once created, ~1082-1088: ctx.outcome["tokens"] and the
+   runtime token counter — this is also what recovers spend when the
+   oracle run_checks raise escapes run_web_task mid-finalization).
+   record["token_usage"] therefore shows real spend, cell_tokens charges
+   it, and cost falls back to the estimate (estimate/ledger_failed for
+   web, price_table for cli). Probes: unit test_w7_c03_runner_crash_keeps_spend
+   (2 tasks x 1,000 tokens then raise under a 500 cap -> crash record keeps
+   1,000 tokens + cost, task 2 becomes blocked/budget_exceeded and never
+   runs; plus a web-cell variant proving ctx.outcome recovery via the
+   sink) and module test_w7_c03_oracle_crash_keeps_spend (real durable
+   spine + injected run_checks failure: 1,000 runtime-journaled tokens
+   survive the escape, estimate cost attached, second task blocked).
+
+3. P2 _setup_workdir outside per-task containment (run.py ~1710): an
+   rmtree failure on a locked file used to escape run_matrix and destroy
+   every record already collected. Workdir prep now runs inside the
+   per-task try, so a prep failure becomes that task's status=error
+   record (error + spine_errors detail), the matrix continues, and
+   previously completed records are preserved and written. Proof: unit
+   test_w7_c03_workdir_prep_failure_keeps_records injects a
+   PermissionError on task 2 of 3 -> task 1's passed record survives,
+   task 2 is error, task 3 passes, results serialize to a file.
+
+Verify runs (HEAD 439946ab, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+15 passed in 9.48s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 68.06s
+
+git diff --check: clean on the touched files. No real LLM calls (stub
+drivers, monkeypatched runners/oracle, and an injected _setup_workdir
+failure only); no records lost; no leaked processes.
+
+
+== audit round 4 fixes ==
+
+P2 oracle crashes orphan the durable Web run (evals/web/run.py). An
+exception at run_checks (the oracle, ~1360 — after the run is claimed,
+before usage persistence and terminal commit) escaped to the run_matrix
+catch-all (~1746), which recovered spend but created a FRESH record
+discarding run_id, session_id, and replay/trace refs — and never finalized
+the leased run (no usage write, no terminal commit). Auditor probe: supplied
+IDs through spend_sink; returned error record kept 1,000 tokens but null
+run/session IDs and trace.
+
+Fix (TEST-first: extended module/unit probes failed on the pre-fix code,
+then passed):
+
+1. spend_sink now publishes the run identity as soon as it is known —
+   ``record`` (the in-flight record object, so oracle_status/check_details/
+   trace refs set before the crash survive), database_url, tenant_id,
+   ledger_model, session_id, worker_id before the try (run.py ~988);
+   run_id right after create_run (~1033); epoch + lease_ttl_seconds right
+   after claim succeeds (~1043); ctx + outcome once the WebRunCtx exists
+   (~1117). An escaping failure keeps run_id/session_id/lease coordinates
+   and whatever trace refs were set — never a fresh null-identity record.
+
+2. The post-claim finalization tail moved verbatim into
+   ``_finalize_turn_record`` (~1284); run_web_task calls it inside its own
+   containment (~1219-1281). A crash there (oracle run_checks, to_eval_task,
+   or any finalization write) no longer escapes: the record keeps
+   status=error + oracle_status if known + run_id/session_id/trace, notes
+   the crash in spine_errors ("post-claim crash contained: ..."), and the
+   new ``_finalize_orphaned_web_run`` (~1752) attempts failure
+   finalization — record_terminal_usage for the consumed spend (outcome /
+   runtime counter / token_stats delta / partial record total), a fenced
+   commit_terminal "failed" attempt (skipped when the row is already
+   terminal via ``_run_status``, and reported when the lease metadata is
+   missing), _web_trace refs, and the estimate/ledger_failed cost fallback —
+   every failure collected into spine_errors instead of raising away.
+
+3. The run_matrix catch-all (~1975) is the same backstop for failures that
+   escape run_web_task entirely (setup crashes, containment-internal
+   failures, stubbed runners): it reuses spend_sink["record"] (keeping
+   run_id/session_id/oracle_status/trace), restores session_id, keeps the
+   recovered spend, then attempts the same _finalize_orphaned_web_run
+   finalization for web cells — the run can no longer remain
+   leased-but-unfinalized after the exception path. The existing
+   setup-failure except (~1184) was refactored onto the same helper.
+
+Proof (real durable spine):
+* module test_w7_c03_oracle_crash_keeps_spend — injected run_checks failure
+  on a real web task through run_matrix: record has status=error,
+  oracle_status=None, run_id/session_id/trace populated
+  (trace.agent_done_tokens==1000), the Run row reached terminal status
+  "failed", the usage_records row exists with 1,000 tokens, cost lands from
+  usage_records (0.00200000), and the 1,000 tokens still count toward the
+  500-token cell cap (task 2 blocked).
+* unit test_w7_c03_orphaned_run_finalized — a run_web_task stub that
+  publishes sink metadata then raises: the catch-all record keeps
+  run_id/session_id/trace, calls _persist_usage (tokens_hint=1000) and
+  _safe_commit(run_id, worker, epoch=3, "failed") on the orphan lease, and a
+  failed commit attempt is collected into spine_errors (LeaseRejected).
+
+Verify runs (HEAD 64dd4a9b + fix, branch feat/rxycode-web, worktree dirty):
+
+D:\Anaconda3\python.exe -m ruff check evals\web\run.py evals\web\report.py tests\web\w7\test_w7_c03_unit.py tests\web\w7\test_w7_c03_module.py
+All checks passed!
+
+D:\Anaconda3\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+16 passed in 9.58s
+
+D:\Anaconda3\python.exe -m pytest tests/web/integration/test_chaos_suite.py -q
+1 passed in 67.21s (first attempt hit a transient sqlalchemy IntegrityError
+inside the chaos runner's own concurrent scenarios — 2 failed of 6 — and
+passed clean on re-run; unrelated to evals/web/run.py which the suite does
+not exercise)
+
+git diff --check: clean on the touched files. No real LLM calls (stub
+drivers, monkeypatched oracle/runner/durable helpers only); no records
+lost; no leased-but-unfinalized runs after the exception path; no leaked
+processes.

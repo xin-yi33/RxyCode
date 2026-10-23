@@ -1,0 +1,1243 @@
+diff --git a/evidence/web/WEB-W4-C03/baseline.txt b/evidence/web/WEB-W4-C03/baseline.txt
+new file mode 100644
+index 00000000..fe59fbe8
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/baseline.txt
+@@ -0,0 +1,2 @@
++a042c379ce9b354f24802b8413e26407058845b0
++E2E-FULL-03 browser device pairing is not run.
+diff --git a/evidence/web/WEB-W4-C03/handoff.md b/evidence/web/WEB-W4-C03/handoff.md
+new file mode 100644
+index 00000000..47bad77a
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/handoff.md
+@@ -0,0 +1,10 @@
++# WEB-W4-C03 handoff
++
++Parent HEAD at the clean audit is 8fbf6b2ca04652c438dfa898766dcd0bee43d12f. Branch feat/rxycode-web. Not pushed.
++Nested whitelist commit is 0d3f2a2. Not pushed.
++Audit model for this card: gpt-6-luna, reasoning effort max.
++Codex session stays 01a140a7-2cc1-7f61-bdab-2af627f08e80.
++Final log: w4c03-audit-3.json. Last line: VERDICT: NO_REMAINING_PROBLEMS.
++Locked tests at that HEAD: unit 2 passed, 8 warnings in 1.68s; integration 1 passed, 4 warnings in 1.38s.
++Not claimed as 已落实. WEB-W1 CW03 and CW04 stay open. Device connect page is not implemented.
++E2E-FULL-03 browser device pairing is not produced. That item stays BLOCKED.
+diff --git a/evidence/web/WEB-W4-C03/integration.txt b/evidence/web/WEB-W4-C03/integration.txt
+new file mode 100644
+index 00000000..21df49bf
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/integration.txt
+@@ -0,0 +1,17 @@
++.                                                                        [100%]
++============================== warnings summary ===============================
++tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration
++tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
++    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++1 passed, 4 warnings in 1.38s
+diff --git a/evidence/web/WEB-W4-C03/red.txt b/evidence/web/WEB-W4-C03/red.txt
+new file mode 100644
+index 00000000..64dddc6f
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/red.txt
+@@ -0,0 +1,11 @@
++FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-qfv0jfvt
++
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c03_unit.py:40: ModuleNotFoundError: No module named 'rxycode_runner.remote'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c03_unit.py:137: ModuleNotFoundError: No module named 'rxycode_server.devices'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c03_module.py:24: ModuleNotFoundError: No module named 'rxycode_runner.remote'
++=========================== short test summary info ===========================
++FAILED tests/web/w4/test_w4_c03_unit.py::test_w4_c03_contract - ModuleNotFoun...
++FAILED tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative - ModuleNotFoun...
++FAILED tests/web/w4/test_w4_c03_module.py::test_w4_c03_integration - ModuleNo...
++3 failed in 0.25s
+diff --git a/evidence/web/WEB-W4-C03/self-audit.md b/evidence/web/WEB-W4-C03/self-audit.md
+new file mode 100644
+index 00000000..2eb823db
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/self-audit.md
+@@ -0,0 +1,14 @@
++# WEB-W4-C03 self-audit
++
++- RED: rxycode_runner.remote and rxycode_server.devices were missing. 3 failed in 0.25s. See red.txt.
++- `rxycode connect` dials the cloud websocket. The Devices API then lists that device id, OS, and capability.
++- Pairing and the device list require the rxy_session cookie from the login session store, plus CSRF on the write. There is no HTTP route that mints a browser session.
++- The device token is not that browser session, is stored as a hash, and is not written to the log message.
++- WSS uses the default certificate context. Verification is not turned off. ws:// is accepted only for 127.0.0.1, localhost, and ::1. A remote ws:// URL is refused with TLS_REQUIRED.
++- An expired pairing code, a wrong token, and protocol version 9.9.9 are refused. tool permission stays false.
++- A pairing code from another tenant cannot replace an existing device id. The original session and token stay.
++- After the cloud socket drops, the runner reconnects with a new session id, the same scope, and a rotated token. The previous token is rejected.
++- Outbound frames for one live socket go through one writer task.
++- `rxycode web connect` remains the unimplemented W1 stub.
++- gpt-6-luna max in session 01a140a7-2cc1-7f61-bdab-2af627f08e80 returned VERDICT: NO_REMAINING_PROBLEMS on 8fbf6b2c.
++- Not claimed as 已落实. E2E-FULL-03 stays BLOCKED.
+diff --git a/evidence/web/WEB-W4-C03/unit.txt b/evidence/web/WEB-W4-C03/unit.txt
+new file mode 100644
+index 00000000..aee9886f
+--- /dev/null
++++ b/evidence/web/WEB-W4-C03/unit.txt
+@@ -0,0 +1,21 @@
++..                                                                       [100%]
++============================== warnings summary ===============================
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_contract
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
++    warnings.warn(  # deprecated in 14.0 - 2024-11-09
++
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_contract
++  D:\Anaconda3\Lib\site-packages\uvicorn\protocols\websockets\websockets_impl.py:17: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
++    from websockets.server import WebSocketServerProtocol
++
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_contract
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative
++tests/web/w4/test_w4_c03_unit.py::test_w4_c03_negative
++  D:\Anaconda3\Lib\site-packages\websockets\legacy\server.py:1178: DeprecationWarning: remove second argument of ws_handler
++    warnings.warn("remove second argument of ws_handler", DeprecationWarning)
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++2 passed, 8 warnings in 1.68s
+diff --git a/main.py b/main.py
+index c3872a53..06037c9d 100644
+--- a/main.py
++++ b/main.py
+@@ -920,6 +920,40 @@ def gui(desktop_dir):
+         proc.wait(timeout=5)
+ 
+ 
++@cli.command("connect")
++@click.option("--url", required=True, help="Outbound cloud websocket URL.")
++@click.option("--code", default="", help="One-time pairing code.")
++@click.option("--token", default="", help="Device token for a reconnect. Not printed.")
++@click.option("--device-id", required=True)
++@click.option("--os-name", default="", help="Reported OS. Defaults to this machine.")
++@click.option("--capability", multiple=True)
++@click.option("--protocol-version", default="1.1.0")
++@click.option("--heartbeat-seconds", default=15.0, type=float)
++def connect(url, code, token, device_id, os_name, capability, protocol_version, heartbeat_seconds):
++    """Pair this machine with the cloud. The device token is not printed."""
++    import platform
++
++    from rxycode_runner.remote.client import ConnectRejected, run_connect
++
++    if not code and not token:
++        raise click.ClickException("PAIRING_INVALID")
++    reported = os_name or platform.system()
++    capabilities = list(capability) or ["click"]
++    try:
++        run_connect(
++            url=url,
++            pairing_code=code,
++            token=token,
++            device_id=device_id,
++            os_name=reported,
++            capabilities=capabilities,
++            protocol_version=protocol_version,
++            heartbeat_seconds=heartbeat_seconds,
++        )
++    except ConnectRejected as exc:
++        raise click.ClickException(exc.code) from None
++
++
+ @cli.command()
+ @click.argument("subcommand", default="list")
+ @click.argument("name", default="")
+diff --git a/packages/rxycode-runner/src/rxycode_runner/remote/__init__.py b/packages/rxycode-runner/src/rxycode_runner/remote/__init__.py
+new file mode 100644
+index 00000000..4771807a
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/remote/__init__.py
+@@ -0,0 +1 @@
++"""Outbound cloud connection for a local runner."""
+diff --git a/packages/rxycode-runner/src/rxycode_runner/remote/client.py b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+new file mode 100644
+index 00000000..4fe85a90
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/remote/client.py
+@@ -0,0 +1,223 @@
++"""Outbound device websocket. This process does not listen for a public port."""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import logging
++import ssl
++import threading
++from typing import Any
++from urllib.parse import urlparse
++
++import websockets
++
++logger = logging.getLogger(__name__)
++
++_STOP = threading.Event()
++_LOCK = threading.Lock()
++_TOKENS: dict[str, str] = {}
++_WRITERS: dict[str, set[int]] = {}
++_PROTOCOL = "1.1.0"
++_SCOPE = "device"
++
++
++class ConnectRejected(Exception):
++    def __init__(self, code: str) -> None:
++        super().__init__(code)
++        self.code = code
++
++
++class _Closed:
++    failed = False
++
++
++def request_stop() -> None:
++    _STOP.set()
++
++
++def reset_stop() -> None:
++    _STOP.clear()
++
++
++def token_for(device_id: str) -> str:
++    with _LOCK:
++        return _TOKENS.get(device_id, "")
++
++
++def writer_count(device_id: str) -> int:
++    with _LOCK:
++        return len(_WRITERS.get(device_id, ()))
++
++
++_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
++
++
++def require_outbound_tls(url: str) -> None:
++    """Only loopback may use ws://. Any other host must be wss://."""
++    parsed = urlparse(url)
++    host = (parsed.hostname or "").casefold()
++    if parsed.scheme == "wss":
++        return
++    if parsed.scheme == "ws" and host in _LOOPBACK:
++        return
++    raise ConnectRejected("TLS_REQUIRED")
++
++
++def tls_context_for(url: str) -> ssl.SSLContext | None:
++    """WSS keeps the default certificate check. Verification is not turned off."""
++    require_outbound_tls(url)
++    if not url.startswith("wss://"):
++        return None
++    return ssl.create_default_context()
++
++
++def run_connect(
++    *,
++    url: str,
++    device_id: str,
++    os_name: str,
++    capabilities: list[str],
++    pairing_code: str = "",
++    token: str = "",
++    protocol_version: str = _PROTOCOL,
++    heartbeat_seconds: float = 15.0,
++) -> None:
++    require_outbound_tls(url)
++    asyncio.run(
++        _connect(
++            url=url,
++            device_id=device_id,
++            os_name=os_name,
++            capabilities=list(capabilities),
++            pairing_code=pairing_code,
++            token=token,
++            protocol_version=protocol_version,
++            heartbeat_seconds=heartbeat_seconds,
++        )
++    )
++
++
++async def _connect(
++    *,
++    url: str,
++    device_id: str,
++    os_name: str,
++    capabilities: list[str],
++    pairing_code: str,
++    token: str,
++    protocol_version: str,
++    heartbeat_seconds: float,
++) -> None:
++    state = {"token": token, "scope": _SCOPE}
++    while not _STOP.is_set():
++        try:
++            outcome, reason = await _one_session(
++                url=url,
++                device_id=device_id,
++                os_name=os_name,
++                capabilities=capabilities,
++                pairing_code=pairing_code,
++                protocol_version=protocol_version,
++                heartbeat_seconds=heartbeat_seconds,
++                state=state,
++            )
++        except Exception as exc:
++            logger.info("device socket closed", extra={"device_id": device_id})
++            if not state["token"]:
++                raise ConnectRejected("DISCONNECTED") from exc
++            await asyncio.sleep(0.05)
++            continue
++        if outcome == "stop":
++            return
++        if outcome == "rejected":
++            raise ConnectRejected(reason)
++        if not state["token"]:
++            raise ConnectRejected(reason or "DISCONNECTED")
++        await asyncio.sleep(0.05)
++
++
++async def _one_session(
++    *,
++    url: str,
++    device_id: str,
++    os_name: str,
++    capabilities: list[str],
++    pairing_code: str,
++    protocol_version: str,
++    heartbeat_seconds: float,
++    state: dict[str, str],
++) -> tuple[str, str]:
++    context = tls_context_for(url)
++    async with websockets.connect(url, ssl=context) as ws:
++        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
++        failed = _Closed()
++        writer = asyncio.create_task(_write(ws, queue, device_id, failed))
++        try:
++            hello: dict[str, Any] = {
++                "type": "hello",
++                "device_id": device_id,
++                "os": os_name,
++                "capabilities": capabilities,
++                "protocol_version": protocol_version,
++                "scope": state["scope"],
++            }
++            if state["token"]:
++                hello["token"] = state["token"]
++            else:
++                hello["pairing_code"] = pairing_code
++            await queue.put(hello)
++            raw = await ws.recv()
++            first = json.loads(raw)
++            if first.get("type") != "hello_ok":
++                return "rejected", str(first.get("code") or "REJECTED")
++            granted = str(first.get("scope") or "")
++            if state["token"] and granted != state["scope"]:
++                return "rejected", "SCOPE_UPGRADE"
++            if first.get("tool_permission") is not True:
++                return "rejected", "NO_TOOL"
++            state["scope"] = granted
++            state["token"] = str(first["token"])
++            with _LOCK:
++                _TOKENS[device_id] = state["token"]
++            logger.info("device session ready", extra={"device_id": device_id})
++            session_id = str(first["session_id"])
++            elapsed = heartbeat_seconds
++            while not _STOP.is_set():
++                if failed.failed:
++                    return "lost", "DISCONNECTED"
++                if elapsed >= heartbeat_seconds:
++                    await queue.put({"type": "heartbeat", "session_id": session_id})
++                    elapsed = 0.0
++                await asyncio.sleep(0.05)
++                elapsed += 0.05
++            return "stop", ""
++        finally:
++            await queue.put(None)
++            try:
++                await writer
++            except Exception:
++                logger.info("device writer closed", extra={"device_id": device_id})
++
++
++async def _write(
++    ws: Any,
++    queue: asyncio.Queue[dict[str, Any] | None],
++    device_id: str,
++    failed: _Closed,
++) -> None:
++    task = asyncio.current_task()
++    task_id = id(task)
++    with _LOCK:
++        _WRITERS.setdefault(device_id, set()).add(task_id)
++    try:
++        while True:
++            item = await queue.get()
++            if item is None:
++                return
++            await ws.send(json.dumps(item))
++    except Exception:
++        failed.failed = True
++    finally:
++        with _LOCK:
++            _WRITERS.get(device_id, set()).discard(task_id)
+diff --git a/packages/rxycode-server/src/rxycode_server/devices/__init__.py b/packages/rxycode-server/src/rxycode_server/devices/__init__.py
+new file mode 100644
+index 00000000..14ccdcb6
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/devices/__init__.py
+@@ -0,0 +1 @@
++"""Device pairing and the outbound device gateway."""
+diff --git a/packages/rxycode-server/src/rxycode_server/devices/gateway.py b/packages/rxycode-server/src/rxycode_server/devices/gateway.py
+new file mode 100644
+index 00000000..c317856d
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/devices/gateway.py
+@@ -0,0 +1,349 @@
++"""Device handshake, online TTL, and the Devices API. The runner dials out."""
++
++from __future__ import annotations
++
++import asyncio
++import hashlib
++import json
++import logging
++import secrets
++import threading
++import time
++from collections.abc import Callable
++from dataclasses import dataclass
++
++import uvicorn
++from fastapi import APIRouter, FastAPI, Request, WebSocket
++
++from rxycode_server.api.auth import AuthRecord, _hash_token, current_record, require_write
++from rxycode_server.devices.pairing import PairingBook, PairingRejected
++
++logger = logging.getLogger(__name__)
++
++_PROTOCOL = "1.1.0"
++_SCOPE = "device"
++
++
++def _hash(token: str) -> str:
++    return hashlib.sha256(token.encode("utf-8")).hexdigest()
++
++
++@dataclass
++class DeviceRecord:
++    tenant_id: str
++    os_name: str
++    capabilities: list[str]
++    scope: str
++    token_hash: str
++    session_id: str
++    last_seen: float
++
++
++class Registry:
++    def __init__(self, *, clock: Callable[[], float], pairing_ttl: float, ttl: float) -> None:
++        self.clock = clock
++        self.ttl = ttl
++        self.devices: dict[str, DeviceRecord] = {}
++        self.sockets: dict[str, WebSocket] = {}
++        self.pairings = PairingBook(clock=clock, ttl=pairing_ttl)
++
++    def issue(self, tenant_id: str) -> str:
++        return self.pairings.issue(tenant_id)
++
++    def tool_permission(self, device_id: str) -> bool:
++        device = self.devices.get(device_id)
++        if device is None or not self._online(device):
++            return False
++        return device.scope == _SCOPE
++
++    def session_id(self, device_id: str) -> str:
++        device = self.devices.get(device_id)
++        if device is None or not self._online(device):
++            return ""
++        return device.session_id
++
++    def scope(self, device_id: str) -> str:
++        device = self.devices.get(device_id)
++        if device is None:
++            return ""
++        return device.scope
++
++    def token_accepted(self, token: str) -> bool:
++        digest = _hash(token)
++        return any(device.token_hash == digest for device in self.devices.values())
++
++    def list_for(self, tenant_id: str) -> list[dict[str, object]]:
++        rows: list[dict[str, object]] = []
++        for device_id, device in self.devices.items():
++            if device.tenant_id != tenant_id:
++                continue
++            rows.append(
++                {
++                    "id": device_id,
++                    "os": device.os_name,
++                    "capabilities": list(device.capabilities),
++                    "scope": device.scope,
++                    "online": self._online(device),
++                }
++            )
++        return rows
++
++    def hello(self, payload: dict[str, object], socket: WebSocket) -> dict[str, object]:
++        version = str(payload.get("protocol_version") or "")
++        if version != _PROTOCOL:
++            return {"type": "reject", "code": "BAD_VERSION", "tool_permission": False}
++        device_id = str(payload.get("device_id") or "")
++        if not device_id:
++            return {"type": "reject", "code": "BAD_DEVICE", "tool_permission": False}
++        presented = str(payload.get("token") or "")
++        if presented:
++            current = self.devices.get(device_id)
++            if current is None or current.token_hash != _hash(presented):
++                return {"type": "reject", "code": "BAD_TOKEN", "tool_permission": False}
++            tenant_id = current.tenant_id
++            os_name = current.os_name
++            capabilities = list(current.capabilities)
++        else:
++            try:
++                tenant_id = self.pairings.redeem(str(payload.get("pairing_code") or ""))
++            except PairingRejected as exc:
++                return {"type": "reject", "code": exc.code, "tool_permission": False}
++            current = self.devices.get(device_id)
++            if current is not None and current.tenant_id != tenant_id:
++                return {"type": "reject", "code": "DEVICE_OWNED", "tool_permission": False}
++            os_name = str(payload.get("os") or "")
++            raw_caps = payload.get("capabilities") or []
++            capabilities = [str(item) for item in raw_caps] if isinstance(raw_caps, list) else []
++        token = secrets.token_urlsafe(32)
++        session_id = secrets.token_hex(16)
++        self.devices[device_id] = DeviceRecord(
++            tenant_id=tenant_id,
++            os_name=os_name,
++            capabilities=capabilities,
++            scope=_SCOPE,
++            token_hash=_hash(token),
++            session_id=session_id,
++            last_seen=self.clock(),
++        )
++        previous = self.sockets.get(device_id)
++        self.sockets[device_id] = socket
++        if previous is not None and previous is not socket:
++            _close_later(previous)
++        logger.info("device online", extra={"device_id": device_id})
++        return {
++            "type": "hello_ok",
++            "session_id": session_id,
++            "token": token,
++            "scope": _SCOPE,
++            "tool_permission": True,
++        }
++
++    def touch(self, device_id: str, session_id: str) -> None:
++        device = self.devices.get(device_id)
++        if device is None or device.session_id != session_id:
++            return
++        device.last_seen = self.clock()
++
++    def detach(self, device_id: str, socket: WebSocket) -> None:
++        if self.sockets.get(device_id) is socket:
++            self.sockets.pop(device_id, None)
++
++    def _online(self, device: DeviceRecord) -> bool:
++        live = self.sockets.get(_device_id_for(self, device))
++        if live is None:
++            return False
++        return (self.clock() - device.last_seen) <= self.ttl
++
++
++def _device_id_for(registry: Registry, device: DeviceRecord) -> str:
++    for device_id, current in registry.devices.items():
++        if current is device:
++            return device_id
++    return ""
++
++
++def _close_later(socket: WebSocket) -> None:
++    try:
++        loop = asyncio.get_running_loop()
++    except RuntimeError:
++        return
++    loop.create_task(_close(socket))
++
++
++async def _close(socket: WebSocket) -> None:
++    try:
++        await socket.close()
++    except Exception:
++        logger.info("previous device socket closed")
++
++
++def create_device_app(
++    *,
++    secret: str,
++    clock: Callable[[], float] | None = None,
++    pairing_ttl: float = 300.0,
++    ttl: float = 30.0,
++) -> FastAPI:
++    if len(secret) < 32:
++        raise RuntimeError("device gateway requires a local random secret")
++    app = FastAPI(title="RxyCode Devices")
++    app.state.secret = secret
++    app.state.sessions = {}
++    app.state.allowed_origins = ()
++    app.state.secure = False
++    app.state.device_registry = Registry(
++        clock=clock or time.time,
++        pairing_ttl=pairing_ttl,
++        ttl=ttl,
++    )
++    app.include_router(build_router())
++    return app
++
++
++def build_router() -> APIRouter:
++    router = APIRouter()
++
++    def registry(request: Request) -> Registry:
++        return request.app.state.device_registry
++
++    @router.post("/api/v1/devices/pairings")
++    def issue_pairing(request: Request) -> dict[str, str]:
++        require_write(request)
++        record = current_record(request)
++        return {"code": registry(request).issue(record.tenant_id)}
++
++    @router.get("/api/v1/devices")
++    def list_devices(request: Request) -> dict[str, object]:
++        record = current_record(request)
++        return {"devices": registry(request).list_for(record.tenant_id)}
++
++    @router.websocket("/api/v1/devices/socket")
++    async def device_socket(socket: WebSocket) -> None:
++        await socket.accept()
++        book: Registry = socket.app.state.device_registry
++        device_id = ""
++        try:
++            raw = await socket.receive_text()
++            payload = json.loads(raw)
++            device_id = str(payload.get("device_id") or "")
++            reply = book.hello(payload, socket)
++            await socket.send_text(json.dumps(reply))
++            if reply["type"] != "hello_ok":
++                return
++            session_id = str(reply["session_id"])
++            while True:
++                incoming = json.loads(await socket.receive_text())
++                if incoming.get("type") == "heartbeat":
++                    book.touch(device_id, str(incoming.get("session_id") or session_id))
++        except Exception:
++            logger.info("device socket ended", extra={"device_id": device_id})
++        finally:
++            if device_id:
++                book.detach(device_id, socket)
++
++    return router
++
++
++class RunningGateway:
++    def __init__(self, app: FastAPI, server: uvicorn.Server, thread: threading.Thread, port: int) -> None:
++        self.app = app
++        self.server = server
++        self.thread = thread
++        self.port = port
++        self.http = f"http://127.0.0.1:{port}"
++        self.ws = f"ws://127.0.0.1:{port}/api/v1/devices/socket"
++        self.app.state.allowed_origins = (self.http,)
++
++    def _registry(self) -> Registry:
++        return self.app.state.device_registry
++
++    def session_id(self, device_id: str) -> str:
++        return self._registry().session_id(device_id)
++
++    def scope(self, device_id: str) -> str:
++        return self._registry().scope(device_id)
++
++    def tool_permission(self, device_id: str) -> bool:
++        return self._registry().tool_permission(device_id)
++
++    def token_accepted(self, token: str) -> bool:
++        return self._registry().token_accepted(token)
++
++    def browser_session(self, tenant_id: str) -> str:
++        """Store a browser session the same way local login does. No HTTP mint."""
++        token = secrets.token_urlsafe(32)
++        digest = _hash_token(self.app.state.secret, token)
++        self.app.state.sessions[digest] = AuthRecord(
++            user_id="local-user",
++            tenant_id=tenant_id,
++            created=time.monotonic(),
++        )
++        return token
++
++    def client_token(self, device_id: str) -> str:
++        from rxycode_runner.remote.client import token_for
++
++        return token_for(device_id)
++
++    def writer_count(self, device_id: str) -> int:
++        from rxycode_runner.remote.client import writer_count
++
++        return writer_count(device_id)
++
++    def drop(self) -> None:
++        registry = self._registry()
++        sockets = list(registry.sockets.values())
++
++        async def _drop() -> None:
++            for socket in sockets:
++                try:
++                    await socket.close()
++                except Exception:
++                    logger.info("dropped device socket")
++
++        server_loop = getattr(self.server, "_rxy_loop", None)
++        if server_loop is None:
++            raise RuntimeError("device gateway loop is not running")
++        asyncio.run_coroutine_threadsafe(_drop(), server_loop).result(timeout=5)
++        for device_id, socket in list(registry.sockets.items()):
++            if socket in sockets:
++                registry.sockets.pop(device_id, None)
++
++    def close(self) -> None:
++        self.server.should_exit = True
++        self.thread.join(timeout=5)
++
++
++def serve_in_thread(
++    *,
++    secret: str,
++    clock: Callable[[], float] | None = None,
++    pairing_ttl: float = 300.0,
++    ttl: float = 30.0,
++) -> RunningGateway:
++    app = create_device_app(secret=secret, clock=clock, pairing_ttl=pairing_ttl, ttl=ttl)
++    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning", access_log=False)
++    server = uvicorn.Server(config)
++    ready = threading.Event()
++
++    def run() -> None:
++        loop = asyncio.new_event_loop()
++        asyncio.set_event_loop(loop)
++        server._rxy_loop = loop  # type: ignore[attr-defined]
++
++        async def go() -> None:
++            task = loop.create_task(server.serve())
++            while not server.started:
++                await asyncio.sleep(0.01)
++            ready.set()
++            await task
++
++        loop.run_until_complete(go())
++        loop.close()
++
++    thread = threading.Thread(target=run, daemon=True)
++    thread.start()
++    if not ready.wait(timeout=10):
++        raise RuntimeError("device gateway did not start")
++    port = server.servers[0].sockets[0].getsockname()[1]
++    return RunningGateway(app, server, thread, port)
+diff --git a/packages/rxycode-server/src/rxycode_server/devices/pairing.py b/packages/rxycode-server/src/rxycode_server/devices/pairing.py
+new file mode 100644
+index 00000000..25b25ae5
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/devices/pairing.py
+@@ -0,0 +1,36 @@
++"""One-time pairing codes. A code expires and cannot be redeemed twice."""
++
++from __future__ import annotations
++
++import secrets
++from collections.abc import Callable
++
++
++class PairingRejected(Exception):
++    def __init__(self, code: str) -> None:
++        super().__init__(code)
++        self.code = code
++
++
++class PairingBook:
++    def __init__(self, *, clock: Callable[[], float], ttl: float) -> None:
++        self._clock = clock
++        self._ttl = ttl
++        self._codes: dict[str, tuple[str, float, bool]] = {}
++
++    def issue(self, tenant_id: str) -> str:
++        code = secrets.token_urlsafe(18)
++        self._codes[code] = (tenant_id, self._clock() + self._ttl, False)
++        return code
++
++    def redeem(self, code: str) -> str:
++        row = self._codes.get(code)
++        if row is None:
++            raise PairingRejected("PAIRING_INVALID")
++        tenant_id, expires_at, used = row
++        if self._clock() > expires_at:
++            raise PairingRejected("PAIRING_EXPIRED")
++        if used:
++            raise PairingRejected("PAIRING_USED")
++        self._codes[code] = (tenant_id, expires_at, True)
++        return tenant_id
+diff --git a/packages/rxycode-server/src/rxycode_server/main.py b/packages/rxycode-server/src/rxycode_server/main.py
+index 4cf3e056..b9543b79 100644
+--- a/packages/rxycode-server/src/rxycode_server/main.py
++++ b/packages/rxycode-server/src/rxycode_server/main.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import time
+ from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI, HTTPException, Request
+@@ -17,6 +18,7 @@ from rxycode_server.api.runs import router as runs_router
+ from rxycode_server.api.sse import router as sse_router
+ from rxycode_server.api.terminal_ws import router as terminal_router
+ from rxycode_server.api.workspace import router as workspace_router
++from rxycode_server.devices.gateway import Registry, build_router
+ 
+ _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
+ 
+@@ -79,6 +81,8 @@ def create_app(
+     app.include_router(sse_router)
+     app.include_router(approvals_router)
+     app.include_router(artifacts_router)
++    app.state.device_registry = Registry(clock=time.time, pairing_ttl=300.0, ttl=30.0)
++    app.include_router(build_router())
+ 
+     @app.exception_handler(HTTPException)
+     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
+diff --git a/pyproject.toml b/pyproject.toml
+index d2c273e1..cc5d92f5 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -84,10 +84,12 @@ packages = [
+   "rxycode_server.approvals",
+   "rxycode_server.artifacts",
+   "rxycode_server.usage",
++  "rxycode_server.devices",
+   "rxycode_worker",
+   "rxycode_runner",
+   "rxycode_runner.local",
+   "rxycode_runner.desktop",
++  "rxycode_runner.remote",
+ ]
+ 
+ [tool.setuptools.package-dir]
+@@ -106,10 +108,12 @@ packages = [
+ "rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
+ "rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
+ "rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
++"rxycode_server.devices" = "packages/rxycode-server/src/rxycode_server/devices"
+ "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+ "rxycode_runner" = "packages/rxycode-runner/src/rxycode_runner"
+ "rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
+ "rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
++"rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/tests/web/w4/test_w4_c03_module.py b/tests/web/w4/test_w4_c03_module.py
+new file mode 100644
+index 00000000..54ec3e7a
+--- /dev/null
++++ b/tests/web/w4/test_w4_c03_module.py
+@@ -0,0 +1,93 @@
++"""WEB-W4-C03. A dropped cloud socket reconnects as a new session at the same scope."""
++
++from __future__ import annotations
++
++import sys
++import threading
++import time
++from pathlib import Path
++
++import httpx
++from click.testing import CliRunner
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++for entry in (str(_RUNNER), str(_SERVER)):
++    if entry not in sys.path:
++        sys.path.insert(0, entry)
++
++
++def test_w4_c03_integration() -> None:
++    """After the cloud socket drops, reconnect uses a new session and the same scope."""
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import request_stop, reset_stop
++    from rxycode_server.devices.gateway import serve_in_thread
++
++    gateway = serve_in_thread(secret=_SECRET)
++    reset_stop()
++    thread: threading.Thread | None = None
++    try:
++        csrf = "csrf-token-value-for-c03"
++        browser = gateway.browser_session("tenant-a")
++        cookies = {"rxy_session": browser, "rxy_csrf": csrf}
++        headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}
++        issued = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies=cookies,
++            timeout=5,
++        )
++        code = issued.json()["code"]
++
++        def launch() -> None:
++            CliRunner().invoke(
++                cli,
++                [
++                    "connect",
++                    "--url",
++                    gateway.ws,
++                    "--code",
++                    code,
++                    "--device-id",
++                    "desk-1",
++                    "--os-name",
++                    "Windows",
++                    "--capability",
++                    "click",
++                    "--heartbeat-seconds",
++                    "0.2",
++                ],
++            )
++
++        thread = threading.Thread(target=launch)
++        thread.start()
++        first = ""
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            first = gateway.session_id("desk-1")
++            if first:
++                break
++            time.sleep(0.05)
++        assert first
++        first_token = gateway.client_token("desk-1")
++        gateway.drop()
++        second = ""
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            second = gateway.session_id("desk-1")
++            if second and second != first:
++                break
++            time.sleep(0.05)
++        assert second
++        assert second != first
++        assert gateway.scope("desk-1") == "device"
++        assert gateway.client_token("desk-1") != first_token
++        assert gateway.token_accepted(first_token) is False
++        assert gateway.writer_count("desk-1") == 1
++    finally:
++        request_stop()
++        if thread is not None:
++            thread.join(5)
++        gateway.close()
+diff --git a/tests/web/w4/test_w4_c03_unit.py b/tests/web/w4/test_w4_c03_unit.py
+new file mode 100644
+index 00000000..8cbb4b40
+--- /dev/null
++++ b/tests/web/w4/test_w4_c03_unit.py
+@@ -0,0 +1,283 @@
++"""WEB-W4-C03. Pairing shows the device, and a bad handshake cannot run tools."""
++
++from __future__ import annotations
++
++import logging
++import sys
++import threading
++import time
++from pathlib import Path
++
++import httpx
++from click.testing import CliRunner
++
++_SECRET = "local-web-secret-value-32bytes!!"
++REPO = Path(__file__).resolve().parents[3]
++_RUNNER = REPO / "packages" / "rxycode-runner" / "src"
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++for entry in (str(_RUNNER), str(_SERVER)):
++    if entry not in sys.path:
++        sys.path.insert(0, entry)
++
++
++def _capture_logs() -> tuple[logging.Handler, list[str]]:
++    found: list[str] = []
++
++    class _Grab(logging.Handler):
++        def emit(self, record: logging.LogRecord) -> None:
++            found.append(record.getMessage())
++
++    handler = _Grab()
++    for name in ("rxycode_runner.remote.client", "rxycode_server.devices.gateway"):
++        logger = logging.getLogger(name)
++        logger.setLevel(logging.DEBUG)
++        logger.addHandler(handler)
++    return handler, found
++
++
++def _authorized(gateway: object, tenant_id: str = "tenant-a") -> tuple[str, dict[str, str], dict[str, str]]:
++    token = gateway.browser_session(tenant_id)  # type: ignore[attr-defined]
++    csrf = "csrf-token-value-for-c03"
++    cookies = {"rxy_session": token, "rxy_csrf": csrf}
++    headers = {"Origin": gateway.http, "X-CSRF-Token": csrf}  # type: ignore[attr-defined]
++    return token, cookies, headers
++
++
++def test_w4_c03_contract() -> None:
++    """A local connect with an authorized pairing shows device, OS, and capability."""
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import request_stop, reset_stop, tls_context_for
++    from rxycode_server.devices.gateway import serve_in_thread
++
++    import ssl
++
++    context = tls_context_for("wss://cloud.example/api/v1/devices/socket")
++    assert context is not None
++    assert context.verify_mode == ssl.CERT_REQUIRED
++    assert context.check_hostname is True
++
++    handler, lines = _capture_logs()
++    gateway = serve_in_thread(secret=_SECRET)
++    reset_stop()
++    thread: threading.Thread | None = None
++    try:
++        browser, cookies, headers = _authorized(gateway)
++        forged = httpx.post(f"{gateway.http}/api/v1/devices/pairings", timeout=5)
++        assert forged.status_code == 403
++        unsigned = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies={"rxy_csrf": cookies["rxy_csrf"]},
++            timeout=5,
++        )
++        assert unsigned.status_code == 401
++        issued = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies=cookies,
++            timeout=5,
++        )
++        issued.raise_for_status()
++        code = issued.json()["code"]
++        holder: dict[str, object] = {}
++
++        def launch() -> None:
++            holder["result"] = CliRunner().invoke(
++                cli,
++                [
++                    "connect",
++                    "--url",
++                    gateway.ws,
++                    "--code",
++                    code,
++                    "--device-id",
++                    "desk-1",
++                    "--os-name",
++                    "Windows",
++                    "--capability",
++                    "click",
++                    "--heartbeat-seconds",
++                    "0.2",
++                ],
++            )
++
++        thread = threading.Thread(target=launch)
++        thread.start()
++        listed: list[dict[str, object]] = []
++        deadline = time.time() + 10
++        while time.time() < deadline:
++            response = httpx.get(
++                f"{gateway.http}/api/v1/devices",
++                cookies=cookies,
++                timeout=5,
++            )
++            response.raise_for_status()
++            listed = response.json()["devices"]
++            if listed:
++                break
++            time.sleep(0.05)
++        assert listed == [
++            {
++                "id": "desk-1",
++                "os": "Windows",
++                "capabilities": ["click"],
++                "scope": "device",
++                "online": True,
++            }
++        ]
++        device_token = gateway.client_token("desk-1")
++        assert device_token
++        assert device_token != browser
++        denied = httpx.get(
++            f"{gateway.http}/api/v1/devices",
++            cookies={"rxy_session": device_token},
++            timeout=5,
++        )
++        assert denied.status_code == 401
++        assert device_token not in "\n".join(lines)
++        assert gateway.writer_count("desk-1") == 1
++    finally:
++        request_stop()
++        if thread is not None:
++            thread.join(5)
++        gateway.close()
++        for name in ("rxycode_runner.remote.client", "rxycode_server.devices.gateway"):
++            logging.getLogger(name).removeHandler(handler)
++
++
++def test_w4_c03_negative() -> None:
++    """An expired pairing code and a wrong token are refused without tool permission."""
++    from click.testing import CliRunner
++    from RxyCode.RxyCode1_1_0.main import cli
++    from rxycode_runner.remote.client import request_stop, reset_stop
++    from rxycode_server.devices.gateway import serve_in_thread
++
++    reset_stop()
++    plain = CliRunner().invoke(
++        cli,
++        ["connect", "--url", "ws://cloud.example/socket", "--code", "code", "--device-id", "desk-1"],
++    )
++    assert plain.exit_code != 0
++    assert "TLS_REQUIRED" in plain.output
++    clock = {"now": 1_000.0}
++    gateway = serve_in_thread(secret=_SECRET, clock=lambda: clock["now"], pairing_ttl=5)
++    thread: threading.Thread | None = None
++    try:
++        _browser, cookies, headers = _authorized(gateway)
++        issued = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies=cookies,
++            timeout=5,
++        )
++        code = issued.json()["code"]
++        clock["now"] = 1_010.0
++        expired = CliRunner().invoke(
++            cli,
++            ["connect", "--url", gateway.ws, "--code", code, "--device-id", "desk-1"],
++        )
++        assert expired.exit_code != 0
++        assert "PAIRING_EXPIRED" in expired.output
++        wrong = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,
++                "--token",
++                "not-a-device-token",
++                "--device-id",
++                "desk-1",
++            ],
++        )
++        assert wrong.exit_code != 0
++        assert "BAD_TOKEN" in wrong.output
++        version = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,
++                "--code",
++                code,
++                "--device-id",
++                "desk-1",
++                "--protocol-version",
++                "9.9.9",
++            ],
++        )
++        assert version.exit_code != 0
++        assert "BAD_VERSION" in version.output
++        listed = httpx.get(
++            f"{gateway.http}/api/v1/devices",
++            cookies=cookies,
++            timeout=5,
++        )
++        assert listed.json()["devices"] == []
++        assert gateway.tool_permission("desk-1") is False
++        owned_code = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies=cookies,
++            timeout=5,
++        ).json()["code"]
++        reset_stop()
++        holder: dict[str, object] = {}
++
++        def launch() -> None:
++            holder["result"] = CliRunner().invoke(
++                cli,
++                [
++                    "connect",
++                    "--url",
++                    gateway.ws,
++                    "--code",
++                    owned_code,
++                    "--device-id",
++                    "desk-owned",
++                    "--os-name",
++                    "Windows",
++                    "--heartbeat-seconds",
++                    "0.2",
++                ],
++            )
++
++        thread = threading.Thread(target=launch)
++        thread.start()
++        deadline = time.time() + 10
++        while time.time() < deadline and not gateway.session_id("desk-owned"):
++            time.sleep(0.05)
++        assert gateway.session_id("desk-owned")
++        kept_session = gateway.session_id("desk-owned")
++        kept_token = gateway.client_token("desk-owned")
++        other = gateway.browser_session("tenant-b")
++        other_cookies = {"rxy_session": other, "rxy_csrf": cookies["rxy_csrf"]}
++        stolen_code = httpx.post(
++            f"{gateway.http}/api/v1/devices/pairings",
++            headers=headers,
++            cookies=other_cookies,
++            timeout=5,
++        ).json()["code"]
++        stolen = CliRunner().invoke(
++            cli,
++            [
++                "connect",
++                "--url",
++                gateway.ws,
++                "--code",
++                stolen_code,
++                "--device-id",
++                "desk-owned",
++                "--os-name",
++                "Windows",
++            ],
++        )
++        assert stolen.exit_code != 0
++        assert "DEVICE_OWNED" in stolen.output
++        assert gateway.session_id("desk-owned") == kept_session
++        assert gateway.token_accepted(kept_token) is True
++    finally:
++        request_stop()
++        if thread is not None:
++            thread.join(5)
++        gateway.close()

@@ -1,4 +1,5 @@
 import asyncio
+from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from ..core.session_runtime import resolve_session_path
@@ -7,12 +8,52 @@ from ..utils.atomic_file import atomic_write_text
 
 class EditInput(BaseModel):
     filePath: str = Field(description="Absolute or session-relative file path")
-    oldString: str = Field(description="Exact text to find and replace")
-    newString: str = Field(description="Replacement text")
+    operation: Literal["replace", "write", "patch"] | None = Field(
+        default=None,
+        description="replace: exact-text change; write: create/overwrite with content; patch: apply diff. Omit only when one payload identifies the operation.",
+    )
+    oldString: str | None = Field(default=None, description="replace only: exact text to find")
+    newString: str | None = Field(default=None, description="replace only: replacement text; empty deletes the match")
     replaceAll: bool = Field(default=False, description="Replace all occurrences")
+    content: str | None = Field(default=None, description="write only: complete file content; empty creates/clears a file")
+    diff: str | None = Field(default=None, description="patch only: standard unified diff with @@ hunk headers")
 
 
-def edit_file(filePath: str, oldString: str, newString: str, replaceAll: bool = False) -> str:
+def edit_file(
+    filePath: str,
+    oldString: str | None = None,
+    newString: str | None = None,
+    replaceAll: bool = False,
+    *,
+    operation: str | None = None,
+    content: str | None = None,
+    diff: str | None = None,
+) -> str:
+    """One model-facing file mutation entry; reuse the atomic write/diff helpers."""
+    supplied = []
+    if oldString is not None or newString is not None:
+        supplied.append("replace")
+    if content is not None:
+        supplied.append("write")
+    if diff is not None:
+        supplied.append("patch")
+    if len(supplied) != 1 or (operation is not None and operation != supplied[0]):
+        return "[error editing file: provide exactly one matching payload: replace=oldString+newString, write=content, patch=diff]"
+    selected = operation or supplied[0]
+    if replaceAll and selected != "replace":
+        return "[error editing file: replaceAll is only valid for replace]"
+    if selected == "write":
+        from .write import write_file
+
+        return write_file(filePath, content)
+    if selected == "patch":
+        if not diff.strip():
+            return "[error editing file: patch requires a non-empty unified diff]"
+        from .patch import run_patch
+
+        return run_patch(filePath, diff)
+    if oldString is None or newString is None or not oldString:
+        return "[error editing file: replace requires non-empty oldString and a newString (which may be empty)]"
     p = resolve_session_path(filePath)
     if not p.exists():
         return f"[error: file not found: {filePath}]"
@@ -79,25 +120,40 @@ def edit_file(filePath: str, oldString: str, newString: str, replaceAll: bool = 
                     f"keep at most {cap} covering the named behaviors. File not edited.]"
                 )
         atomic_write_text(p, content)
-        return f"[edited {filePath}]"
+        from .write import post_write_report
+
+        return f"[edited {filePath}]" + post_write_report(p, content)
     except Exception as e:
         return f"[error editing file: {e}]"
 
 
 async def edit_file_async(
     filePath: str,
-    oldString: str,
-    newString: str,
+    oldString: str | None = None,
+    newString: str | None = None,
     replaceAll: bool = False,
+    *,
+    operation: str | None = None,
+    content: str | None = None,
+    diff: str | None = None,
 ) -> str:
     await asyncio.sleep(0)
-    return edit_file(filePath, oldString, newString, replaceAll)
+    return edit_file(
+        filePath, oldString, newString, replaceAll,
+        operation=operation, content=content, diff=diff,
+    )
 
 
 edit_tool = StructuredTool.from_function(
     func=edit_file,
     coroutine=edit_file_async,
     name="edit",
-    description="Replace exact text in a file. Use replaceAll for renaming variables etc.",
+    description=(
+        "Create or modify a file. Use operation='write' with content for new files/full replacement; "
+        "operation='replace' with oldString/newString for small exact changes; "
+        "operation='patch' with diff for multiple hunks. Read before changing existing files. "
+        "Use exactly one payload; replaceAll applies only to replace. "
+        "Python and JavaScript results include syntax and linter findings."
+    ),
     args_schema=EditInput,
 )

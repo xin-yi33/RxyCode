@@ -86,9 +86,11 @@ export function snapshotFromTodoGet(payload: unknown): TodoDockSnapshot {
 }
 
 export function keyAction(key: { ctrl?: boolean; name?: string }): "todo" | "thinking" | null {
+  // 2026-10-11 键位换回原始约定：Ctrl+T = 思考展开（与 Ink 版和设计稿
+  // _palette.txt 一致），Todo 面板移到 Ctrl+E。FIX5 曾临时把两者对调。
   if (!key.ctrl) return null;
   const name = String(key.name || "").toLowerCase();
-  if (name === "t") return "todo";
-  if (name === "e") return "thinking";
+  if (name === "t") return "thinking";
+  if (name === "e") return "todo";
   return null;
 }

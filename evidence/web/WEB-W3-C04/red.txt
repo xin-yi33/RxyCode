@@ -1,0 +1,9 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c04_unit.py:76: AssertionError: FileTree.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c04_unit.py:105: AssertionError: FileTree.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c04_module.py:19: AssertionError: FileTree.tsx is missing
+FAILED tests/web/w3/test_w3_c04_unit.py::test_w3_c04_contract
+FAILED tests/web/w3/test_w3_c04_unit.py::test_w3_c04_negative
+FAILED tests/web/w3/test_w3_c04_module.py::test_w3_c04_integration
+3 failed in 0.93s

@@ -20,6 +20,9 @@ SKIP_DIRECTORIES = {
     ".venv",
     "__pycache__",
     "dist",
+    # Recorded run artifacts are immutable evidence; the live source lines
+    # they quote are still scanned in place.
+    "evidence",
     "htmlcov",
     "node_modules",
     "venv",
@@ -61,6 +64,7 @@ SECRET_RULES = {
 }
 PLACEHOLDER_VALUE_MARKERS = (
     "<redacted>",
+    "canary",
     "fake",
     "placeholder",
     "runtime-secret-value",

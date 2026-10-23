@@ -318,14 +318,19 @@ def test_resolve_github_mcp_runtime_uses_docker_then_npx(monkeypatch: pytest.Mon
     )
     command, args = resolve_github_mcp_runtime()
     assert command.endswith("docker")
+    from appserver.plugin_service import _OFFICIAL_GITHUB_MCP_IMAGE
+
+    # 2026-10-12 镜像钉 tag（禁隐式 latest 静默更新）：断言引用常量，
+    # 以后升 tag 不用再改这个测试。
     assert args == [
         "run",
         "-i",
         "--rm",
         "-e",
         "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "ghcr.io/github/github-mcp-server",
+        _OFFICIAL_GITHUB_MCP_IMAGE,
     ]
+    assert _OFFICIAL_GITHUB_MCP_IMAGE != "ghcr.io/github/github-mcp-server"
     monkeypatch.setattr(
         "appserver.plugin_service.shutil.which",
         lambda name: "/usr/bin/npx" if name == "npx" else None,

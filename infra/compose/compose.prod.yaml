@@ -1,0 +1,186 @@
+# W10-D2: production overlay on compose.yaml — self-hosted on the operator's
+# Windows host, reachable ONLY through Tailscale Funnel (decision D-10).
+#
+#   docker compose -p rxyprod --env-file D:\rxycode-prod\.env \
+#     -f infra/compose/compose.yaml -f infra/compose/compose.prod.yaml up -d
+#
+# Differences vs the dev stack (compose.yaml itself is untouched):
+#   * api / worker / gateway run the D1 images
+#     rxycode-{api,worker,web}:${RXYCODE_IMAGE_TAG:-latest} — code, deps and
+#     the SPA are baked in; no pip/apt/npm runs at container start, and no
+#     repo-src seeding or .rxy-sync-done / .migrate-done marker files exist.
+#   * reposync and webbuild are pinned to the "dev-seed" profile, so a prod
+#     `up` never starts them; migrate stays as a one-shot job on the api
+#     image (alembic upgrade head) and api/worker wait on its success via
+#     depends_on conditions instead of the boot-state marker.
+#   * Only the gateway publishes a port: 127.0.0.1:${RXYCODE_HTTP_PORT}:80,
+#     which is the upstream tailscaled forwards to
+#     (`tailscale funnel --bg --https=443 http://127.0.0.1:8080`). tailscaled
+#     terminates TLS, so :443 is not published and Caddy serves plain :80
+#     from Caddyfile.prod (bind-mounted over the image's /etc/caddy/Caddyfile).
+#     postgres/redis/minio/api publish nothing outside the compose network.
+#   * RXYCODE_WEB_MODE / RXYCODE_WORKER_EXECUTION are pinned to cloud /
+#     cloud-only (not env-overridable), and RXYCODE_WEB_ORIGINS is required
+#     with no insecure default — `compose config` fails when it is unset.
+#   * mem_limit caps per the D2 card (initial values, re-measure in W10-D4).
+#
+# Kill switch: set RXYCODE_QUEUE_MAX=0 in the env file and `up -d` — every new
+# submission is refused 429 QUOTA_EXCEEDED while already-running runs finish.
+#
+# No literal secrets here — every credential stays an env-file reference.
+
+services:
+  postgres:
+    ports: !reset []
+    mem_limit: 256m
+
+  redis:
+    ports: !reset []
+    mem_limit: 64m
+
+  minio:
+    ports: !reset []
+    mem_limit: 256m
+
+  # Dev bring-up helpers: code is baked into the images, so these stay out of
+  # prod `up` behind an opt-in profile. Their marker-file machinery no longer
+  # gates anything in prod.
+  reposync:
+    profiles: ["dev-seed"]
+
+  webbuild:
+    profiles: ["dev-seed"]
+
+  # One-shot schema upgrade on the api image (D1 deferred migration ordering
+  # to this overlay). Depends on postgres health; api/worker wait on its
+  # completed_successfully. Idempotent — safe to re-run via `compose run`.
+  migrate:
+    image: rxycode-api:${RXYCODE_IMAGE_TAG:-latest}
+    volumes: !reset []
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - python
+      - -c
+      - |
+        import os
+        import time
+
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        url = os.environ["RXYCODE_WEB_DATABASE_URL"]
+        for _attempt in range(60):
+            try:
+                engine = create_engine(url, poolclass=NullPool)
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                engine.dispose()
+                break
+            except Exception:
+                time.sleep(2)
+        else:
+            raise SystemExit("postgres never became reachable")
+        from rxycode_server.persistence.migrate import upgrade_head
+
+        upgrade_head(url)
+        print("alembic upgrade head complete")
+
+  api:
+    image: rxycode-api:${RXYCODE_IMAGE_TAG:-latest}
+    ports: !reset []
+    volumes: !reset []
+    mem_limit: 300m
+    # Explicit so the base file's inline sh bootstrap is fully replaced (same
+    # entry as the image CMD: /opt/serve_web.py -> serve()).
+    command: ["python", "/opt/serve_web.py"]
+    environment:
+      RXYCODE_WEB_MODE: "cloud"
+      # Required — no insecure default. The single Funnel origin, e.g.
+      # https://<machine>.<tailnet>.ts.net (comma-separated list allowed).
+      RXYCODE_WEB_ORIGINS: ${RXYCODE_WEB_ORIGINS:?set RXYCODE_WEB_ORIGINS to the https://<machine>.<tailnet>.ts.net origin}
+      RXYCODE_WEB_REGISTRATION: ${RXYCODE_WEB_REGISTRATION:-invite}
+      RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-120}
+      # Password-reset delivery (optional — forgot-password hides without it).
+      RXYCODE_SMTP_URL: ${RXYCODE_SMTP_URL:-}
+      RXYCODE_SMTP_FROM: ${RXYCODE_SMTP_FROM:-}
+      # Operator outbox for self-hosted single-admin deploys without SMTP:
+      # =1 makes forgot-password log the reset link to the api log.
+      RXYCODE_RESET_OPERATOR_LOG: ${RXYCODE_RESET_OPERATOR_LOG:-}
+      # BYOK (W10): users' model keys are AES-256-GCM sealed under this
+      # keyring; enforcement is on in cloud mode. The keyring file is a
+      # read-only host bind mount — it never lives in the image or the DB.
+      RXYCODE_BYOK_ENFORCE: "1"
+      RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      # Display name only for the platform model entry — never the key.
+      RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
+      # Dev/test only: permits http:// + private BYOK base URLs. Leave unset.
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      # Session-workspace files API (W12): worker-data is mounted at
+      # /workspaces-ro read-only via the base compose volumes merge.
+      RXYCODE_WORKSPACES_ROOT: /workspaces-ro/runs
+    volumes:
+      - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
+      # W12 files API: read-only view of the runs workspaces (base volumes
+      # are !reset-cleared above, so this must be listed explicitly).
+      - worker-data:/workspaces-ro:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    image: rxycode-worker:${RXYCODE_IMAGE_TAG:-latest}
+    # 全局在途并发 = worker 副本数；上游对并发敏感，封顶 3。
+    deploy:
+      replicas: ${RXYCODE_WORKER_REPLICAS:-3}
+    # ENTRYPOINT worker-entry.sh (writes deployed model config when
+    # RXYCODE_LLM_BASE_URL is set) + this CMD keeps the drain as PID 1.
+    command: ["python", "-m", "rxycode_worker.drain"]
+    # Only the writable workspace volume survives; repo-src/boot-state are
+    # dev-seed mechanics and nothing in prod may reference /repo-src.
+    volumes: !override
+      - worker-data:/work
+      - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
+    mem_limit: 2g
+    environment:
+      RXYCODE_WORKER_EXECUTION: "cloud-only"
+      # Platform model endpoint — OPTIONAL under BYOK (W10): BYOK runs use
+      # the run's own credential; only allowlisted platform runs consume
+      # this. Still recommended so allowlisted operators can run.
+      RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
+      RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
+      RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
+      # BYOK: the worker decrypts each run's credential parent-side from
+      # this keyring and vets the user-supplied upstream before connecting.
+      RXYCODE_BYOK_ENFORCE: "1"
+      RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  gateway:
+    image: rxycode-web:${RXYCODE_IMAGE_TAG:-latest}
+    # Caddyfile.prod is bind-mounted over the image's baked dev Caddyfile —
+    # the image CMD path therefore stays valid. (Host bind mounts verified
+    # working on this Docker Desktop; the W7 note about them hanging is
+    # stale, and the .env still lives outside the repo — only this one file
+    # is mounted, never a checkout.)
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    ports: !override
+      - "127.0.0.1:${RXYCODE_HTTP_PORT:-8080}:80"
+    volumes: !override
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 64m
+    depends_on:
+      api:
+        condition: service_healthy

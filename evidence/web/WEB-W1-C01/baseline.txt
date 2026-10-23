@@ -1,0 +1,10 @@
+parent branch: feat/rxycode-web
+parent HEAD before WEB-W1-C01: fe1fd59b69412abcd612c35d6e11810efe6c7be6
+card commits: c7783efb65cba775c04a5aac39f9f6266bc13df4, then 2dd8697ac971ff763212abbc375db34b7e80e92d
+nested docs/plans/opus5-plan HEAD: ecc3e73
+upstream: none for either branch
+anchors present: pyproject.toml [project], core/session.py reuse_or_create_session, tests/system/test_installed_package.py test_
+AgentV2 class: core/agent_v2.py only
+core/session.py working tree has an unrelated unstaged inbox_for edit. This card does not stage it and does not change Session behavior.
+W0 wave exit is not claimed. CW03 and CW04 stay P0 OPEN in the trace file.
+The earlier note that said fe1fd59b8 was wrong. The full parent hash is fe1fd59b69412abcd612c35d6e11810efe6c7be6.

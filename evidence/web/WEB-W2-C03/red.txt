@@ -1,0 +1,10 @@
+First collection of the new tests, before rxycode_server.runs existed:
+
+ERROR tests/web/w2/test_w2_c03_unit.py
+ModuleNotFoundError: No module named 'rxycode_server.runs'
+from rxycode_server.runs.service import RunAlreadyActive, RunConflict, create_run
+
+ERROR tests/web/w2/test_w2_c03_module.py
+ModuleNotFoundError: No module named 'rxycode_server.runs'
+
+2 errors in 0.50s. The later green runs are unit.txt and integration.txt.

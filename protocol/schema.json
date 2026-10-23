@@ -120,8 +120,37 @@
       "title": "NewSessionRequest",
       "type": "object"
     },
+    "PromptAttachment": {
+      "description": "Client-local file reference carried with one ``session/prompt`` turn.",
+      "properties": {
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "PromptAttachment",
+      "type": "object"
+    },
     "PromptRequest": {
-      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.\n``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning\nstream emission on ``ProtocolTui``.",
+      "description": "One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).\n\n``session_id`` uses ``memory.long_term.validate_session_id``; ``text`` is\n``ChatRequest.message``; ``timeout_seconds`` mirrors execution tool timeout\nsemantics when appserver enforces wall-clock limits.\n``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning\nstream emission on ``ProtocolTui``.\n``attachments`` contains only client-selected local file references; the\nworker revalidates every path and never persists media bytes.",
       "properties": {
         "method": {
           "const": "session/prompt",
@@ -136,6 +165,14 @@
         "text": {
           "title": "Text",
           "type": "string"
+        },
+        "attachments": {
+          "items": {
+            "$ref": "#/$defs/PromptAttachment"
+          },
+          "maxItems": 10,
+          "title": "Attachments",
+          "type": "array"
         },
         "timeout_seconds": {
           "anyOf": [
@@ -206,6 +243,32 @@
           "default": null,
           "description": "Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
           "title": "Request Id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional server-minted run id. Old clients omit it.",
+          "title": "Run Id"
+        },
+        "device_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional device id. Old clients omit it.",
+          "title": "Device Id"
         }
       },
       "required": [
@@ -8301,7 +8364,7 @@
           "type": "string"
         },
         "server_version": {
-          "default": "1.4.2",
+          "default": "1.4.4",
           "title": "Server Version",
           "type": "string"
         },
@@ -8577,6 +8640,228 @@
         "confidence"
       ],
       "title": "TimeoutDecisionResponse",
+      "type": "object"
+    },
+    "RunRecord": {
+      "description": "One server-minted run. This is not a second session and not a new RPC method.",
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "session_id",
+        "status"
+      ],
+      "title": "RunRecord",
+      "type": "object"
+    },
+    "WebEvent": {
+      "description": "One envelope around an existing notification method. It does not add a wire method.",
+      "properties": {
+        "method": {
+          "enum": [
+            "event/agent_budget_exceeded",
+            "event/agent_cancelled",
+            "event/agent_denied",
+            "event/agent_done",
+            "event/agent_needs_input",
+            "event/agent_paused",
+            "event/agent_progress",
+            "event/agent_routed",
+            "event/agent_started",
+            "event/agent_team_created",
+            "event/agent_tool",
+            "event/agent_usage",
+            "event/done",
+            "event/error",
+            "event/execution",
+            "event/final",
+            "event/job_status",
+            "event/message_delta",
+            "event/plan",
+            "event/process_failed",
+            "event/process_shutdown",
+            "event/process_started",
+            "event/progress",
+            "event/reasoning_snapshot",
+            "event/recovery_analyzing",
+            "event/recovery_attempt",
+            "event/recovery_exhausted",
+            "event/recovery_required",
+            "event/recovery_resolved",
+            "event/recovery_started",
+            "event/server_heartbeat",
+            "event/step",
+            "event/task_complete",
+            "event/task_started",
+            "event/timeout_decision",
+            "event/todo_updated",
+            "event/token_usage",
+            "event/tool_begin",
+            "event/tool_end",
+            "event/workspace_changed",
+            "initialized"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "title": "WebEvent",
+      "type": "object"
+    },
+    "DeviceRecord": {
+      "description": "A client device. Capability names are not execution grants.",
+      "properties": {
+        "device_id": {
+          "title": "Device Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "desktop",
+            "cli",
+            "web"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        }
+      },
+      "required": [
+        "device_id",
+        "kind"
+      ],
+      "title": "DeviceRecord",
+      "type": "object"
+    },
+    "WebDiagnostic": {
+      "description": "Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged.",
+      "properties": {
+        "code": {
+          "enum": [
+            "RUN_CANCELLED",
+            "DEVICE_UNSUPPORTED",
+            "CAPABILITY_DENIED"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "WebDiagnostic",
+      "type": "object"
+    },
+    "ToolCall": {
+      "description": "Versioned tool call frame generated into the schema. Version must be at least 1.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "target_id",
+        "version"
+      ],
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolChunk": {
+      "description": "One chunk of a tool result. Generated into the schema with ToolCall.",
+      "properties": {
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "index": {
+          "title": "Index",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "final": {
+          "title": "Final",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "index",
+        "text",
+        "final"
+      ],
+      "title": "ToolChunk",
       "type": "object"
     },
     "ClientRequest": {
@@ -9205,6 +9490,30 @@
           "$ref": "#/$defs/TimeoutDecisionEvent"
         }
       ]
+    },
+    "WebProtocol": {
+      "title": "WebProtocol",
+      "description": "Additive Run, Event, Device, and diagnostic models. Not a session envelope. Old initialize, session/prompt, and approval/request methods are unchanged.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RunRecord"
+        },
+        {
+          "$ref": "#/$defs/WebEvent"
+        },
+        {
+          "$ref": "#/$defs/DeviceRecord"
+        },
+        {
+          "$ref": "#/$defs/WebDiagnostic"
+        },
+        {
+          "$ref": "#/$defs/ToolCall"
+        },
+        {
+          "$ref": "#/$defs/ToolChunk"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -9225,6 +9534,10 @@
     },
     {
       "$ref": "#/$defs/TimeoutDecisionProtocol"
+    },
+    {
+      "$ref": "#/$defs/WebProtocol"
     }
-  ]
+  ],
+  "schema_digest": "6895f4b079521f9a346a493f4206c67a01b48bb7c62061d61a87fa8420c7da71"
 }

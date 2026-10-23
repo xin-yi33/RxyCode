@@ -1,0 +1,14 @@
+...                                                                      [100%]
+============================== warnings summary ===============================
+tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
+tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
+  D:\agent-demo\RxyCode\RxyCode1_1_0\core\session.py:208: DeprecationWarning: __package__ != __spec__.parent
+    from .ttft_clock import (
+
+tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
+tests/web/w0/test_w0_c03_unit.py::test_w0_c03_contract
+  D:\agent-demo\RxyCode\RxyCode1_1_0\core\session.py:272: DeprecationWarning: __package__ != __spec__.parent
+    from .prompt_attachments import (
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 4 warnings in 1.53s

@@ -4,6 +4,7 @@ import { getChatTransport } from "./transport/index.ts";
 import type { CommandResult } from "./transport/httpAdmin.ts";
 import type { ChatApiCallbacks, MessageUpdater } from "./transport/types.ts";
 import type { Mode, StatusInfo } from "./types.ts";
+import type { ClipboardAttachment } from "./clipboard.ts";
 
 export { getChatTransport };
 export type { ChatApiCallbacks, MessageUpdater };
@@ -44,8 +45,13 @@ export async function sendChatMessage(
   callbacks: ChatApiCallbacks,
   signal?: AbortSignal,
   displayContent?: string,
+  attachments?: readonly ClipboardAttachment[],
 ): Promise<void> {
-  return getChatTransport().sendChatMessage(content, mode, callbacks, signal, displayContent);
+  return getChatTransport().sendChatMessage(content, mode, callbacks, signal, displayContent, attachments);
+}
+
+export function getCurrentSessionId(): string | null {
+  return getChatTransport().getCurrentSessionId?.() ?? null;
 }
 
 export async function invokeSubagent(agentId: string, prompt: string) {

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import importlib
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -12,6 +16,7 @@ from pydantic import BaseModel
 from ..protocol.notifications import ErrorNotification, FinalAnswer, ProgressUpdate, TokenUsage
 
 from RxyCode.RxyCode1_1_0.core.agents.coordinator import BudgetExceeded, Coordinator
+from RxyCode.RxyCode1_1_0.core.subagents.inbox import inbox_for
 from RxyCode.RxyCode1_1_0.core.agents.router import (
     ExecutionMode,
     get_default_router,
@@ -26,10 +31,22 @@ from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 
 EmitCallback = Callable[[BaseModel], None]
 
+
+def _run_context_module() -> Any:
+
+    try:
+        return importlib.import_module("rxycode_protocol.run_context")
+    except ImportError:
+        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-protocol" / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        return importlib.import_module("rxycode_protocol.run_context")
+
 _APPROVED_PLAN_IMPLEMENT_PREFIXES = (
     "按已批准的计划开始实施",
     "已批准计划，开始实施",
 )
+_MISSING_ATTACHMENT_ATTRIBUTE = object()
 
 
 def _is_approved_plan_implement(text: str) -> bool:
@@ -183,10 +200,23 @@ class Session:
         self._session_subagents_opt_in = False
         self.drain_steers: Callable[[], list[str]] | None = None
         self._agents_enabled_cached = None
+        self._active_run = None
         try:
             self._agents_enabled_cached = self._read_agents_enabled()
         except Exception:
             self._agents_enabled_cached = False
+
+    def open_run(
+        self,
+        authenticated: dict[str, object],
+        claimed: dict[str, object] | None = None,
+    ) -> Any:
+        """Mint a RunContext for this same Session. The client session id is ignored."""
+        payload = dict(authenticated)
+        payload["session_id"] = self.session_id
+        context = _run_context_module().RunContext.from_authenticated(payload, claimed=claimed)
+        self._active_run = context
+        return context
 
     async def prompt(
         self,
@@ -197,8 +227,22 @@ class Session:
         run_id: str,
         tui: Any | None = None,
         permission_mode: str | None = None,
+        attachments: list[Any] | None = None,
+        run_context: Any | None = None,
+        harness_resume: dict | None = None,
     ) -> PromptResult:
-        """Run one user turn through AgentV2 and emit terminal protocol events."""
+        """Run one user turn through AgentV2 and emit terminal protocol events.
+
+        ``harness_resume`` continues a parked turn from its checkpoint instead
+        of routing ``text`` again (the text is then only the original prompt).
+        """
+        bound_run = None
+        if run_context is not None:
+            if getattr(run_context, "session_id", None) != self.session_id:
+                raise ValueError("run context session_id does not match this session")
+            self._active_run = run_context
+            run_id = run_context.run_id
+            bound_run = run_context
         try:
             from .ttft_clock import (
                 bind_prompt_clock,
@@ -244,6 +288,7 @@ class Session:
         if hasattr(agent, "_workspace_root"):
             agent._workspace_root = workspace
         agent._drain_steers = self.drain_steers
+        agent._subagent_inbox = inbox_for(self.session_id)
 
         from RxyCode.RxyCode1_1_0.core.session_runtime import (
             bind_session,
@@ -252,16 +297,52 @@ class Session:
         )
 
         session_token = bind_session(self.session_id)
+        attachment_attributes = {
+            name: getattr(agent, name, _MISSING_ATTACHMENT_ATTRIBUTE)
+            for name in (
+                "_prompt_attachment_context",
+                "_prompt_attachment_active",
+                "_prompt_attachment_renderer",
+            )
+        }
+        run_module = _run_context_module()
+        run_token = run_module.bind_run_context(bound_run)
         try:
             set_working_directory(workspace, persist=False)
             try:
+                from .prompt_attachments import (
+                    PreparedPromptAttachments,
+                    human_message_content,
+                    prepare_prompt_attachments,
+                )
+
+                capabilities = getattr(agent, "_capabilities", None)
+                if attachments:
+                    prepared_attachments = await asyncio.to_thread(
+                        prepare_prompt_attachments,
+                        attachments,
+                        supports_vision=bool(
+                            getattr(capabilities, "supports_vision", False)
+                        ),
+                    )
+                else:
+                    prepared_attachments = PreparedPromptAttachments()
+                agent._prompt_attachment_context = prepared_attachments
+                agent._prompt_attachment_active = prepared_attachments.has_attachments
+                agent._prompt_attachment_renderer = human_message_content
                 if permission_mode is None:
-                    answer = await self._dispatch_user_turn(agent, text, mode)
+                    if harness_resume is not None:
+                        answer = await agent.resume_harness_turn(harness_resume)
+                    else:
+                        answer = await self._dispatch_user_turn(agent, text, mode)
                 else:
                     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import permission_mode_override
 
                     with permission_mode_override(permission_mode):
-                        answer = await self._dispatch_user_turn(agent, text, mode)
+                        if harness_resume is not None:
+                            answer = await agent.resume_harness_turn(harness_resume)
+                        else:
+                            answer = await self._dispatch_user_turn(agent, text, mode)
             except BudgetExceeded as exc:
                 answer = str(exc) or "team budget exceeded"
             except Exception as exc:
@@ -392,7 +473,14 @@ class Session:
                 **usage_kwargs,
             )
         finally:
+            _run_context_module().reset_run_context(run_token)
             self.emit = outer_emit
+            for name, previous_value in attachment_attributes.items():
+                if previous_value is _MISSING_ATTACHMENT_ATTRIBUTE:
+                    with contextlib.suppress(AttributeError):
+                        delattr(agent, name)
+                else:
+                    setattr(agent, name, previous_value)
             reset_prompt_clock(clock_token)
             reset_session_binding(session_token)
 
@@ -482,6 +570,29 @@ class Session:
             head, _, tail = stripped.partition(" ")
             cmd = head.lower()
             rest = tail.strip()
+
+        if getattr(agent, "_prompt_attachment_active", False) and cmd in {
+            "/solo", "/team", "/team-multi", "/explore", "/why-mode",
+            "/agents", "/compact",
+        }:
+            raise ValueError(
+                f"{cmd} does not carry prompt attachments; resend them with a direct chat request."
+            )
+
+        intent = parse_route_intent(stripped)
+        if (
+            getattr(agent, "_prompt_attachment_active", False)
+            and (intent.mode is not None or intent.persist_route or intent.persist_subagents)
+        ):
+            raise ValueError(
+                "Team, explore, and persistent routing requests do not carry prompt attachments; resend through a direct chat/agent route."
+            )
+
+        if getattr(agent, "_prompt_attachment_active", False):
+            # A session may already have team/explore routing enabled from an
+            # earlier turn. Keep this explicit user turn on the primary
+            # AgentV2 path so no router/child dispatch can consume the image.
+            return await agent.run(intent.remainder or stripped, mode=mode)
 
         intent = self._apply_session_route_flags(agent, stripped)
         if self._session_subagents_opt_in:

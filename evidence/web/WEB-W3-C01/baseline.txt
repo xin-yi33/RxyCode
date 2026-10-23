@@ -1,0 +1,5 @@
+Parent HEAD before this card: 9e0fb5cd feat/rxycode-web. Not pushed.
+Nested whitelist: c4ca0ff on docs/plans/opus5-plan feat/rxycode-web. Not pushed.
+Desktop pure component verified at frontend/desktop-app/src/renderer/src/components/sessionVisualState.ts. It does not import Electron, preload, or node builtins.
+RED: evidence/web/WEB-W3-C01/red.txt failed because apps/web/package.json was missing.
+E2E-WEB-01 against a live logged-in API is not run on this card. The locked tests cover the down-API login page and the production bundle.

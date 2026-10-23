@@ -1,0 +1,11 @@
+First collection of the new tests, before rxycode_server.main existed:
+
+ERROR tests/web/w2/test_w2_c02_unit.py
+ModuleNotFoundError: No module named 'rxycode_server.main'
+from rxycode_server.main import create_app, serve
+
+ERROR tests/web/w2/test_w2_c02_module.py
+ModuleNotFoundError: No module named 'rxycode_server.main'
+from rxycode_server.main import create_app
+
+2 errors in 0.37s. The later green runs are unit.txt and integration.txt.

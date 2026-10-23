@@ -11,6 +11,7 @@ import asyncio
 import base64
 import csv
 import ctypes
+from contextlib import contextmanager
 from ctypes import wintypes
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 
 import yaml
 
@@ -34,6 +36,59 @@ _os_name = os.name
 
 
 _cached_windows_sid: str | None = None
+
+# ── credentials.yaml 解析缓存 ─────────────────────────────────────────
+# models/list 每个模型 resolve 一次都调 load_credential → _read_store，
+# 66 个模型 = 57 次纯 Python yaml.safe_load（2026-10-11 profile：list_models
+# 2.08s 中 1.37s 是重复解析同一文件）。按 (path, size, mtime_ns) 签名缓存解析
+# 结果；任何写入（含原子替换）都会改 mtime 自动失效，_write_store 也主动清。
+# 返回浅拷贝，防调用方（如 store_credential 的写入前拼装）污染缓存。
+# RXYCODE_DISABLE_ACL_CACHE=1 一并禁用本缓存（与 ACL 缓存同一个回退开关）。
+_READ_STORE_CACHE: dict[str, tuple[tuple[int, int], dict[str, str]]] = {}
+
+
+def _read_store_cache_key(path: Path) -> str:
+    key = str(path)
+    return os.path.normcase(key) if os.name == "nt" else key
+
+
+def _invalidate_read_store_cache(path: Path) -> None:
+    _READ_STORE_CACHE.pop(_read_store_cache_key(path), None)
+
+
+# ── Per-path ACL cache ────────────────────────────────────────────────
+# Every config/credential load or save used to spawn one or two ``icacls``
+# child processes (15s timeout each); a single model switch could accumulate
+# 15-30+ subprocess spawns and freeze the caller for seconds.  ``icacls`` is
+# idempotent, so after a *successful* restrict we remember the file
+# signature ``(size, mtime_ns, exists)`` and skip the subprocess while the
+# file is unchanged.  Each process carries its own cache, which concurrent
+# processes tolerate: the worst case is one redundant ``icacls`` run.
+# ``RXYCODE_DISABLE_ACL_CACHE=1`` restores the old always-run behavior.
+_ACL_CACHE: dict[str, tuple[int, int, bool]] = {}
+_ACL_CACHE_LOCK = threading.Lock()
+
+
+def _acl_cache_disabled() -> bool:
+    return os.environ.get("RXYCODE_DISABLE_ACL_CACHE") == "1"
+
+
+def _acl_cache_key(path: Path) -> str:
+    key = str(path)
+    return os.path.normcase(key) if os.name == "nt" else key
+
+
+def _acl_signature(path: Path) -> tuple[int, int, bool]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0, False)
+    return (stat.st_size, stat.st_mtime_ns, True)
+
+
+def _invalidate_acl_cache(path: Path) -> None:
+    with _ACL_CACHE_LOCK:
+        _ACL_CACHE.pop(_acl_cache_key(path), None)
 
 
 def _windows_current_sid_from_token() -> str:
@@ -160,6 +215,12 @@ def restrict_file_permissions(path: Path) -> None:
         os.chmod(path, 0o600)
         return
 
+    cache_key = _acl_cache_key(path)
+    signature = _acl_signature(path)
+    if not _acl_cache_disabled():
+        with _ACL_CACHE_LOCK:
+            if _ACL_CACHE.get(cache_key) == signature:
+                return
     sid = _windows_current_sid()
     result = subprocess.run(
         [
@@ -180,6 +241,9 @@ def restrict_file_permissions(path: Path) -> None:
     )
     if result.returncode != 0:
         raise OSError("Unable to restrict local configuration file permissions")
+    if not _acl_cache_disabled():
+        with _ACL_CACHE_LOCK:
+            _ACL_CACHE[cache_key] = signature
 
 
 async def restrict_file_permissions_async(path: Path) -> None:
@@ -215,17 +279,92 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             os.fsync(stream.fileno())
         restrict_file_permissions(temporary_path)
         os.replace(temporary_path, path)
+        # 写后主动失效缓存条目：目标文件内容已变化，而一次性临时文件名
+        # 滞留在缓存里只会泄漏。
+        _invalidate_acl_cache(temporary_path)
+        _invalidate_acl_cache(path)
         restrict_file_permissions(path)
         _fsync_directory(path.parent)
     except BaseException:
         if fd >= 0:
             os.close(fd)
         temporary_path.unlink(missing_ok=True)
+        _invalidate_acl_cache(temporary_path)
         raise
 
 
 def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))
+
+
+_FILE_LOCK_STATE = threading.local()
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    """Lock *path* across processes for a read-modify-write.
+
+    ``os.replace`` keeps a single write atomic. It does not stop two
+    processes from each reading the old file and then replacing it.
+    The same thread may re-enter; another thread or process waits.
+    """
+    key = str(path)
+    depth = int(getattr(_FILE_LOCK_STATE, "depth", 0) or 0)
+    if depth and getattr(_FILE_LOCK_STATE, "key", None) == key:
+        _FILE_LOCK_STATE.depth = depth + 1
+        try:
+            yield
+        finally:
+            _FILE_LOCK_STATE.depth = depth
+        return
+
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() < 1:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                        break
+                    time.sleep(0.02)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _FILE_LOCK_STATE.depth = 1
+        _FILE_LOCK_STATE.key = key
+        try:
+            yield
+        finally:
+            _FILE_LOCK_STATE.depth = 0
+            _FILE_LOCK_STATE.key = None
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
 
 
 class _DataBlob(ctypes.Structure):
@@ -349,6 +488,13 @@ def _read_store(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     restrict_file_permissions(path)
+    if not _acl_cache_disabled():
+        cache_key = _read_store_cache_key(path)
+        stat = path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        cached = _READ_STORE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == signature:
+            return dict(cached[1])
     with path.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream) or {}
     if document.get("version") != _STORE_VERSION:
@@ -359,6 +505,8 @@ def _read_store(path: Path) -> dict[str, str]:
         for key, value in credentials.items()
     ):
         raise ValueError("Invalid credential store")
+    if not _acl_cache_disabled():
+        _READ_STORE_CACHE[cache_key] = (signature, dict(credentials))
     return credentials
 
 
@@ -366,19 +514,52 @@ def _write_store(path: Path, credentials: dict[str, str]) -> None:
     document = {"version": _STORE_VERSION, "credentials": credentials}
     text = yaml.safe_dump(document, allow_unicode=True, sort_keys=True)
     atomic_write_text(path, text)
+    # 写入后主动失效：下一次读必须拿到新内容，而不是本进程旧缓存。
+    _invalidate_read_store_cache(path)
 
 
 def store_credential(value: str, config_path: Path) -> str:
-    value = value.strip()
-    if not value:
+    return store_credentials([value], config_path)[0]
+
+
+def _credential_rmw_pause() -> None:
+    """Test-only gap between a credential read and its write.
+
+    Unset in production. A positive ``RXYCODE_CREDENTIAL_RMW_PAUSE`` makes
+    two processes overlap inside the read-modify-write so a missing
+    cross-process lock fails closed instead of passing by timing.
+    """
+    raw = os.environ.get("RXYCODE_CREDENTIAL_RMW_PAUSE", "").strip()
+    if not raw:
+        return
+    time.sleep(float(raw))
+
+
+def store_credentials(values: list[str], config_path: Path) -> list[str]:
+    """Protect every value under its own reference and write the store once.
+
+    References are not shared. Deleting or rolling back one model removes
+    only that reference.
+    """
+    cleaned = [value.strip() for value in values]
+    if any(not item for item in cleaned):
         raise ValueError("Credential must not be empty")
+    if not cleaned:
+        return []
     path = _secret_path(config_path)
-    with _STORE_LOCK:
-        credentials = _read_store(path)
-        reference = uuid.uuid4().hex
-        credentials[reference] = _protect(value, reference)
-        _write_store(path, credentials)
-    return reference
+    references: list[str] = []
+    # File lock outside the in-process lock. Never take the config lock
+    # while this credential lock is held; config edits run before or after.
+    with exclusive_file_lock(path):
+        with _STORE_LOCK:
+            credentials = _read_store(path)
+            _credential_rmw_pause()
+            for value in cleaned:
+                reference = uuid.uuid4().hex
+                credentials[reference] = _protect(value, reference)
+                references.append(reference)
+            _write_store(path, credentials)
+    return references
 
 
 def load_credential(reference: str, config_path: Path) -> str:
@@ -393,24 +574,38 @@ def load_credential(reference: str, config_path: Path) -> str:
     return _unprotect(protected)
 
 
-def delete_credential(reference: str, config_path: Path) -> None:
-    if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
-        return
+def delete_credentials(references: list[str], config_path: Path) -> None:
+    """Drop many references in one store write. Unknown refs are ignored."""
     path = _secret_path(config_path)
-    keyring_was_backed = False
-    with _STORE_LOCK:
-        credentials = _read_store(path)
-        if reference not in credentials:
-            return
-        keyring_was_backed = str(credentials[reference]).startswith("keyring-v1:")
-        del credentials[reference]
-        _write_store(path, credentials)
-    # Best-effort cleanup of the OS keyring entry (macOS Keychain /
-    # Linux Secret Service) when the removed blob was keyring-backed.
-    if keyring_was_backed:
+    keyring_refs: list[str] = []
+    with exclusive_file_lock(path):
+        with _STORE_LOCK:
+            credentials = _read_store(path)
+            _credential_rmw_pause()
+            changed = False
+            for reference in references:
+                if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
+                    continue
+                current = credentials.get(reference)
+                if current is None:
+                    continue
+                if str(current).startswith("keyring-v1:"):
+                    keyring_refs.append(reference)
+                del credentials[reference]
+                changed = True
+            if changed:
+                _write_store(path, credentials)
+    for reference in keyring_refs:
         try:
             import keyring
 
             keyring.delete_password(_KEYRING_SERVICE, reference)
         except Exception:
             pass
+
+
+def delete_credential(reference: str, config_path: Path) -> None:
+    # 单条删除走 delete_credentials，避免再维护第二份读写。
+    if not isinstance(reference, str) or not _REFERENCE_PATTERN.fullmatch(reference):
+        return
+    delete_credentials([reference], config_path)

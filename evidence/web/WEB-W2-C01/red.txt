@@ -1,0 +1,15 @@
+First execution of tests/web/w2/test_w2_c01_unit.py, before relationship() flush ordering:
+
+test_w2_c01_contract passed.
+test_w2_c01_negative failed on the first commit, not on the duplicate request_id.
+
+psycopg.errors.ForeignKeyViolation: insert or update on table "runs" violates foreign key constraint "runs_session_id_fkey"
+DETAIL: Key (session_id)=(session-a) is not present in table "sessions".
+SQLAlchemy inserted runs before sessions. SaveUpdateAll is ordered by class name when no relationship() exists, and Run sorts before SessionRow.
+
+First execution of tests/web/w2/test_w2_c01_module.py after that fix:
+
+FileNotFoundError: tasks.json
+DesktopTaskStore._save returns without writing when _owned and _dropped are empty. Putting a dict into _data and calling _save does not create the file. The test then called read_bytes on a path the store never wrote.
+
+Those two failures are the red runs for this card. The later green runs are unit.txt and integration.txt.

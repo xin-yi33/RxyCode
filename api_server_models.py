@@ -249,7 +249,6 @@ async def onboard_model(req: ModelOnboardingRequest):
         probe_model_connection,
         remove_model,
         resolve_provider_meta,
-        set_active_model,
     )
 
     provider_model_id = req.provider_model_id
@@ -280,7 +279,9 @@ async def onboard_model(req: ModelOnboardingRequest):
             detail=f"Connection test failed; model was not saved: {safe_error}",
         )
 
-    try:
+    def _commit_single() -> None:
+        # One config write, off the event loop. activate folds in the
+        # follow-up set_active save that used to serialize the file again.
         add_model(
             config_key,
             api_key,
@@ -289,9 +290,11 @@ async def onboard_model(req: ModelOnboardingRequest):
             provider_id=meta["id"],
             provider_name=meta["name"],
             nickname=nickname if nickname != provider_model_id else None,
+            activate=True,
         )
-        if not set_active_model(config_key):
-            raise RuntimeError("saved model could not be activated")
+
+    try:
+        await _asyncio.to_thread(_commit_single)
     except Exception as exc:
         # The preflight is deliberately persistence-free. If the subsequent
         # write is only partly successful, roll it back before reporting.

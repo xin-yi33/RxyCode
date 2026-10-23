@@ -1,0 +1,2 @@
+pytest tests/web/w6/test_w6_c05_unit.py tests/web/w6/test_w6_c05_module.py -q --tb=short
+3 passed in 2.52s

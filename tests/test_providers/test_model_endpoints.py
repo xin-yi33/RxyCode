@@ -411,7 +411,6 @@ def test_batch_probe_preserves_explicit_resource_policy(monkeypatch):
     from config import model_manager
 
     probes: list[str] = []
-    additions: list[dict] = []
     monkeypatch.setattr(model_manager, "load_config", lambda: {"models": {}})
     monkeypatch.setattr(
         model_manager,
@@ -423,14 +422,18 @@ def test_batch_probe_preserves_explicit_resource_policy(monkeypatch):
         "probe_model_connection",
         lambda **kwargs: probes.append(kwargs["base_url"]) or {"success": True},
     )
-    def add_model(name, api_key, base_url, **kwargs):
-        del api_key
-        addition = {"name": name, "base_url": base_url, **kwargs}
-        additions.append(addition)
-        return addition
+    saved: dict = {}
 
-    monkeypatch.setattr(model_manager, "add_model", add_model)
-    monkeypatch.setattr(model_manager, "set_active_model", lambda _name: None)
+    def save(cfg):
+        saved["cfg"] = cfg
+
+    monkeypatch.setattr(model_manager, "save_config", save)
+    monkeypatch.setattr(
+        model_manager,
+        "store_credentials",
+        lambda values, path: [f"ref-{index}" for index in range(len(values))],
+    )
+    monkeypatch.setattr(model_manager, "delete_credentials", lambda *args, **kwargs: None)
 
     result = model_manager.onboard_models_batch(
         api_key="test-" + uuid4().hex,
@@ -443,8 +446,9 @@ def test_batch_probe_preserves_explicit_resource_policy(monkeypatch):
 
     assert result["added"] == ["custom/provider/model"]
     assert probes == ["https://provider.example/gateway/v1/chat/completions"]
-    assert additions[0]["base_url"] == "https://provider.example/gateway/v1"
-    assert additions[0]["api_transport"] == "openai_chat"
+    entry = saved["cfg"]["models"]["custom/provider/model"]
+    assert entry["base_url"] == "https://provider.example/gateway/v1"
+    assert entry["api_transport"] == "openai_chat"
 
 
 def test_resource_path_keeps_exact_chat_endpoint():

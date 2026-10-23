@@ -10,6 +10,13 @@ export function looksLikePlanDocument(text: string): boolean {
   return /^#{1,3}\s+\S/m.test(src);
 }
 
+/** Plan mode always opens the pane. A build turn opens it only while waiting. */
+export function finalTextOpensPlan(text: string, mode: string): boolean {
+  if (!looksLikePlanDocument(text)) return false;
+  if (mode === "plan") return true;
+  return text.includes("是，实施此计划") || text.includes("Yes, implement this plan");
+}
+
 export function parsePlanDoc(text: string, steps?: string[]): PlanDoc {
   const raw = (text || "").trim() || (steps || []).join("\n").trim();
   const lines = raw.split(/\r?\n/);

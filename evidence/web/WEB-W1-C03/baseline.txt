@@ -1,0 +1,7 @@
+parent branch: feat/rxycode-web
+parent HEAD before WEB-W1-C03: 03a4199dbd0d52fd383483ccfa9fac0baff750ce
+nested docs HEAD before this card's amendment: 746885d
+upstream: none
+anchors present: execution/tool_orchestrator.py async def execute_tool, core/safety/policy.py class RiskLevel
+RiskLevel values stay READ=0, WRITE=1, DANGER=2.
+W0 exit is not claimed. CW03 and CW04 stay P0 OPEN.

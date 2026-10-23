@@ -1,0 +1,820 @@
+diff --git a/api_server.py b/api_server.py
+index 1a02d1ab..5b6b93a7 100644
+--- a/api_server.py
++++ b/api_server.py
+@@ -138,6 +138,14 @@ def _is_loopback_bind_host(host: str) -> bool:
+         return False
+ 
+ 
++def reject_as_public_web_gateway(host: str) -> None:
++    """Keep this Ink app a loopback fallback. The public web app is rxycode_server."""
++    if not _is_loopback_bind_host(host):
++        raise RuntimeError(
++            "api_server is a loopback fallback and cannot be reused as the public web gateway"
++        )
++
++
+ _SENSITIVE_KEYS = re.compile(
+     r"(?:authorization|api[_-]?key|access[_-]?token|bearer|password|secret|token)",
+     re.IGNORECASE,
+diff --git a/packages/rxycode-server/src/rxycode_server/api/__init__.py b/packages/rxycode-server/src/rxycode_server/api/__init__.py
+new file mode 100644
+index 00000000..1328334a
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/api/__init__.py
+@@ -0,0 +1 @@
++"""HTTP routes for the web gateway."""
+diff --git a/packages/rxycode-server/src/rxycode_server/api/auth.py b/packages/rxycode-server/src/rxycode_server/api/auth.py
+new file mode 100644
+index 00000000..d47f688b
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/api/auth.py
+@@ -0,0 +1,246 @@
++"""GitHub OAuth with PKCE, local login, and the cookie session."""
++
++from __future__ import annotations
++
++import base64
++import hashlib
++import hmac
++import secrets
++import time
++import uuid
++from dataclasses import dataclass
++from typing import Iterator
++
++import httpx
++from fastapi import APIRouter, Depends, HTTPException, Request, Response
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from rxycode_server.persistence.models import Membership, Organization, User
++
++router = APIRouter()
++_SESSION_TTL = 12 * 60 * 60
++_STATE_TTL = 10 * 60
++
++
++@dataclass
++class OAuthState:
++    verifier: str
++    created: float
++
++
++@dataclass
++class AuthRecord:
++    user_id: str
++    tenant_id: str
++    created: float
++
++
++def db_session(request: Request) -> Iterator[Session]:
++    db = Session(request.app.state.engine)
++    try:
++        yield db
++        db.commit()
++    except Exception:
++        db.rollback()
++        raise
++    finally:
++        db.close()
++
++
++def _hash_token(secret: str, token: str) -> str:
++    return hmac.new(secret.encode(), token.encode(), "sha256").hexdigest()
++
++
++def _secure(request: Request) -> bool:
++    return bool(request.app.state.secure)
++
++
++def require_write(request: Request) -> None:
++    origin = request.headers.get("origin", "")
++    if origin not in request.app.state.allowed_origins:
++        raise HTTPException(status_code=403, detail="FORBIDDEN")
++    cookie = request.cookies.get("rxy_csrf", "")
++    header = request.headers.get("x-csrf-token", "")
++    if not cookie or not header or not hmac.compare_digest(cookie, header):
++        raise HTTPException(status_code=403, detail="FORBIDDEN")
++
++
++def current_record(request: Request) -> AuthRecord:
++    raw = request.cookies.get("rxy_session", "")
++    if not raw:
++        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
++    record = request.app.state.sessions.get(_hash_token(request.app.state.secret, raw))
++    if record is None or time.monotonic() - record.created > _SESSION_TTL:
++        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
++    return record
++
++
++def _drop_current(request: Request) -> None:
++    raw = request.cookies.get("rxy_session", "")
++    if not raw:
++        return
++    request.app.state.sessions.pop(_hash_token(request.app.state.secret, raw), None)
++
++
++def _issue(request: Request, user_id: str, tenant_id: str) -> str:
++    token = secrets.token_urlsafe(32)
++    request.app.state.sessions[_hash_token(request.app.state.secret, token)] = AuthRecord(
++        user_id=user_id,
++        tenant_id=tenant_id,
++        created=time.monotonic(),
++    )
++    return token
++
++
++def _set_session(response: Response, token: str, *, secure: bool) -> None:
++    response.set_cookie(
++        "rxy_session",
++        token,
++        httponly=True,
++        secure=secure,
++        samesite="lax",
++        path="/",
++        max_age=_SESSION_TTL,
++    )
++
++
++def _local_account(db: Session) -> tuple[User, Organization]:
++    user = User(id=uuid.uuid4().hex, github_id=None, kind="local")
++    org = Organization(id=uuid.uuid4().hex, tenant_id=uuid.uuid4().hex)
++    db.add(user)
++    db.add(org)
++    db.add(Membership(id=uuid.uuid4().hex, tenant_id=org.tenant_id, user_id=user.id, role="owner"))
++    db.flush()
++    return user, org
++
++
++def _github_account(db: Session, github_id: str) -> tuple[User, str]:
++    user = db.scalars(select(User).where(User.github_id == github_id)).one_or_none()
++    if user is not None:
++        tenant_id = db.scalars(select(Membership.tenant_id).where(Membership.user_id == user.id)).one()
++        return user, tenant_id
++    user = User(id=uuid.uuid4().hex, github_id=github_id, kind="github")
++    org = Organization(id=uuid.uuid4().hex, tenant_id=uuid.uuid4().hex)
++    db.add(user)
++    db.add(org)
++    db.add(Membership(id=uuid.uuid4().hex, tenant_id=org.tenant_id, user_id=user.id, role="owner"))
++    db.flush()
++    return user, org.tenant_id
++
++
++def exchange_github_code(request: Request, code: str, verifier: str) -> str:
++    """Trade a PKCE code at GitHub. The access token is not stored or returned."""
++    app = request.app
++    payload = {
++        "client_id": app.state.github_client_id,
++        "client_secret": app.state.github_client_secret,
++        "code": code,
++        "code_verifier": verifier,
++        "redirect_uri": app.state.github_redirect_uri,
++        "grant_type": "authorization_code",
++    }
++    with httpx.Client(transport=app.state.github_transport) as client:
++        token_response = client.post(
++            "https://github.com/login/oauth/access_token",
++            data=payload,
++            headers={"Accept": "application/json"},
++        )
++        token_response.raise_for_status()
++        access_token = str(token_response.json().get("access_token", ""))
++        user_response = client.get(
++            "https://api.github.com/user",
++            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
++        )
++        user_response.raise_for_status()
++        github_id = str(user_response.json()["id"])
++    return github_id
++
++
++@router.get("/api/v1/auth/csrf")
++def issue_csrf(request: Request, response: Response) -> dict[str, str]:
++    token = secrets.token_urlsafe(32)
++    response.set_cookie(
++        "rxy_csrf",
++        token,
++        httponly=False,
++        secure=_secure(request),
++        samesite="lax",
++        path="/",
++    )
++    return {"csrf_token": token}
++
++
++@router.post("/api/v1/auth/local/login")
++def local_login(
++    request: Request,
++    response: Response,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    require_write(request)
++    _drop_current(request)
++    user, org = _local_account(db)
++    _set_session(response, _issue(request, user.id, org.tenant_id), secure=_secure(request))
++    return {"user_id": user.id, "tenant_id": org.tenant_id}
++
++
++@router.get("/api/v1/auth/github/start")
++def github_start(request: Request) -> dict[str, str]:
++    verifier = secrets.token_urlsafe(48)
++    digest = hashlib.sha256(verifier.encode()).digest()
++    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
++    state = secrets.token_urlsafe(32)
++    request.app.state.oauth_states[state] = OAuthState(verifier=verifier, created=time.monotonic())
++    query = httpx.QueryParams(
++        {
++            "client_id": request.app.state.github_client_id,
++            "redirect_uri": request.app.state.github_redirect_uri,
++            "state": state,
++            "code_challenge": challenge,
++            "code_challenge_method": "S256",
++            "scope": "read:user",
++        }
++    )
++    return {
++        "state": state,
++        "code_challenge": challenge,
++        "authorization_url": f"https://github.com/login/oauth/authorize?{query}",
++    }
++
++
++@router.get("/api/v1/auth/github/callback")
++def github_callback(
++    request: Request,
++    response: Response,
++    state: str,
++    code: str,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    record = request.app.state.oauth_states.pop(state, None)
++    if record is None or time.monotonic() - record.created > _STATE_TTL:
++        raise HTTPException(status_code=400, detail="INVALID_INPUT")
++    github_id = exchange_github_code(request, code, record.verifier)
++    _drop_current(request)
++    user, tenant_id = _github_account(db, github_id)
++    _set_session(response, _issue(request, user.id, tenant_id), secure=_secure(request))
++    return {"user_id": user.id, "tenant_id": tenant_id}
++
++
++@router.get("/api/v1/me")
++def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]:
++    record = current_record(request)
++    user = db.get(User, record.user_id)
++    org = db.scalars(select(Organization).where(Organization.tenant_id == record.tenant_id)).one()
++    role = db.scalars(
++        select(Membership.role).where(
++            Membership.user_id == record.user_id,
++            Membership.tenant_id == record.tenant_id,
++        )
++    ).one()
++    if user is None:
++        raise HTTPException(status_code=401, detail="UNAUTHORIZED")
++    return {
++        "user": {"id": user.id, "kind": user.kind, "github_id": user.github_id},
++        "organization": {"id": org.id, "tenant_id": org.tenant_id},
++        "membership": {"role": role},
++    }
+diff --git a/packages/rxycode-server/src/rxycode_server/api/projects.py b/packages/rxycode-server/src/rxycode_server/api/projects.py
+new file mode 100644
+index 00000000..b1c7d513
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/api/projects.py
+@@ -0,0 +1,127 @@
++"""Project and session routes. The tenant comes from the session, not the body."""
++
++from __future__ import annotations
++
++import re
++import uuid
++
++from fastapi import APIRouter, Depends, HTTPException, Request
++from pydantic import BaseModel, Field
++from sqlalchemy import select
++from sqlalchemy.orm import Session
++
++from rxycode_server.api.auth import current_record, db_session, require_write
++from rxycode_server.persistence.models import Project, SessionRow
++
++router = APIRouter()
++_SECRET_KEY = re.compile(r"(api[_-]?key|secret|token|password|authorization)", re.IGNORECASE)
++
++
++class ProjectIn(BaseModel):
++    name: str
++    repo_config: dict = Field(default_factory=dict)
++    tenant_id: str | None = None
++
++
++class SessionIn(BaseModel):
++    title: str = ""
++
++
++def _reject_plaintext_keys(value: object, key: str = "") -> None:
++    if _SECRET_KEY.search(key):
++        raise HTTPException(status_code=400, detail="INVALID_INPUT")
++    if isinstance(value, dict):
++        for child_key, child in value.items():
++            _reject_plaintext_keys(child, str(child_key))
++    elif isinstance(value, list):
++        for child in value:
++            _reject_plaintext_keys(child)
++
++
++@router.get("/api/v1/projects")
++def list_projects(request: Request, db: Session = Depends(db_session)) -> dict[str, list]:
++    record = current_record(request)
++    rows = db.scalars(select(Project).where(Project.tenant_id == record.tenant_id)).all()
++    return {
++        "projects": [
++            {"id": row.id, "name": row.name, "tenant_id": row.tenant_id} for row in rows
++        ]
++    }
++
++
++@router.post("/api/v1/projects")
++def create_project(
++    request: Request,
++    payload: ProjectIn,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    require_write(request)
++    record = current_record(request)
++    _reject_plaintext_keys(payload.repo_config)
++    name = payload.name.strip()
++    if not name or len(name) > 200:
++        raise HTTPException(status_code=400, detail="INVALID_INPUT")
++    project = Project(
++        id=uuid.uuid4().hex,
++        tenant_id=record.tenant_id,
++        name=name,
++        repo_config=payload.repo_config,
++    )
++    db.add(project)
++    db.flush()
++    return {"id": project.id, "name": project.name, "tenant_id": project.tenant_id}
++
++
++@router.get("/api/v1/projects/{project_id}")
++def get_project(
++    project_id: str,
++    request: Request,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    record = current_record(request)
++    project = db.scalars(
++        select(Project).where(Project.id == project_id, Project.tenant_id == record.tenant_id)
++    ).one_or_none()
++    if project is None:
++        raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
++    return {"id": project.id, "name": project.name, "tenant_id": project.tenant_id}
++
++
++@router.post("/api/v1/projects/{project_id}/sessions")
++def create_session(
++    project_id: str,
++    request: Request,
++    payload: SessionIn,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    require_write(request)
++    record = current_record(request)
++    project = db.scalars(
++        select(Project).where(Project.id == project_id, Project.tenant_id == record.tenant_id)
++    ).one_or_none()
++    if project is None:
++        raise HTTPException(status_code=404, detail="PROJECT_NOT_FOUND")
++    row = SessionRow(
++        id=uuid.uuid4().hex,
++        tenant_id=project.tenant_id,
++        project_id=project.id,
++        title=payload.title[:200],
++    )
++    db.add(row)
++    db.flush()
++    return {"id": row.id, "title": row.title, "project_id": project.id}
++
++
++@router.get("/api/v1/sessions/{session_id}")
++def get_session(
++    session_id: str,
++    request: Request,
++    db: Session = Depends(db_session),
++) -> dict[str, str]:
++    record = current_record(request)
++    row = db.scalars(
++        select(SessionRow).where(SessionRow.id == session_id, SessionRow.tenant_id == record.tenant_id)
++    ).one_or_none()
++    if row is None:
++        raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
++    return {"id": row.id, "title": row.title, "project_id": row.project_id}
+diff --git a/packages/rxycode-server/src/rxycode_server/main.py b/packages/rxycode-server/src/rxycode_server/main.py
+new file mode 100644
+index 00000000..e9c463db
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/main.py
+@@ -0,0 +1,92 @@
++"""Web FastAPI gateway. The legacy Ink app in api_server stays a loopback fallback."""
++
++from __future__ import annotations
++
++from contextlib import asynccontextmanager
++
++from fastapi import FastAPI, HTTPException, Request
++from fastapi.responses import JSONResponse
++from sqlalchemy import create_engine
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.api.auth import router as auth_router
++from rxycode_server.api.projects import router as projects_router
++
++_PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
++
++
++def _require_secret(secret: str) -> str:
++    value = (secret or "").strip()
++    folded = value.casefold()
++    if len(value) < 32 or len(set(value)) < 10 or any(marker in folded for marker in _PLACEHOLDERS):
++        raise RuntimeError("web gateway requires a local random secret")
++    return value
++
++
++def create_app(
++    database_url: str,
++    *,
++    mode: str,
++    secret: str,
++    allowed_origins: list[str],
++    github_client_id: str = "",
++    github_client_secret: str = "",
++    github_redirect_uri: str = "",
++    github_transport: object | None = None,
++) -> FastAPI:
++    """Build the cloud or local gateway. It does not mount the legacy /chat app."""
++    checked = _require_secret(secret)
++    if mode not in {"local", "cloud"}:
++        raise RuntimeError("mode must be local or cloud")
++
++    @asynccontextmanager
++    async def lifespan(app: FastAPI):
++        yield
++        app.state.engine.dispose()
++
++    app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
++    app.state.engine = create_engine(database_url, poolclass=NullPool)
++    app.state.secret = checked
++    app.state.mode = mode
++    app.state.secure = mode == "cloud"
++    app.state.allowed_origins = tuple(allowed_origins)
++    app.state.sessions = {}
++    app.state.oauth_states = {}
++    app.state.github_client_id = github_client_id
++    app.state.github_client_secret = github_client_secret
++    app.state.github_redirect_uri = github_redirect_uri
++    app.state.github_transport = github_transport
++    app.include_router(auth_router)
++    app.include_router(projects_router)
++
++    @app.exception_handler(HTTPException)
++    async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
++        code = exc.detail if isinstance(exc.detail, str) else "FORBIDDEN"
++        return JSONResponse(status_code=exc.status_code, content={"code": code})
++
++    return app
++
++
++def serve(
++    *,
++    mode: str,
++    host: str,
++    database_url: str,
++    secret: str,
++    allowed_origins: list[str],
++    port: int = 8766,
++    **kwargs: object,
++) -> FastAPI:
++    """Return the web app. Local mode refuses any non-loopback bind of this gateway."""
++    del port
++    if mode == "local":
++        from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway
++
++        reject_as_public_web_gateway(host)
++    return create_app(
++        database_url,
++        mode=mode,
++        secret=secret,
++        allowed_origins=allowed_origins,
++        **kwargs,
++    )
+diff --git a/pyproject.toml b/pyproject.toml
+index 0285dfad..f1d1c1e9 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -78,6 +78,7 @@ packages = [
+   "rxycode_server.persistence",
+   "rxycode_server.alembic",
+   "rxycode_server.alembic.versions",
++  "rxycode_server.api",
+ ]
+ 
+ [tool.setuptools.package-dir]
+@@ -90,6 +91,7 @@ packages = [
+ "rxycode_server.persistence" = "packages/rxycode-server/src/rxycode_server/persistence"
+ "rxycode_server.alembic" = "packages/rxycode-server/alembic"
+ "rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
++"rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/tests/web/w2/test_w2_c02_module.py b/tests/web/w2/test_w2_c02_module.py
+new file mode 100644
+index 00000000..c325987c
+--- /dev/null
++++ b/tests/web/w2/test_w2_c02_module.py
+@@ -0,0 +1,75 @@
++"""WEB-W2-C02. One tenant cannot read another tenant's project or session."""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine, text
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-server" / "src"
++if str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++from rxycode_server.main import create_app
++from rxycode_server.persistence.migrate import upgrade_head
++
++ORIGIN = "http://127.0.0.1"
++SECRET = "local-web-secret-value-32bytes!!"
++
++
++def _login(client: TestClient) -> str:
++    csrf = client.get("/api/v1/auth/csrf")
++    assert csrf.status_code == 200
++    token = csrf.json()["csrf_token"]
++    headers = {"X-CSRF-Token": token, "Origin": ORIGIN}
++    logged = client.post("/api/v1/auth/local/login", headers=headers)
++    assert logged.status_code == 200
++    return token
++
++
++def test_w2_c02_integration(postgres_url: str):
++    """User A cannot see user B's project name or session title."""
++    upgrade_head(postgres_url)
++    app = create_app(
++        postgres_url,
++        mode="local",
++        secret=SECRET,
++        allowed_origins=[ORIGIN],
++    )
++    owner = TestClient(app)
++    token = _login(owner)
++    headers = {"X-CSRF-Token": token, "Origin": ORIGIN}
++    created = owner.post(
++        "/api/v1/projects",
++        json={"name": "owner-only", "repo_config": {"remote": "a"}, "tenant_id": "attacker"},
++        headers=headers,
++    )
++    assert created.status_code == 200
++    project_id = created.json()["id"]
++    assert created.json()["tenant_id"] != "attacker"
++    opened = owner.post(
++        f"/api/v1/projects/{project_id}/sessions",
++        json={"title": "owner-title"},
++        headers=headers,
++    )
++    assert opened.status_code == 200
++    session_id = opened.json()["id"]
++    other = TestClient(app)
++    _login(other)
++    project = other.get(f"/api/v1/projects/{project_id}")
++    session = other.get(f"/api/v1/sessions/{session_id}")
++    listing = other.get("/api/v1/projects")
++    assert project.status_code == 404
++    assert session.status_code == 404
++    assert "owner-only" not in project.text
++    assert "owner-title" not in session.text
++    assert "owner-only" not in listing.text
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        tenant = conn.execute(
++            text("SELECT tenant_id FROM projects WHERE id = :id"),
++            {"id": project_id},
++        ).scalar()
++    assert tenant == created.json()["tenant_id"]
+diff --git a/tests/web/w2/test_w2_c02_unit.py b/tests/web/w2/test_w2_c02_unit.py
+new file mode 100644
+index 00000000..7da2a78a
+--- /dev/null
++++ b/tests/web/w2/test_w2_c02_unit.py
+@@ -0,0 +1,204 @@
++"""WEB-W2-C02. Login returns the database user, and a bad write does not land."""
++from __future__ import annotations
++
++import asyncio
++import base64
++import hashlib
++import sys
++from pathlib import Path
++
++import httpx
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-server" / "src"
++if str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++from rxycode_server.main import create_app, serve
++from rxycode_server.persistence.migrate import upgrade_head
++from rxycode_server.persistence.models import Organization, Project, User
++
++ORIGIN = "http://127.0.0.1"
++SECRET = "local-web-secret-value-32bytes!!"
++CLOUD = "https://cloud.example"
++
++
++def _headers(token: str, origin: str = ORIGIN) -> dict[str, str]:
++    return {"X-CSRF-Token": token, "Origin": origin}
++
++
++def _login_cookie(app, token: str, origin: str) -> str:
++    """Read the session Set-Cookie from the ASGI response itself."""
++    messages: list[dict] = []
++
++    async def receive():
++        return {"type": "http.request", "body": b"", "more_body": False}
++
++    async def send(message):
++        messages.append(message)
++
++    scope = {
++        "type": "http",
++        "asgi": {"version": "3.0"},
++        "http_version": "1.1",
++        "method": "POST",
++        "scheme": "https",
++        "path": "/api/v1/auth/local/login",
++        "raw_path": b"/api/v1/auth/local/login",
++        "query_string": b"",
++        "headers": [
++            (b"origin", origin.encode()),
++            (b"x-csrf-token", token.encode()),
++            (b"cookie", f"rxy_csrf={token}".encode()),
++        ],
++        "client": ("127.0.0.1", 50000),
++        "server": ("testserver", 443),
++    }
++    asyncio.run(app(scope, receive, send))
++    start = next(item for item in messages if item["type"] == "http.response.start")
++    assert start["status"] == 200
++    chunks = [
++        value.decode()
++        for key, value in start["headers"]
++        if key.lower() == b"set-cookie"
++    ]
++    return "\n".join(chunks).casefold()
++
++
++def _csrf(client) -> str:
++    response = client.get("/api/v1/auth/csrf")
++    assert response.status_code == 200
++    return response.json()["csrf_token"]
++
++
++def test_w2_c02_contract(postgres_url: str):
++    """A real login is readable from GET /me, and the legacy app is not the gateway."""
++    upgrade_head(postgres_url)
++    with pytest.raises(RuntimeError, match="public web gateway"):
++        serve(
++            mode="local",
++            host="0.0.0.0",
++            database_url=postgres_url,
++            secret=SECRET,
++            allowed_origins=[ORIGIN],
++        )
++    app = create_app(
++        postgres_url,
++        mode="local",
++        secret=SECRET,
++        allowed_origins=[ORIGIN],
++        github_client_id="iv1.client",
++        github_client_secret="github-secret-not-stored",
++        github_redirect_uri="http://127.0.0.1/api/v1/auth/github/callback",
++    )
++    paths = {getattr(route, "path", None) for route in app.routes}
++    assert "/chat" not in paths
++    assert "/api/v1/me" in app.openapi()["paths"]
++    client = TestClient(app)
++    token = _csrf(client)
++    first = client.post("/api/v1/auth/local/login", headers=_headers(token))
++    assert first.status_code == 200
++    old_cookie = client.cookies.get("rxy_session")
++    me = client.get("/api/v1/me")
++    assert me.status_code == 200
++    body = me.json()
++    engine = create_engine(postgres_url)
++    with Session(engine) as db:
++        user = db.get(User, body["user"]["id"])
++        org = db.scalars(
++            select(Organization).where(Organization.tenant_id == body["organization"]["tenant_id"])
++        ).one()
++    assert user is not None
++    assert body["user"]["kind"] == user.kind == "local"
++    assert body["organization"]["tenant_id"] == org.tenant_id
++    assert body["membership"]["role"] == "owner"
++    token = _csrf(client)
++    again = client.post("/api/v1/auth/local/login", headers=_headers(token))
++    assert again.status_code == 200
++    stale = TestClient(app)
++    stale.cookies.set("rxy_session", old_cookie)
++    denied = stale.get("/api/v1/me")
++    assert denied.status_code == 401
++    assert denied.json()["code"] == "UNAUTHORIZED"
++    started = client.get("/api/v1/auth/github/start")
++    assert started.status_code == 200
++    state = started.json()["state"]
++    challenge = started.json()["code_challenge"]
++    verifier = app.state.oauth_states[state].verifier
++    digest = hashlib.sha256(verifier.encode()).digest()
++    expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
++    assert challenge == expected
++    assert "code_challenge=" + challenge in started.json()["authorization_url"]
++
++    def handler(request: httpx.Request) -> httpx.Response:
++        if request.url.host == "github.com":
++            sent = request.content.decode()
++            assert f"code_verifier={verifier}" in sent
++            assert "client_secret=github-secret-not-stored" in sent
++            return httpx.Response(200, json={"access_token": "ghs_secret", "token_type": "bearer"})
++        assert request.headers["Authorization"] == "Bearer ghs_secret"
++        return httpx.Response(200, json={"id": 4242, "login": "octo"})
++
++    app.state.github_transport = httpx.MockTransport(handler)
++    callback = client.get("/api/v1/auth/github/callback", params={"state": state, "code": "abc"})
++    assert callback.status_code == 200
++    github_me = client.get("/api/v1/me")
++    assert github_me.status_code == 200
++    assert github_me.json()["user"]["github_id"] == "4242"
++    assert "ghs_secret" not in github_me.text
++    with Session(engine) as db:
++        stored = db.scalars(select(User).where(User.github_id == "4242")).one()
++    assert stored.kind == "github"
++    cloud = create_app(
++        postgres_url,
++        mode="cloud",
++        secret=SECRET,
++        allowed_origins=[CLOUD],
++    )
++    cloud_client = TestClient(cloud)
++    cloud_token = _csrf(cloud_client)
++    cookie = _login_cookie(cloud, cloud_token, CLOUD)
++    assert "httponly" in cookie
++    assert "samesite=lax" in cookie
++    assert "secure" in cookie
++
++
++def test_w2_c02_negative(postgres_url: str):
++    """A missing CSRF token or a foreign Origin does not insert a project."""
++    upgrade_head(postgres_url)
++    app = create_app(
++        postgres_url,
++        mode="local",
++        secret=SECRET,
++        allowed_origins=[ORIGIN],
++    )
++    engine = create_engine(postgres_url)
++    client = TestClient(app)
++    token = _csrf(client)
++    assert client.post("/api/v1/auth/local/login", headers=_headers(token)).status_code == 200
++    token = _csrf(client)
++    missing = client.post(
++        "/api/v1/projects",
++        json={"name": "nope", "repo_config": {}},
++        headers={"Origin": ORIGIN},
++    )
++    evil = client.post(
++        "/api/v1/projects",
++        json={"name": "evil", "repo_config": {}},
++        headers=_headers(token, "https://evil.example"),
++    )
++    leaked = client.post(
++        "/api/v1/projects",
++        json={"name": "keyed", "repo_config": {"api_key": "sk-live"}},
++        headers=_headers(token),
++    )
++    assert missing.status_code == 403
++    assert evil.status_code == 403
++    assert leaked.status_code == 400
++    with Session(engine) as db:
++        count = db.scalar(select(func.count()).select_from(Project))
++    assert count == 0

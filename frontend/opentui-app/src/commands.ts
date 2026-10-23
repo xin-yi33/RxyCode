@@ -16,6 +16,8 @@ export interface Command {
 }
 
 export const AVAILABLE_COMMANDS: Command[] = [
+  { name: "/paste", description: "读取系统剪贴板文本或附件", category: "输入", keywords: "clipboard 粘贴 图片 文件", local: true },
+  { name: "/removeattachment", description: "移除附件：序号或 all", args: "<序号|all>", category: "输入", keywords: "附件 删除 清空", local: true },
   { name: "/session", description: "会话管理（查看/加载）", category: "会话", action: "session", local: true },
   { name: "/copy", description: "复制全部对话文本到剪贴板", category: "会话", keywords: "copy 复制 全选" },
   { name: "/clear", description: "清除对话上下文", category: "会话", keywords: "new session 清除" },
@@ -66,6 +68,8 @@ export const AVAILABLE_COMMANDS: Command[] = [
 
 /** Local-only commands handled without POST /command. */
 export const LOCAL_COMMAND_NAMES = new Set([
+  "/paste",
+  "/removeattachment",
   "/clear",
   "/copy",
   "/session",

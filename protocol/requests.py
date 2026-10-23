@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+import uuid
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .types import JsonObject
 
@@ -42,6 +43,13 @@ class NewSessionRequest(BaseModel):
     model: str | None = None
 
 
+class PromptAttachment(BaseModel):
+    """Client-local file reference carried with one ``session/prompt`` turn."""
+
+    path: str = Field(min_length=1, max_length=4096)
+    name: str | None = Field(default=None, max_length=512)
+
+
 class PromptRequest(BaseModel):
     """One user turn (maps ``POST /chat`` ``ChatRequest`` in api_server.py).
 
@@ -50,11 +58,14 @@ class PromptRequest(BaseModel):
     semantics when appserver enforces wall-clock limits.
     ``mode`` selects AgentV2 run mode; ``thinking_expanded`` gates reasoning
     stream emission on ``ProtocolTui``.
+    ``attachments`` contains only client-selected local file references; the
+    worker revalidates every path and never persists media bytes.
     """
 
     method: Literal["session/prompt"] = "session/prompt"
     session_id: str
     text: str
+    attachments: list[PromptAttachment] = Field(default_factory=list, max_length=10)
     timeout_seconds: float | None = Field(
         default=None,
         description="Optional wall-clock limit for this prompt (maps execution.tool_timeout_seconds semantics).",
@@ -74,6 +85,14 @@ class PromptRequest(BaseModel):
     request_id: str | None = Field(
         default=None,
         description="Client turn UUID for idempotent retries. Never the JSON-RPC message id.",
+    )
+    run_id: str | None = Field(
+        default=None,
+        description="Optional server-minted run id. Old clients omit it.",
+    )
+    device_id: str | None = Field(
+        default=None,
+        description="Optional device id. Old clients omit it.",
     )
 
 
@@ -1433,6 +1452,82 @@ class PluginConnectCallbackRequest(BaseModel):
     name: str
     code: str
     state: str
+
+
+class RunRecord(BaseModel):
+    """One server-minted run. This is not a second session and not a new RPC method."""
+
+    run_id: str
+    session_id: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+
+
+class DeviceRecord(BaseModel):
+    """A client device. Capability names are not execution grants."""
+
+    device_id: str
+    kind: Literal["desktop", "cli", "web"]
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class WebDiagnostic(BaseModel):
+    """Additive web diagnostic. Existing ProtocolErrorCode values stay unchanged."""
+
+    code: Literal["RUN_CANCELLED", "DEVICE_UNSUPPORTED", "CAPABILITY_DENIED"]
+    retryable: bool = False
+
+
+class ToolCall(BaseModel):
+    """Versioned tool call frame generated into the schema. Version must be at least 1."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    target_id: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    version: int = Field(ge=1)
+    call_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+
+    @model_validator(mode="after")
+    def _check_version(self) -> ToolCall:
+        if self.version < 1:
+            raise ValueError("tool call version must be >= 1")
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ToolCall:
+        version = int(data["version"])
+        if version < 1:
+            raise ValueError("tool call version must be >= 1")
+        arguments = data.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise ValueError("tool call arguments must be an object")
+        payload: dict[str, Any] = {
+            "name": str(data["name"]),
+            "target_id": str(data["target_id"]),
+            "arguments": dict(arguments),
+            "version": version,
+        }
+        if data.get("call_id"):
+            payload["call_id"] = str(data["call_id"])
+        return cls.model_validate(payload)
+
+
+class ToolChunk(BaseModel):
+    """One chunk of a tool result. Generated into the schema with ToolCall."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str
+    index: int
+    text: str
+    final: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump()
 
 
 CLIENT_REQUEST_MODELS: tuple[type[BaseModel], ...] = (

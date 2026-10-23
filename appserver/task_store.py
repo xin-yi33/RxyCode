@@ -7,8 +7,10 @@ workspace root and never stores prompt contents or credentials.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import logging
 import os
 import tempfile
 import time
@@ -22,6 +24,8 @@ try:
     from ..config.settings import get_data_dir
 except ImportError:
     from config.settings import get_data_dir
+
+_logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -76,6 +80,9 @@ def _cross_process_lock(path: Path) -> Iterator[None]:
 
 _UNSET = object()
 
+# 回放事件后台 flush 的合并窗口：让一波连续事件只写一次盘。
+_BUFFER_FLUSH_DELAY_SECONDS = 0.2
+
 
 class DesktopTaskStore:
     """Small atomic JSON store for task summaries and ordered event metadata."""
@@ -88,11 +95,43 @@ class DesktopTaskStore:
         # Sessions this process has written. A save must not replace the rest.
         self._owned: set[str] = set()
         self._dropped: set[str] = set()
+        # Buffered event flush state (append_event_buffered). The flusher task
+        # is created lazily on the caller's event loop.
+        self._event_dirty = False
+        self._flush_task: asyncio.Task[None] | None = None
+        # Bumped by purge and by task-metadata writes. A buffered event
+        # snapshot carries the generation it observed; _save_snapshot drops
+        # the round when a newer write has already landed.
+        self._drop_generation = 0
         self._load()
 
     def _claim(self, session_id: str) -> None:
         self._owned.add(session_id)
         self._dropped.discard(session_id)
+
+    def _note_metadata_write(self) -> None:
+        """Task rows changed. An older event snapshot must not write them back."""
+        self._drop_generation += 1
+
+    def _arm_metadata_flush(self) -> bool:
+        """Coalesce a metadata rewrite into the existing event flusher.
+
+        Memory is already updated. With a running loop the cross-process
+        read/merge/replace waits for the same ~0.2s burst window as replay
+        events, and ``flush_pending`` still drains it on shutdown. No loop
+        means the caller is synchronous, so the immediate save stays.
+        """
+        if not self.persistent:
+            return False
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        self._event_dirty = True
+        task = self._flush_task
+        if task is None or task.done():
+            self._flush_task = loop.create_task(self._flush_buffered_events())
+        return True
 
     def _read_disk(self) -> dict[str, Any]:
         empty: dict[str, Any] = {"tasks": {}, "events": {}}
@@ -152,27 +191,49 @@ class DesktopTaskStore:
             item["seq"] = index
         return ordered
 
-    def _merge_owned(self, disk: dict[str, Any]) -> dict[str, Any]:
+    def _merge_state(
+        self,
+        disk: dict[str, Any],
+        source: dict[str, Any],
+        owned: set[str],
+        dropped: set[str],
+    ) -> dict[str, Any]:
+        """Merge the owned slices of *source* over *disk* (disk wins nothing we own)."""
         tasks = dict(disk.get("tasks") or {})
         events = {
             str(key): list(value)
             for key, value in (disk.get("events") or {}).items()
             if isinstance(value, list)
         }
-        for session_id in self._dropped:
+        for session_id in dropped:
             tasks.pop(session_id, None)
             events.pop(session_id, None)
-        for session_id in self._owned - self._dropped:
-            memory_task = self._data["tasks"].get(session_id)
+        for session_id in owned - dropped:
+            memory_task = source["tasks"].get(session_id)
             if isinstance(memory_task, dict):
                 tasks[session_id] = memory_task
-            memory_events = self._data["events"].get(session_id)
+            memory_events = source["events"].get(session_id)
             if isinstance(memory_events, list):
                 events[session_id] = self._union_events(
                     events.get(session_id) or [],
                     memory_events,
                 )
         return {"tasks": tasks, "events": events}
+
+    def _write_merged(self, merged: dict[str, Any]) -> None:
+        payload = json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True)
+        fd, temp_name = tempfile.mkstemp(prefix="tasks-", suffix=".json", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_name, self.path)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
 
     def _save(self) -> None:
         if not self.persistent:
@@ -185,21 +246,9 @@ class DesktopTaskStore:
         # os.replace(temp_name, self.path)
         with _cross_process_lock(self.path):
             disk = self._read_disk()
-            merged = self._merge_owned(disk)
+            merged = self._merge_state(disk, self._data, self._owned, self._dropped)
             self._data = merged
-            payload = json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True)
-            fd, temp_name = tempfile.mkstemp(prefix="tasks-", suffix=".json", dir=self.path.parent)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                    stream.write(payload)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temp_name, self.path)
-            finally:
-                try:
-                    os.unlink(temp_name)
-                except FileNotFoundError:
-                    pass
+            self._write_merged(merged)
             self._dropped.clear()
 
     def upsert(
@@ -239,6 +288,7 @@ class DesktopTaskStore:
         title_source: Any = _UNSET,
         title_llm_pass: Any = _UNSET,
         restart_gate: Any = _UNSET,
+        defer: bool = False,
     ) -> dict[str, Any]:
         old = self._data["tasks"].get(session_id)
         self._claim(session_id)
@@ -296,8 +346,18 @@ class DesktopTaskStore:
         if isinstance(gate, dict):
             task["restart_gate"] = gate
         self._data["tasks"][session_id] = task
+        self._note_metadata_write()
+        if defer and self._arm_metadata_flush():
+            return dict(task)
         self._save()
         return dict(task)
+
+    def read_legacy_rows(self) -> list[dict[str, Any]]:
+        """Read-only copies for a cloud import. Does not rewrite the JSON file."""
+        tasks = self._data.get("tasks", {})
+        if not isinstance(tasks, dict):
+            return []
+        return [dict(item) for item in tasks.values() if isinstance(item, dict)]
 
     def list(self, *, include_trashed: bool = False) -> list[dict[str, Any]]:
         values = list(self._data["tasks"].values())
@@ -324,6 +384,7 @@ class DesktopTaskStore:
             "first_restart_at": gate.get("first_restart_at"),
         }
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return True
 
@@ -335,6 +396,7 @@ class DesktopTaskStore:
             raise ValueError("title is required")
         task["title"] = clean
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -343,6 +405,7 @@ class DesktopTaskStore:
         self._claim(session_id)
         task["trashed_at"] = _now()
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -351,6 +414,7 @@ class DesktopTaskStore:
         self._claim(session_id)
         task["trashed_at"] = None
         task["updated_at"] = _now()
+        self._note_metadata_write()
         self._save()
         return dict(task)
 
@@ -358,11 +422,15 @@ class DesktopTaskStore:
         self._require(session_id)
         self._owned.discard(session_id)
         self._dropped.add(session_id)
+        # Invalidate any buffered-flush snapshot taken before this purge; the
+        # generation check inside _save_snapshot runs under the same file
+        # lock that the purge's own save below is serialized by.
+        self._note_metadata_write()
         del self._data["tasks"][session_id]
         self._data["events"].pop(session_id, None)
         self._save()
 
-    def append_event(self, session_id: str, event: dict[str, Any]) -> int:
+    def _append_event_record(self, session_id: str, event: dict[str, Any]) -> int:
         self._claim(session_id)
         events = self._data["events"].setdefault(session_id, [])
         if not isinstance(events, list):
@@ -379,8 +447,145 @@ class DesktopTaskStore:
         if not value.get("ts"):
             value["ts"] = _now()
         events.append(value)
+        return seq
+
+    def append_event(self, session_id: str, event: dict[str, Any]) -> int:
+        seq = self._append_event_record(session_id, event)
         self._save()
         return seq
+
+    def append_event_buffered(
+        self,
+        session_key: str,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> int:
+        """Append a replay event and flush it from a coalesced background task.
+
+        The in-memory change is identical to :meth:`append_event` and happens
+        on the caller's event-loop thread, but the expensive cross-process
+        save (lock + re-read + merge + full rewrite + fsync) is deferred: a
+        flusher task batches events for ~0.2s and persists a shallow snapshot
+        via ``asyncio.to_thread``, so a steady stream of tool events can no
+        longer freeze the appserver loop for seconds.
+
+        Durability trade-off (intentional): if the process is killed before
+        the flusher lands, up to ~0.2s of trailing transcript events may be
+        lost.  These are display-replay records, not the execution truth;
+        graceful shutdown calls :meth:`flush_pending` to bound the window.
+        """
+        seq = self._append_event_record(session_key, {"method": method, "params": payload})
+        if not self.persistent:
+            return seq
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        if loop is None:
+            # Synchronous callers have no loop to host the flusher; keep the
+            # previous immediate-durability behavior for that path.
+            self._save()
+            return seq
+        self._event_dirty = True
+        task = self._flush_task
+        if task is None or task.done():
+            self._flush_task = loop.create_task(self._flush_buffered_events())
+        return seq
+
+    async def _flush_buffered_events(self) -> None:
+        try:
+            # Yield once so a burst of events coalesces into a single write.
+            await asyncio.sleep(_BUFFER_FLUSH_DELAY_SECONDS)
+            while self._event_dirty:
+                self._event_dirty = False
+                snapshot = self._event_snapshot()
+                await asyncio.to_thread(self._save_snapshot, snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a disk failure kill the caller's loop.  The events
+            # stay in memory and re-arm the dirty flag so the next buffered
+            # append or flush_pending retries the write.
+            self._event_dirty = True
+            _logger.exception("failed to flush buffered session events")
+
+    def _event_snapshot(self) -> dict[str, Any]:
+        """Frozen view of the owned state for the off-loop save.
+
+        Built on the event-loop thread with no interleaved awaits: the
+        container structure is copied, each session's event list gets a
+        ``list(...)`` shallow copy, and the immutable event dicts are shared
+        by reference.  ``owned``/``dropped``/``_drop_generation`` travel with
+        the snapshot so the writer thread never iterates live sets.
+        """
+        return {
+            "tasks": {
+                str(key): dict(value) if isinstance(value, dict) else value
+                for key, value in self._data["tasks"].items()
+            },
+            "events": {
+                str(key): list(value)
+                for key, value in self._data["events"].items()
+                if isinstance(value, list)
+            },
+            "owned": set(self._owned),
+            "dropped": set(self._dropped),
+            "drop_generation": self._drop_generation,
+        }
+
+    def _save_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Persist a frozen snapshot with the same cross-process merge as _save().
+
+        Live memory is deliberately left untouched: events appended while
+        this writer thread was merging must survive (the dirty loop
+        re-flushes them), so unlike :meth:`_save` this never assigns
+        ``self._data`` and never clears ``self._dropped``.  A purge that
+        interleaved after the snapshot was taken bumps ``_drop_generation``
+        (purge and task-metadata writes). Because the comparison happens
+        under the same file lock that serializes those saves, aborting this
+        round and retrying with a fresh snapshot cannot restore an older
+        model, title, status, usage, or a purged session.
+        """
+        if not self.persistent:
+            return
+        if not snapshot["owned"] and not snapshot["dropped"]:
+            return
+        with _cross_process_lock(self.path):
+            if snapshot["drop_generation"] != self._drop_generation:
+                self._event_dirty = True
+                return
+            disk = self._read_disk()
+            merged = self._merge_state(
+                disk,
+                {"tasks": snapshot["tasks"], "events": snapshot["events"]},
+                snapshot["owned"],
+                snapshot["dropped"],
+            )
+            self._write_merged(merged)
+
+    async def flush_pending(self, timeout: float = 5.0) -> None:
+        """Wait until every buffered event has been flushed to disk.
+
+        Used by graceful shutdown and by tests.  Raises ``TimeoutError`` if
+        the queue did not drain before the deadline.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            task = self._flush_task
+            if not self._event_dirty and (task is None or task.done()):
+                return
+            if task is None or task.done():
+                task = asyncio.get_running_loop().create_task(self._flush_buffered_events())
+                self._flush_task = task
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("DesktopTaskStore flush did not drain in time")
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
+            if not done:
+                raise TimeoutError("DesktopTaskStore flush did not drain in time")
 
     def copy_events(self, source_id: str, dest_id: str) -> int:
         """Snapshot events into dest. Does not mutate source."""

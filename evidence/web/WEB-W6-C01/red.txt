@@ -1,0 +1,9 @@
+command: D:\Anaconda3\python.exe -m pytest tests/web/w6/test_w6_c01_unit.py tests/web/w6/test_w6_c01_module.py -q --tb=line
+cwd: D:\agent-demo\RxyCode\RxyCode1_1_0
+parent HEAD: b6fb9ca2
+result: 3 failed in 0.39s
+
+FAILED tests/web/w6/test_w6_c01_unit.py::test_w6_c01_contract - ModuleNotFoundError: No module named 'rxycode_core.tools'
+FAILED tests/web/w6/test_w6_c01_unit.py::test_w6_c01_negative - ModuleNotFoundError: No module named 'rxycode_core.tools'
+FAILED tests/web/w6/test_w6_c01_module.py::test_w6_c01_integration - TypeError: ToolOrchestrator.select_tools() got an unexpected keyword argument 'target'
+3 failed in 0.39s

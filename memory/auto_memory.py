@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Optional
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir, get_dated_data_dir
+from RxyCode.RxyCode1_1_0.memory._scope import memory_root
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.utils.atomic_file import atomic_write_text
 
@@ -49,7 +50,7 @@ def _find_session_dir(session_id: str) -> Path | None:
     )
     if matches:
         return matches[0]
-    legacy = get_data_dir() / "memory" / "sessions" / session_id
+    legacy = memory_root() / "sessions" / session_id
     return legacy if legacy.exists() else None
 
 

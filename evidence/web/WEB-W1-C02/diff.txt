@@ -1,0 +1,576 @@
+diff --git a/appserver/agent_worker.py b/appserver/agent_worker.py
+index 40b3384e..8941d517 100644
+--- a/appserver/agent_worker.py
++++ b/appserver/agent_worker.py
+@@ -19,7 +19,13 @@ from pydantic import BaseModel
+ from .bootstrap import bootstrap_agent
+ from .emitter import model_to_notification
+ from .jsonrpc import StreamCoalescer, stream_coalesce_enabled, write_message
+-from .runtime import bind_prompt_context, install_tui_context_hook, get_bound_tui, reset_prompt_context
++from .runtime import (
++    bind_prompt_context,
++    get_bound_tui,
++    install_tui_context_hook,
++    reset_prompt_context,
++    server_run_context,
++)
+ 
+ 
+ def install_scripted_agent_replies(agent) -> None:
+@@ -805,8 +811,9 @@ class AgentWorker:
+             )
+             return
+         text = str(params.get("text", ""))
+-        run_id = str(params.get("run_id") or uuid.uuid4().hex)
+         session_id = str(params.get("session_id", self._session_id))
++        run_context = server_run_context(session_id, claimed=params)
++        run_id = run_context.run_id
+ 
+         def emit(notification: BaseModel) -> None:
+             # Ordering barrier: any buffered stream content is submitted to
+@@ -826,7 +833,7 @@ class AgentWorker:
+         expanded = bool(params.get("thinking_expanded", self._thinking_expanded))
+         self._thinking_expanded = expanded
+         tui.set_thinking_expanded(expanded)
+-        tokens = bind_prompt_context(session_id, tui)
++        tokens = bind_prompt_context(session_id, tui, run_context=run_context)
+         self._active_tui = tui
+ 
+         # C3: batch per-token notifications through a StreamCoalescer
+@@ -879,6 +886,7 @@ class AgentWorker:
+                     "mode": str(params.get("mode", "build")),
+                     "run_id": run_id,
+                     "permission_mode": params.get("permission_mode"),
++                    "run_context": run_context,
+                 }
+                 attachments = params.get("attachments") or []
+                 # Keep the worker compatible with lightweight Session doubles
+@@ -904,6 +912,15 @@ class AgentWorker:
+                 )
+                 if not accepts_permission_mode:
+                     prompt_kwargs.pop("permission_mode", None)
++                accepts_run_context = prompt_signature is None or (
++                    "run_context" in prompt_signature.parameters
++                    or any(
++                        parameter.kind is inspect.Parameter.VAR_KEYWORD
++                        for parameter in prompt_signature.parameters.values()
++                    )
++                )
++                if not accepts_run_context:
++                    prompt_kwargs.pop("run_context", None)
+                 accepts_attachments = prompt_signature is None or (
+                     "attachments" in prompt_signature.parameters
+                     or any(
+diff --git a/appserver/runtime.py b/appserver/runtime.py
+index 1db7fb66..f96ff97c 100644
+--- a/appserver/runtime.py
++++ b/appserver/runtime.py
+@@ -12,13 +12,73 @@ _tui: ContextVar[Any | None] = ContextVar("appserver_tui", default=None)
+ _delegate_depth: ContextVar[int] = ContextVar("appserver_delegate_depth", default=0)
+ 
+ 
+-def bind_prompt_context(session_id: str, tui: Any) -> tuple[Token[str], Token[Any | None]]:
+-    return _session_id.set(session_id), _tui.set(tui)
++def _run_context_module() -> Any:
++    import importlib
++    import sys
++    from pathlib import Path
+ 
++    try:
++        return importlib.import_module("rxycode_protocol.run_context")
++    except ImportError:
++        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-protocol" / "src"
++        if src.is_dir() and str(src) not in sys.path:
++            sys.path.insert(0, str(src))
++        return importlib.import_module("rxycode_protocol.run_context")
++
++
++def server_run_context(session_id: str, claimed: Any | None = None) -> Any:
++    """Mint a run from the worker session. The client body cannot set tenant or run id."""
++    RunContext = _run_context_module().RunContext
++
++    authenticated = {
++        "tenant_id": "local",
++        "actor_id": "local",
++        "project_id": session_id,
++        "session_id": session_id,
++        "target_id": session_id,
++        "permission_profile": "default",
++        "deadline_at": "none",
++        "trace_id": session_id,
++    }
++    return RunContext.from_authenticated(authenticated, claimed=claimed)
++
++
++def bind_prompt_context(
++    session_id: str,
++    tui: Any,
++    run_context: Any | None = None,
++) -> tuple[Token[str], Token[Any | None], Token[Any | None]]:
++    """Bind the prompt TUI plus an explicit RunContext for this task.
++
++    Existing callers that only pass session id and TUI still work. When no
++    context is supplied, the server mints one for that session id. The third
++    token is reset by reset_prompt_context. This does not change the process
++    working directory.
++    """
++    bind_run_context = _run_context_module().bind_run_context
++
++    if run_context is None:
++        run_context = server_run_context(session_id)
++    return (
++        _session_id.set(session_id),
++        _tui.set(tui),
++        bind_run_context(run_context),
++    )
++
++
++def reset_prompt_context(
++    tokens: tuple[Token[str], Token[Any | None], Token[Any | None]],
++) -> None:
++    reset_run_context = _run_context_module().reset_run_context
+ 
+-def reset_prompt_context(tokens: tuple[Token[str], Token[Any | None]]) -> None:
+     _session_id.reset(tokens[0])
+     _tui.reset(tokens[1])
++    reset_run_context(tokens[2])
++
++
++def current_run_context() -> Any | None:
++    """Return the RunContext bound for this task, or None."""
++    return _run_context_module().current_run_context()
+ 
+ 
+ def get_bound_session_id() -> str:
+diff --git a/core/session.py b/core/session.py
+index 8c55c202..ab4377a6 100644
+--- a/core/session.py
++++ b/core/session.py
+@@ -28,6 +28,19 @@ from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+ 
+ EmitCallback = Callable[[BaseModel], None]
+ 
++
++def _run_context_module() -> Any:
++    import importlib
++    import sys
++
++    try:
++        return importlib.import_module("rxycode_protocol.run_context")
++    except ImportError:
++        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-protocol" / "src"
++        if src.is_dir() and str(src) not in sys.path:
++            sys.path.insert(0, str(src))
++        return importlib.import_module("rxycode_protocol.run_context")
++
+ _APPROVED_PLAN_IMPLEMENT_PREFIXES = (
+     "按已批准的计划开始实施",
+     "已批准计划，开始实施",
+@@ -186,11 +199,24 @@ class Session:
+         self._session_subagents_opt_in = False
+         self.drain_steers: Callable[[], list[str]] | None = None
+         self._agents_enabled_cached = None
++        self._active_run = None
+         try:
+             self._agents_enabled_cached = self._read_agents_enabled()
+         except Exception:
+             self._agents_enabled_cached = False
+ 
++    def open_run(
++        self,
++        authenticated: dict[str, object],
++        claimed: dict[str, object] | None = None,
++    ) -> Any:
++        """Mint a RunContext for this same Session. The client session id is ignored."""
++        payload = dict(authenticated)
++        payload["session_id"] = self.session_id
++        context = _run_context_module().RunContext.from_authenticated(payload, claimed=claimed)
++        self._active_run = context
++        return context
++
+     async def prompt(
+         self,
+         agent: Any,
+@@ -201,8 +227,14 @@ class Session:
+         tui: Any | None = None,
+         permission_mode: str | None = None,
+         attachments: list[Any] | None = None,
++        run_context: Any | None = None,
+     ) -> PromptResult:
+         """Run one user turn through AgentV2 and emit terminal protocol events."""
++        if run_context is not None:
++            if getattr(run_context, "session_id", None) != self.session_id:
++                raise ValueError("run context session_id does not match this session")
++            self._active_run = run_context
++            run_id = run_context.run_id
+         try:
+             from .ttft_clock import (
+                 bind_prompt_clock,
+@@ -264,6 +296,8 @@ class Session:
+                 "_prompt_attachment_renderer",
+             )
+         }
++        run_module = _run_context_module()
++        run_token = run_module.bind_run_context(getattr(self, "_active_run", None))
+         try:
+             set_working_directory(workspace, persist=False)
+             try:
+@@ -424,6 +458,7 @@ class Session:
+                 **usage_kwargs,
+             )
+         finally:
++            _run_context_module().reset_run_context(run_token)
+             self.emit = outer_emit
+             for name, previous_value in attachment_attributes.items():
+                 if previous_value is _MISSING_ATTACHMENT_ATTRIBUTE:
+diff --git a/packages/rxycode-protocol/src/rxycode_protocol/run_context.py b/packages/rxycode-protocol/src/rxycode_protocol/run_context.py
+new file mode 100644
+index 00000000..d292ac8c
+--- /dev/null
++++ b/packages/rxycode-protocol/src/rxycode_protocol/run_context.py
+@@ -0,0 +1,77 @@
++"""Explicit run scope. The server fills it. The client body does not."""
++
++from __future__ import annotations
++
++import uuid
++from collections.abc import Mapping
++from contextvars import ContextVar, Token
++from dataclasses import asdict, dataclass
++
++_CURRENT: ContextVar[RunContext | None] = ContextVar("rxycode_run_context", default=None)
++
++_IDENTITY_FIELDS = (
++    "tenant_id",
++    "actor_id",
++    "project_id",
++    "session_id",
++    "target_id",
++    "permission_profile",
++    "deadline_at",
++    "trace_id",
++)
++_FORBIDDEN = ("api_key", "device_token", "authorization", "token")
++
++
++@dataclass(frozen=True)
++class RunContext:
++    """One run inside one session. Frozen so callers cannot swap tenant later."""
++
++    tenant_id: str
++    actor_id: str
++    project_id: str
++    session_id: str
++    run_id: str
++    target_id: str
++    permission_profile: str
++    deadline_at: str
++    trace_id: str
++
++    def to_dict(self) -> dict[str, str]:
++        return {key: str(value) for key, value in asdict(self).items()}
++
++    @classmethod
++    def from_authenticated(
++        cls,
++        authenticated: Mapping[str, object],
++        claimed: Mapping[str, object] | None = None,
++    ) -> RunContext:
++        """Build a run from the authenticated identity.
++
++        ``claimed`` is the client body. Its tenant id and secrets are ignored.
++        ``run_id`` is always minted here, never copied from either mapping.
++        """
++        del claimed
++        for key in _FORBIDDEN:
++            if key in authenticated:
++                raise ValueError(f"RunContext refuses {key}")
++        values: dict[str, str] = {}
++        for field in _IDENTITY_FIELDS:
++            raw = authenticated.get(field)
++            if raw is None or str(raw) == "":
++                raise ValueError(f"RunContext missing {field}")
++            values[field] = str(raw)
++        values["run_id"] = uuid.uuid4().hex
++        return cls(**values)
++
++
++def bind_run_context(context: RunContext | None) -> Token[RunContext | None]:
++    """Bind one run for the current task. Callers reset the returned token."""
++    return _CURRENT.set(context)
++
++
++def reset_run_context(token: Token[RunContext | None]) -> None:
++    _CURRENT.reset(token)
++
++
++def current_run_context() -> RunContext | None:
++    return _CURRENT.get()
+diff --git a/pyproject.toml b/pyproject.toml
+index ed7efe0a..eea13742 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -72,12 +72,14 @@ packages = [
+   "RxyCode.RxyCode1_1_0.utils",
+   "RxyCode.RxyCode1_1_0.validation",
+   "rxycode_core",
++  "rxycode_protocol",
+ ]
+ 
+ [tool.setuptools.package-dir]
+ "RxyCode" = "_package_root/RxyCode"
+ "RxyCode.RxyCode1_1_0" = "."
+ "rxycode_core" = "packages/rxycode-core/src/rxycode_core"
++"rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/tests/web/w1/test_w1_c02_module.py b/tests/web/w1/test_w1_c02_module.py
+new file mode 100644
+index 00000000..4c4f50b0
+--- /dev/null
++++ b/tests/web/w1/test_w1_c02_module.py
+@@ -0,0 +1,155 @@
++"""WEB-W1-C02. Concurrent tool calls keep their own RunContext."""
++from __future__ import annotations
++
++import asyncio
++import os
++import subprocess
++import sys
++import tarfile
++import venv
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-protocol" / "src"
++if _SRC.is_dir() and str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++
++def _auth(tenant: str, target: str) -> dict[str, str]:
++    return {
++        "tenant_id": tenant,
++        "actor_id": "actor-1",
++        "project_id": "project-1",
++        "session_id": "client-session",
++        "target_id": target,
++        "permission_profile": "default",
++        "deadline_at": "2026-10-16T00:00:00Z",
++        "trace_id": f"trace-{tenant}",
++    }
++
++
++async def test_w1_c02_integration():
++    """Two concurrent ToolOrchestrator calls do not swap tenant or target."""
++    from langchain_core.tools import StructuredTool
++
++    from appserver.runtime import bind_prompt_context, current_run_context, reset_prompt_context
++    from execution.tool_orchestrator import ToolOrchestrator
++    from rxycode_protocol.run_context import RunContext
++
++    async def echo() -> str:
++        context = current_run_context()
++        assert context is not None
++        return f"{context.tenant_id}|{context.target_id}"
++
++    orchestrator = ToolOrchestrator()
++    orchestrator.register(
++        "echo",
++        StructuredTool.from_function(coroutine=echo, name="echo", description="read run scope"),
++    )
++
++    async def once(tenant: str, target: str) -> str:
++        context = RunContext.from_authenticated(_auth(tenant, target))
++        tokens = bind_prompt_context("ses-c02", None, run_context=context)
++        try:
++            return await orchestrator.execute_tool(
++                "echo",
++                {},
++                config={"safety": {"enabled": False}},
++            )
++        finally:
++            reset_prompt_context(tokens)
++
++    left, right = await asyncio.gather(
++        once("tenant-a", "target-a"),
++        once("tenant-b", "target-b"),
++    )
++    assert left == "tenant-a|target-a"
++    assert right == "tenant-b|target-b"
++
++
++def _python(env_dir: Path) -> Path:
++    if os.name == "nt":
++        return env_dir / "Scripts" / "python.exe"
++    return env_dir / "bin" / "python"
++
++
++def test_w1_c02_installed_open_run(tmp_path: Path):
++    """An installed wheel imports rxycode_protocol without the checkout src path."""
++    archive = tmp_path / "head.tar"
++    archived = subprocess.run(
++        ["git", "archive", "--format=tar", "-o", str(archive), "HEAD"],
++        cwd=REPO,
++        text=True,
++        capture_output=True,
++        check=False,
++    )
++    assert archived.returncode == 0, archived.stderr
++    checkout = tmp_path / "checkout"
++    checkout.mkdir()
++    with tarfile.open(archive) as bundle:
++        if sys.version_info >= (3, 12):
++            bundle.extractall(checkout, filter="data")
++        else:
++            bundle.extractall(checkout)
++    wheel_dir = tmp_path / "wheel"
++    wheel_dir.mkdir()
++    env = os.environ.copy()
++    env.pop("PYTHONPATH", None)
++    env.pop("PYTHONHOME", None)
++    build = subprocess.run(
++        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(checkout)],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert build.returncode == 0, build.stderr
++    wheels = list(wheel_dir.glob("rxycode-*.whl"))
++    assert len(wheels) == 1
++    env_dir = tmp_path / "venv"
++    venv.create(env_dir, with_pip=True, system_site_packages=True)
++    python = _python(env_dir)
++    install = subprocess.run(
++        [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert install.returncode == 0, install.stderr
++    probe = subprocess.run(
++        [
++            str(python),
++            "-c",
++            "from pathlib import Path\n"
++            "import rxycode_protocol.run_context as run_context\n"
++            "from RxyCode.RxyCode1_1_0.core.session import Session\n"
++            "session = Session(session_id='ses-installed', workspace_root='.', emit=lambda _n: None)\n"
++            "context = session.open_run({\n"
++            " 'tenant_id': 'tenant-real', 'actor_id': 'actor', 'project_id': 'project',\n"
++            " 'session_id': 'forged', 'target_id': 'target', 'permission_profile': 'default',\n"
++            " 'deadline_at': 'none', 'trace_id': 'trace'})\n"
++            "assert context.session_id == 'ses-installed'\n"
++            "assert context.tenant_id == 'tenant-real'\n"
++            "print(Path(run_context.__file__).resolve())\n"
++            "print(Path(session.__class__.__module__ and __import__('RxyCode.RxyCode1_1_0.core.session', fromlist=['Session']).__file__).resolve())\n"
++            "print('installed-run-ok')\n",
++        ],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert probe.returncode == 0, probe.stderr
++    assert "installed-run-ok" in probe.stdout
++    venv_root = str(env_dir.resolve()).casefold()
++    repo_root = str(REPO.resolve()).casefold()
++    origins = [line.strip() for line in probe.stdout.splitlines() if line.strip() and line.strip() != "installed-run-ok"]
++    assert len(origins) == 2
++    for origin in origins:
++        folded = origin.casefold()
++        assert venv_root in folded
++        assert repo_root not in folded
+diff --git a/tests/web/w1/test_w1_c02_unit.py b/tests/web/w1/test_w1_c02_unit.py
+new file mode 100644
+index 00000000..28628115
+--- /dev/null
++++ b/tests/web/w1/test_w1_c02_unit.py
+@@ -0,0 +1,82 @@
++"""WEB-W1-C02. One Session opens many runs; the server owns tenant identity."""
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-protocol" / "src"
++if _SRC.is_dir() and str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++AUTH = {
++    "tenant_id": "tenant-real",
++    "actor_id": "actor-1",
++    "project_id": "project-1",
++    "session_id": "client-must-not-win",
++    "target_id": "target-1",
++    "permission_profile": "default",
++    "deadline_at": "2026-10-16T00:00:00Z",
++    "trace_id": "trace-1",
++}
++
++
++async def test_w1_c02_contract(tmp_path: Path):
++    """Two runs on one Session get different run ids and do not rebuild it."""
++    from core.session import Session
++    from rxycode_protocol.run_context import RunContext
++
++    class _Agent:
++        def __init__(self) -> None:
++            self.seen: list[object] = []
++
++        async def run(self, text: str, mode: str = "build") -> str:
++            del text, mode
++            from appserver.runtime import current_run_context
++
++            self.seen.append(current_run_context())
++            return "ok"
++
++        def cancel(self) -> bool:
++            return True
++
++    emitted: list[object] = []
++    session = Session(session_id="ses-c02", workspace_root=tmp_path, emit=emitted.append)
++    same = session
++    first = session.open_run(AUTH)
++    second = session.open_run(AUTH)
++    assert isinstance(first, RunContext)
++    assert isinstance(second, RunContext)
++    assert first.run_id != second.run_id
++    assert first.session_id == second.session_id == "ses-c02"
++    assert session is same
++    assert session.emit == emitted.append
++    agent = _Agent()
++    await session.prompt(agent, "turn", mode="build", run_id="legacy-run", run_context=second)
++    assert session is same
++    assert session._active_run is second
++    assert agent.seen == [second]
++    finals = [item for item in emitted if getattr(item, "run_id", None) == second.run_id]
++    assert finals
++    assert all(getattr(item, "run_id", None) != "legacy-run" for item in emitted)
++
++
++def test_w1_c02_negative():
++    """A forged tenant id and secret fields never enter the server context."""
++    from rxycode_protocol.run_context import RunContext
++
++    claimed = {
++        "tenant_id": "forged-tenant",
++        "api_key": "sk-live-secret",
++        "device_token": "device-secret",
++    }
++    context = RunContext.from_authenticated(AUTH, claimed=claimed)
++    blob = str(context.to_dict())
++    assert context.tenant_id == "tenant-real"
++    assert "forged-tenant" not in blob
++    assert "sk-live-secret" not in blob
++    assert "device-secret" not in blob
++    with pytest.raises(ValueError):
++        RunContext.from_authenticated({**AUTH, "api_key": "sk-live-secret"})

@@ -56,6 +56,24 @@ attributes `connected`, `tools_changed`, `protocol_version`, `last_error_type`.
 - MCP annotations are untrusted. Dynamic names default to `WRITE`; a positive
   `destructiveHint` can only escalate the local minimum to `DANGER`, while a
   remote `readOnlyHint` can never lower it. Normal approval rules still apply.
+- Tool descriptions are untrusted input (2026-10-12): `_bounded_text` only
+  sanitizes; `mcp/tool_poisoning.py` scans for injection patterns
+  (`<IMPORTANT>`, "ignore previous instructions", `<system>` tags, secret
+  exfiltration / sensitive-file reads) and prefixes a model-visible warning.
+  `mcp/tool_manifest.py` persists a per-server hash baseline of
+  `(description, schemas)` at `<data_dir>/mcp/tool_manifests.json`; drift on
+  re-register logs a warning and surfaces counts under
+  `runtime_status()["mcp"]["manifest_drift"]` (fail-open, new manifest becomes
+  the baseline). Approval requests now carry `details.description` so the user
+  can read the outside-authored text before allowing the call.
+- Supply-chain pinning: `mcp add <pkg>` accepts `pkg@version`
+  (`tools/mcp_manager.py:_NPM_PACKAGE_RE`); the plugin-host GitHub MCP docker
+  image is pinned to an explicit tag (`appserver/plugin_service.py:
+  _OFFICIAL_GITHUB_MCP_IMAGE`) — bump the tag deliberately on upgrade.
+- `GITHUB_PERSONAL_ACCESS_TOKEN` / `GH_TOKEN` are NOT in the inherited-env
+  allowlist (removed 2026-10-12); github-named servers receive the token via
+  name-gated injection (`mcp/github_auth.py`), anything else must set
+  `mcpServers.<name>.env` explicitly.
 - Configured MCP commands are trusted host processes, not OS-sandboxed child
   workloads. `runtime_status()` reports `process_isolation=host_process`
   explicitly. Operators that need process/container isolation should configure

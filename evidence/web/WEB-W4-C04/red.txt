@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-6y8isfsn
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c04_unit.py:28: ModuleNotFoundError: No module named 'rxycode_runner.transport'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c04_unit.py:78: ModuleNotFoundError: No module named 'rxycode_runner.transport'
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c04_module.py:24: ModuleNotFoundError: No module named 'rxycode_runner.transport'
+=========================== short test summary info ===========================
+FAILED tests/web/w4/test_w4_c04_unit.py::test_w4_c04_contract - ModuleNotFoun...
+FAILED tests/web/w4/test_w4_c04_unit.py::test_w4_c04_negative - ModuleNotFoun...
+FAILED tests/web/w4/test_w4_c04_module.py::test_w4_c04_integration - ModuleNo...
+3 failed in 0.34s

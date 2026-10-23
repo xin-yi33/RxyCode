@@ -1,0 +1,4 @@
+Parent HEAD before this card: b61d82af feat/rxycode-web. Not pushed.
+Nested whitelist: ecce3a2 on docs/plans/opus5-plan feat/rxycode-web. Not pushed.
+RED: FileTree.tsx was missing.
+E2E-WEB-04 screenshots are not produced. The locked tests cover the real git diff, path refusal, and stale revision.

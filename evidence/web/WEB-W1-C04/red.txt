@@ -1,0 +1,6 @@
+WEB-W1-C04 RED before schema_digest and the web models existed.
+
+python -m pytest tests/web/w1/test_w1_c04_unit.py tests/web/w1/test_w1_c04_module.py -q --tb=line
+ERROR tests/web/w1/test_w1_c04_unit.py
+ImportError: cannot import name 'required_field_breaks_legacy' from protocol.schema
+1 error in 0.25s

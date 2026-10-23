@@ -214,9 +214,10 @@ def test_synthesis_tool_error_marks_state():
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
 
     src = inspect.getsource(AgentV2._synthesis_with_tools)
-    # synthesis 工具执行后检查 is_error 并设置状态
+    # synthesis 工具执行后检查 is_error 并设置状态；判定走 _tool_is_error
+    #（先读记录的执行 outcome，文本前缀只作 fallback —— web W8 语义）。
     assert "_tool_error_occurred = True" in src
-    assert "_tool_output_is_error(str(result))" in src
+    assert "self._tool_is_error(tool_id, str(result))" in src
 
 
 def test_llm_exception_answer_not_cached():
@@ -373,7 +374,7 @@ async def test_malformed_native_tool_call_is_not_executed_and_gets_repair_turn(m
 
     executions = []
 
-    async def fake_execute(tool_calls, *, mode=None):
+    async def fake_execute(tool_calls, *, mode=None, partial_results=None):
         executions.append(tool_calls)
         return []
 

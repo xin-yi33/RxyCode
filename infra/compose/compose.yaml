@@ -1,0 +1,481 @@
+# Self-hosted RxyCode web stack + dependencies. Privileged mode stays off.
+#
+# Topology (see docs/deploy/web-runbook.md):
+#   gateway (Caddy, HTTPS + internal CA) -> api (uvicorn rxycode_server) -> postgres/redis/minio
+#   worker  (python -m rxycode_worker.drain: durable queue consumer) -> postgres
+#   migrate (one-shot Alembic upgrade_head) and webbuild (one-shot vite dist) are
+#   bring-up steps, not long-running services.
+#
+# Ordering uses marker files, not blocking depends_on conditions, because the
+# checkout is seeded AFTER `up` returns: this host's Docker Desktop file
+# sharing does not mount Windows bind paths (any host-path -v/--mount hangs
+# container start), so the runbook/test streams a tar of the working tree
+# into the `repo-src` volume through `reposync`. Consumers mount it read-only
+# and wait for `.rxy-sync-done`; `migrate` drops `.migrate-done` into the
+# `boot-state` volume which api/worker wait on; gateway waits for the built
+# `index.html` in `web-dist`. The worker copies /repo to a writable
+# per-container path because appserver state can write.
+#
+# Secrets come from the environment — never literals in this file. Published
+# ports bind 127.0.0.1 only; use a distinct `-p` project name per deploy so
+# this stack never collides with the rxy-* development containers.
+
+services:
+  postgres:
+    image: postgres:16
+    privileged: false
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rxycode
+      POSTGRES_DB: rxycode
+      POSTGRES_PASSWORD: ${RXYCODE_POSTGRES_PASSWORD:?set RXYCODE_POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${RXYCODE_PG_PORT:-54433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rxycode -d rxycode"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    privileged: false
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    # minio/minio release tags were pulled from Docker Hub in 2025; pin the
+    # bitnamilegacy minor tag that keeps the MINIO_ROOT_* env contract.
+    image: bitnamilegacy/minio:2025.7.23
+    privileged: false
+    restart: unless-stopped
+    # Image runs as uid 1001 (gid 0); the image's own data dir is the only
+    # writable path, so serve and mount the volume there — never `user: root`.
+    command: ["server", "/bitnami/minio/data"]
+    environment:
+      MINIO_ROOT_USER: ${RXYCODE_MINIO_ROOT_USER:?set RXYCODE_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${RXYCODE_MINIO_ROOT_PASSWORD:?set RXYCODE_MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Seeds the checkout into the repo-src volume. The runbook/test streams a
+  # tar of the working tree into this service's /repo and drops the
+  # `.rxy-sync-done` marker; the wait loop then exits 0 and dependent
+  # services proceed past their own wait loops.
+  reposync:
+    image: python:3.12-slim
+    privileged: false
+    restart: "no"
+    volumes:
+      - repo-src:/repo
+    command:
+      - sh
+      - -c
+      - |
+        while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
+        echo "repo-src seeded"
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /repo/.rxy-sync-done"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+
+  migrate:
+    image: python:3.12-slim
+    privileged: false
+    restart: "no"
+    volumes:
+      - repo-src:/repo:ro
+      - boot-state:/boot
+    environment:
+      PYTHONPATH: /repo/packages/rxycode-server/src:/repo/packages/rxycode-runner/src
+      RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
+      # Bootstrap pip index: override at `up` time for networks that cannot
+      # reach pypi.org directly; defaults to the public index unchanged.
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
+        python -m pip install --quiet --no-input \
+          "sqlalchemy>=2,<2.1" "alembic>=1.17,<2" "psycopg[binary]>=3.2,<4"
+        python - <<'PY'
+        import os
+        import time
+
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        url = os.environ["RXYCODE_WEB_DATABASE_URL"]
+        for _attempt in range(60):
+            try:
+                engine = create_engine(url, poolclass=NullPool)
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                engine.dispose()
+                break
+            except Exception:
+                time.sleep(2)
+        else:
+            raise SystemExit("postgres never became reachable")
+        from rxycode_server.persistence.migrate import upgrade_head
+
+        upgrade_head(url)
+        PY
+        touch /boot/.migrate-done
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /boot/.migrate-done"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+
+  api:
+    image: python:3.12-slim
+    privileged: false
+    restart: unless-stopped
+    volumes:
+      - repo-src:/repo:ro
+      - boot-state:/boot:ro
+      # Session-workspace files API (W12): read-only view of the runs dir.
+      - worker-data:/workspaces-ro:ro
+    environment:
+      PYTHONPATH: /opt/pkg:/repo:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-protocol/src
+      RXYCODE_WORKSPACES_ROOT: /workspaces-ro/runs
+      RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
+      RXYCODE_WEB_MODE: ${RXYCODE_WEB_MODE:-cloud}
+      RXYCODE_WEB_SECRET: ${RXYCODE_WEB_SECRET:?set RXYCODE_WEB_SECRET}
+      RXYCODE_WEB_ORIGINS: ${RXYCODE_WEB_ORIGINS:-https://localhost:8443}
+      RXYCODE_GITHUB_CLIENT_ID: ${RXYCODE_GITHUB_CLIENT_ID:-}
+      RXYCODE_GITHUB_CLIENT_SECRET: ${RXYCODE_GITHUB_CLIENT_SECRET:-}
+      RXYCODE_GITHUB_REDIRECT_URI: ${RXYCODE_GITHUB_REDIRECT_URI:-}
+      RXYCODE_S3_ENDPOINT: ${RXYCODE_S3_ENDPOINT:-http://minio:9000}
+      RXYCODE_S3_BUCKET: ${RXYCODE_S3_BUCKET:-rxycode-artifacts}
+      RXYCODE_S3_ACCESS_KEY: ${RXYCODE_MINIO_ROOT_USER}
+      RXYCODE_S3_SECRET_KEY: ${RXYCODE_MINIO_ROOT_PASSWORD}
+      # Public-demo request throttle: per-client-IP fixed window enforced by
+      # the app's RateLimitMiddleware (stock Caddy ships no limiter plugin).
+      RXYCODE_WEB_RATE_LIMIT_RPM: ${RXYCODE_WEB_RATE_LIMIT_RPM:-240}
+      # WEB-W9: registration mode and the single-tenant admission ceiling.
+      RXYCODE_WEB_REGISTRATION: ${RXYCODE_WEB_REGISTRATION:-invite}
+      RXYCODE_QUOTA_CONCURRENCY: ${RXYCODE_QUOTA_CONCURRENCY:-1}
+      RXYCODE_QUOTA_TASKS_PER_DAY: ${RXYCODE_QUOTA_TASKS_PER_DAY:-30}
+      RXYCODE_QUOTA_TOKENS_PER_DAY: ${RXYCODE_QUOTA_TOKENS_PER_DAY:-2000000}
+      RXYCODE_QUEUE_MAX: ${RXYCODE_QUEUE_MAX:-10}
+      # BYOK (W10): dev stack stays on the env-gateway path by default;
+      # BYOK_ENFORCE=1 + a mounted keyring opts in to per-user credentials.
+      RXYCODE_BYOK_ENFORCE: ${RXYCODE_BYOK_ENFORCE:-0}
+      RXYCODE_BYOK_KEYRING_FILE: ${RXYCODE_BYOK_KEYRING_FILE:-}
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    healthcheck:
+      test: ["CMD-SHELL", "python /opt/probe_api.py"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 240s
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
+        mkdir -p /opt/pkg/RxyCode
+        ln -sfn /repo /opt/pkg/RxyCode/RxyCode1_1_0
+        printf '"""Bridge package for the seeded checkout."""\n' \
+          > /opt/pkg/RxyCode/__init__.py
+        cat > /opt/probe_api.py <<'PY'
+        import os
+        import sys
+        import urllib.request
+
+        # App layer: the unauthenticated CSRF endpoint must answer 200.
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8000/api/v1/auth/csrf", timeout=5
+        ) as response:
+            if response.status != 200:
+                sys.exit(1)
+        # Durable layer: the API's own database handle must still reach PG.
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(os.environ["RXYCODE_WEB_DATABASE_URL"], poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        finally:
+            engine.dispose()
+        PY
+        cat > /opt/serve_web.py <<'PY'
+        import os
+
+        import uvicorn
+
+        # Deployed startup MUST go through serve(): mode="local" on a
+        # non-loopback bind is refused by reject_as_public_web_gateway — the
+        # same guard the negative test exercises. create_app alone would let
+        # RXYCODE_WEB_MODE=local boot a secure-cookies-off app on 0.0.0.0.
+        from rxycode_server.main import serve
+
+        app = serve(
+            mode=os.environ.get("RXYCODE_WEB_MODE", "cloud"),
+            host="0.0.0.0",
+            database_url=os.environ["RXYCODE_WEB_DATABASE_URL"],
+            secret=os.environ["RXYCODE_WEB_SECRET"],
+            allowed_origins=[
+                origin.strip()
+                for origin in os.environ.get("RXYCODE_WEB_ORIGINS", "").split(",")
+                if origin.strip()
+            ],
+            github_client_id=os.environ.get("RXYCODE_GITHUB_CLIENT_ID", ""),
+            github_client_secret=os.environ.get("RXYCODE_GITHUB_CLIENT_SECRET", ""),
+            github_redirect_uri=os.environ.get("RXYCODE_GITHUB_REDIRECT_URI", ""),
+            s3_endpoint=os.environ.get("RXYCODE_S3_ENDPOINT", ""),
+            s3_bucket=os.environ.get("RXYCODE_S3_BUCKET", ""),
+            s3_access_key=os.environ.get("RXYCODE_S3_ACCESS_KEY", ""),
+            s3_secret_key=os.environ.get("RXYCODE_S3_SECRET_KEY", ""),
+            rate_limit_rpm=int(os.environ.get("RXYCODE_WEB_RATE_LIMIT_RPM", "0")),
+        )
+        # Only private hops may set X-Forwarded-For/Proto — the Caddy peer is
+        # the compose-network gateway, so uvicorn picks the first UNtrusted
+        # XFF entry from the right (the real client) instead of the leftmost,
+        # which any caller could spoof as a prefix.
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,"
+            "192.168.0.0/16,169.254.0.0/16,fc00::/7,fe80::/10",
+        )
+        PY
+        python -m pip install --quiet --no-input \
+          "fastapi>=0.109" "uvicorn[standard]>=0.27" "sqlalchemy>=2,<2.1" \
+          "alembic>=1.17,<2" "psycopg[binary]>=3.2,<4" "httpx>=0.27" \
+          "pydantic>=2" "boto3>=1.34,<2" "cryptography>=42" \
+          "pyotp>=2.9,<3" "webauthn>=2.0,<3"
+        while [ ! -f /boot/.migrate-done ]; do sleep 2; done
+        exec python /opt/serve_web.py
+
+  # The run executor: `python -m rxycode_worker.drain` — the real durable
+  # queue consumer. It polls `runs` for claimable rows (pending, or a dead
+  # worker's expired lease), takes the fenced lease via supervisor.claim,
+  # then spawns the turn INSIDE a per-run kernel sandbox: this service is
+  # cloud-only — only `cloud:{tenant}:{workspace}` targets execute, each in
+  # a bubblewrap user/pid/ipc/uts namespace with a minimal read-only root
+  # and just that run's workspace writable. `seccomp=unconfined` is scoped
+  # to THIS service only: Docker's default profile forbids the
+  # unshare/mount syscalls userns isolation needs. No privileged flag, no
+  # capabilities, no docker.sock — the confinement is bwrap, not docker.
+  worker:
+    image: python:3.12-slim
+    privileged: false
+    restart: unless-stopped
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - repo-src:/repo-src:ro
+      - boot-state:/boot:ro
+      - worker-data:/work
+    environment:
+      PYTHONPATH: /opt/pkg:/repo:/repo/packages/rxycode-core/src:/repo/packages/rxycode-protocol/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src
+      RXYCODE_WEB_DATABASE_URL: postgresql+psycopg://rxycode:${RXYCODE_POSTGRES_PASSWORD}@postgres:5432/rxycode
+      RXYCODE_WORKER_ID: ${RXYCODE_WORKER_ID:-}
+      RXYCODE_WORKER_POLL_SECONDS: ${RXYCODE_WORKER_POLL_SECONDS:-2}
+      RXYCODE_WORKER_LEASE_TTL: ${RXYCODE_WORKER_LEASE_TTL:-120}
+      RXYCODE_WORKER_WORKSPACES: /work/runs
+      # Public-stack contract: only tenant-bound cloud:* targets execute,
+      # always confined; local:* placements are refused. full/full_auto
+      # profiles run as sandboxed Full Auto — same mounts, private net
+      # namespace, egress filter; Full is an approval semantic, never an
+      # isolation level.
+      RXYCODE_WORKER_EXECUTION: ${RXYCODE_WORKER_EXECUTION:-cloud-only}
+      RXYCODE_WORKER_MODEL: ${RXYCODE_WORKER_MODEL:-}
+      # Deployed LLM endpoint: when RXYCODE_LLM_BASE_URL is set the worker
+      # writes a real model entry into its config and executes turns against
+      # it (key from RXYCODE_API_KEY). The key stays in the WORKER process:
+      # confined turns get a scrubbed config whose base_url points at the
+      # parent's loopback egress gateway, which injects real auth upstream —
+      # the credential never exists inside the sandbox. With no endpoint
+      # configured a run still claims, starts, and commits `failed` with the
+      # honest "No model configured" error — it is never faked.
+      RXYCODE_LLM_BASE_URL: ${RXYCODE_LLM_BASE_URL:-}
+      RXYCODE_LLM_MODEL: ${RXYCODE_LLM_MODEL:-}
+      RXYCODE_API_KEY: ${RXYCODE_API_KEY:-}
+      # BYOK (W10): the worker defaults to enforcing per-run credentials —
+      # the dev stack keeps the env-gateway path unless you opt in and mount
+      # a keyring (see infra/compose/.env.prod.example for the variables).
+      RXYCODE_BYOK_ENFORCE: ${RXYCODE_BYOK_ENFORCE:-0}
+      RXYCODE_BYOK_KEYRING_FILE: ${RXYCODE_BYOK_KEYRING_FILE:-}
+      RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
+      RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      RXYCODE_DATA_DIR: /work/data
+      RXYCODE_UVLOOP: "0"
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    healthcheck:
+      test: ["CMD-SHELL", "python /opt/probe_worker.py"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 600s
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        while [ ! -f /repo-src/.rxy-sync-done ]; do sleep 1; done
+        mkdir -p /repo
+        cp -a /repo-src/. /repo/
+        mkdir -p /opt/pkg/RxyCode
+        ln -sfn /repo /opt/pkg/RxyCode/RxyCode1_1_0
+        printf '"""Bridge package for the seeded checkout."""\n' \
+          > /opt/pkg/RxyCode/__init__.py
+        cat > /opt/probe_worker.py <<'PY'
+        import os
+        import sys
+        from pathlib import Path
+
+        # The worker is the drain loop; prove it is alive as PID 1. `comm`
+        # must be python — the startup script's cmdline already contains
+        # "rxycode_worker" while pip/apt still install (a false healthy).
+        if Path("/proc/1/comm").read_text().strip() != "python":
+            sys.exit(1)
+        cmdline = Path("/proc/1/cmdline").read_bytes()
+        if b"rxycode_worker" not in cmdline:
+            sys.exit(1)
+        # Its durable spine is the same Postgres the api uses.
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.pool import NullPool
+
+        engine = create_engine(os.environ["RXYCODE_WEB_DATABASE_URL"], poolclass=NullPool)
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        finally:
+            engine.dispose()
+        PY
+        python -m pip install --quiet --no-input \
+          -r /repo/requirements.txt
+        # bubblewrap is the turn's kernel boundary (userns provider); absent
+        # it, the drain refuses every run instead of executing unconfined.
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends bubblewrap
+        # Deployed model config: only written when the operator pointed the
+        # worker at an LLM endpoint. api_key stays an env reference — the
+        # key itself never lands in the config file. The check lives inside
+        # python: a shell ${VAR} here would be interpolated by compose at `up`
+        # time from the HOST env instead of read from the container env.
+        python - <<'PY'
+        import os
+        import sys
+
+        base_url = os.environ.get("RXYCODE_LLM_BASE_URL", "").strip()
+        if not base_url:
+            sys.exit(0)
+        import yaml
+
+        data_dir = os.environ.get("RXYCODE_DATA_DIR", "/work/data")
+        os.makedirs(data_dir, exist_ok=True)
+        path = os.path.join(data_dir, "config.yaml")
+        cfg = {
+            "active_model": "deployed",
+            "models": {
+                "deployed": {
+                    "provider_id": "openai",
+                    "provider_name": "Deployed endpoint",
+                    "base_url": base_url,
+                    "model_name": os.environ.get("RXYCODE_LLM_MODEL") or "deployed",
+                    "api_key_env": "RXYCODE_API_KEY",
+                    "max_tokens": 8192,
+                    "temperature": 0.7,
+                }
+            },
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(cfg, fh)
+        PY
+        while [ ! -f /boot/.migrate-done ]; do sleep 2; done
+        exec python -m rxycode_worker.drain
+
+  webbuild:
+    image: node:22-slim
+    privileged: false
+    restart: "no"
+    volumes:
+      - repo-src:/repo:ro
+      - web-dist:/dist
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
+        mkdir -p /build/apps /build/frontend/desktop-app/src/renderer/src/components /dist
+        cp -a /repo/apps/web /build/apps/web
+        cp /repo/frontend/desktop-app/src/renderer/src/components/sessionVisualState.ts \
+          /build/frontend/desktop-app/src/renderer/src/components/sessionVisualState.ts
+        cd /build/apps/web
+        npm install --no-audit --no-fund
+        npm run build
+        cp -a dist/. /dist/
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /dist/index.html"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+
+  gateway:
+    image: caddy:2.11
+    privileged: false
+    restart: unless-stopped
+    volumes:
+      - repo-src:/repo:ro
+      - web-dist:/srv/www:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      RXYCODE_PREVIEW_TOKEN: ${RXYCODE_PREVIEW_TOKEN:-}
+    ports:
+      - "127.0.0.1:${RXYCODE_HTTP_PORT:-8080}:80"
+      - "127.0.0.1:${RXYCODE_HTTPS_PORT:-8443}:443"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    command:
+      - sh
+      - -c
+      - |
+        while [ ! -f /repo/.rxy-sync-done ]; do sleep 1; done
+        while [ ! -f /srv/www/index.html ]; do sleep 2; done
+        exec caddy run --config /repo/infra/compose/Caddyfile --adapter caddyfile
+
+volumes:
+  pg-data:
+  redis-data:
+  minio-data:
+  repo-src:
+  boot-state:
+  web-dist:
+  worker-data:
+  caddy-data:
+  caddy-config:

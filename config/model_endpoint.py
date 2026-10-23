@@ -136,9 +136,20 @@ def _validated_split(base_url: str, *, require_https: bool) -> SplitResult:
         _ = parsed.port
     except ValueError as exc:
         raise ValueError("base_url contains an invalid port") from exc
-    if require_https and parsed.scheme.casefold() != "https":
+    if require_https and parsed.scheme.casefold() != "https" and not _is_loopback_host(parsed.hostname):
         raise ValueError("base_url must use https:// when an API credential is sent")
     return parsed._replace(path=parsed.path.rstrip("/"))
+
+
+def _is_loopback_host(hostname) -> bool:
+    """Loopback endpoints (local relays, e.g. Ollama-style bridges) never leave
+    this machine, so plain http:// with credentials is acceptable there."""
+    if not hostname:
+        return False
+    h = hostname.strip().lower().strip("[]")
+    if h in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    return h.startswith("127.")
 
 
 def validate_llm_base_url(base_url: str, *, require_https: bool = False) -> str:

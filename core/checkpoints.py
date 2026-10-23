@@ -50,6 +50,7 @@ DURABLE_STATE_FIELDS = frozenset(
         "phase",
         "error",
         "resume_attempts",
+        "build_workflow",
     }
 )
 FORBIDDEN_RUNTIME_FIELDS = frozenset(

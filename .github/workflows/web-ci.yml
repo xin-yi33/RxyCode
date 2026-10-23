@@ -1,0 +1,242 @@
+# WEB-W7-C05 — web stack CI gate.
+#
+# Lanes: python lint (ruff), the web contract pytest subset, the apps/web
+# typecheck+production build, and a rendered `docker compose config` lint of
+# the shipped deployment file. Every lane fails closed; nothing here deploys.
+
+name: web-ci
+
+on:
+  push:
+    paths:
+      - "packages/rxycode-server/**"
+      - "packages/rxycode-worker/**"
+      - "packages/rxycode-runner/**"
+      - "apps/web/**"
+      - "infra/compose/**"
+      - "tests/web/**"
+      - ".github/workflows/web-ci.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  python-lint:
+    name: ruff (web tests + server packages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install ruff
+        run: python -m pip install "ruff>=0.8,<1"
+
+      - name: ruff check
+        run: |
+          python -m ruff check tests/web \
+            packages/rxycode-server packages/rxycode-worker \
+            packages/rxycode-runner
+
+      - name: ruff format --check (touched web test files)
+        run: |
+          python -m ruff format --check tests/web/w7/test_w7_c05_unit.py \
+            tests/web/w7/test_w7_c05_module.py
+
+  contract-tests:
+    name: pytest web contract subset
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e . --no-deps
+
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04)
+        # ubuntu-latest is 24.04, which defaults
+        # kernel.apparmor_restrict_unprivileged_userns=1 — bwrap's
+        # --unshare-user is denied inside the docker containers below, so
+        # the drain fail-closes every run ("userns/bwrap isolation is
+        # unavailable") and no confined turn ever spawns. Relax the host
+        # sysctl so the stack's REAL kernel sandbox boundary runs in CI;
+        # the turn still executes inside bwrap.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Probe bwrap userns inside a container
+        # Same boundary shape the compose worker uses (seccomp=unconfined,
+        # no extra caps): prints the REAL bwrap verdict + stderr so a
+        # fail-closed run.error shows the kernel/AppArmor reason verbatim
+        # instead of guessing from the drain's refusal string.
+        run: |
+          docker run --rm --security-opt seccomp=unconfined python:3.12-slim \
+            sh -c 'apt-get update -qq >/dev/null 2>&1; \
+                   apt-get install -y -qq --no-install-recommends bubblewrap >/dev/null 2>&1; \
+                   bwrap --unshare-user --uid 0 --gid 0 --unshare-pid \
+                     --die-with-parent --new-session --dev /dev \
+                     --tmpfs /tmp --chdir /tmp /bin/true; \
+                   echo "bwrap-probe rc=$?"'
+
+      - name: Start postgres for durable tests
+        # Named exactly like the shared container the w7 conftest reuses, so
+        # tests/web/w7/conftest.py binds to it instead of spawning its own.
+        run: |
+          docker run -d --name rxy-w2c01-pg \
+            -e POSTGRES_HOST_AUTH_METHOD=trust \
+            -e POSTGRES_DB=rxycode \
+            -p 127.0.0.1:55432:5432 postgres:16
+          for i in $(seq 1 30); do
+            docker exec rxy-w2c01-pg pg_isready -U postgres -d rxycode && exit 0
+            sleep 1
+          done
+          echo "postgres did not become ready" >&2
+          exit 1
+
+      - name: Web W7 contract + module tests (real Postgres + real compose)
+        env:
+          RXYCODE_POSTGRES_PASSWORD: ci-pg-password-not-a-secret
+          RXYCODE_MINIO_ROOT_USER: ci-minio-user
+          RXYCODE_MINIO_ROOT_PASSWORD: ci-minio-password-not-a-secret
+          RXYCODE_WEB_SECRET: ci-web-secret-32bytes-minimum-value!!
+        run: |
+          python -m pytest tests/web/w7 -q
+        # tests/web/w7/test_w7_c05_* bring up infra/compose/compose.yaml under
+        # a per-test project name on this runner's docker engine, then
+        # `down -v` it; the ci-pg sidecar above feeds the W7 shared-postgres
+        # conftest (55432), which the compose stack does not reuse.
+
+  web-build:
+    name: apps/web typecheck + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # apps/web is locked with bun.lock; there is no package-lock.json, so
+      # `npm ci` cannot run here. `npm install` is the honest equivalent on a
+      # clean checkout (it resolves the same semver ranges).
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build (vite -> dist)
+        run: npm run build
+
+  compose-config:
+    name: compose.yaml renders + invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render compose config
+        env:
+          RXYCODE_POSTGRES_PASSWORD: ci-pg-password-not-a-secret
+          RXYCODE_MINIO_ROOT_USER: ci-minio-user
+          RXYCODE_MINIO_ROOT_PASSWORD: ci-minio-password-not-a-secret
+          RXYCODE_WEB_SECRET: ci-web-secret-32bytes-minimum-value!!
+        run: docker compose -f infra/compose/compose.yaml config --quiet
+
+      - name: Deploy invariants hold on the rendered config
+        env:
+          RXYCODE_POSTGRES_PASSWORD: ci-pg-password-not-a-secret
+          RXYCODE_MINIO_ROOT_USER: ci-minio-user
+          RXYCODE_MINIO_ROOT_PASSWORD: ci-minio-password-not-a-secret
+          RXYCODE_WEB_SECRET: ci-web-secret-32bytes-minimum-value!!
+        run: |
+          docker compose -f infra/compose/compose.yaml config --no-interpolate \
+            > /tmp/rendered.yaml
+          python - <<'PY'
+          import re
+          import sys
+
+          import yaml
+
+          config = yaml.safe_load(open("/tmp/rendered.yaml", encoding="utf-8"))
+          secret_key = re.compile(r"(?i)(password|secret|token|api[_-]?key|credential)")
+          env_ref = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::[-?][^}]*)?\}$")
+          problems = []
+          for name, service in (config.get("services") or {}).items():
+              if service.get("privileged"):
+                  problems.append(f"{name}: privileged")
+              if str(service.get("network_mode") or "").split(":")[0] == "host":
+                  problems.append(f"{name}: host networking")
+              if service.get("cap_add"):
+                  problems.append(f"{name}: cap_add escalation")
+              security_opt = [str(o) for o in service.get("security_opt") or []]
+              allowed_opt = {"seccomp=unconfined"} if name == "worker" else set()
+              if any(o not in allowed_opt for o in security_opt):
+                  problems.append(f"{name}: security_opt {security_opt}")
+              for volume in service.get("volumes") or []:
+                  source = (
+                      str(volume.get("source") or "")
+                      if isinstance(volume, dict)
+                      else str(volume).split(":", 1)[0]
+                  )
+                  if source.endswith("docker.sock") or "/docker.sock" in source:
+                      problems.append(f"{name}: docker.sock mount")
+              environment = service.get("environment") or {}
+              if isinstance(environment, dict):
+                  items = environment.items()
+              else:
+                  items = (
+                      entry.split("=", 1) for entry in environment if "=" in str(entry)
+                  )
+              for key, value in items:
+                  if secret_key.search(str(key)) and value and not env_ref.match(str(value)):
+                      problems.append(f"{name}: {key} is a literal secret")
+              loopbacks = {"127.0.0.1", "::1", "localhost"}
+              for port in service.get("ports") or []:
+                  if isinstance(port, dict):
+                      host_ip = str(port.get("host_ip") or "")
+                  else:
+                      parts = str(port).split(":")
+                      host_ip = parts[0] if len(parts) >= 3 else ""
+                  if host_ip not in loopbacks:
+                      problems.append(
+                          f"{name}: published port must bind loopback, got {host_ip!r}"
+                      )
+          if problems:
+              print("\n".join(problems), file=sys.stderr)
+              sys.exit(1)
+          print("deploy invariants hold")
+          PY

@@ -1,0 +1,3 @@
+Parent HEAD before this card: 34a77f2b feat/rxycode-web. Not pushed.
+RED: ApprovalCard.tsx was missing. 3 failed in 0.89s.
+E2E-WEB-03 screenshots are not produced.

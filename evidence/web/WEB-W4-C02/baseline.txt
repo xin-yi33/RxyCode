@@ -1,0 +1,2 @@
+parent HEAD before WEB-W4-C02: a4d533b655ec6571c14b16f1d6cf93eaeed221c0
+E2E-FULL-02 supervised clicks are not run.

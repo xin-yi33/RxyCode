@@ -69,10 +69,17 @@ DEFAULT_INHERITED_ENV_VARS = (
     )
     if sys.platform == "win32"
     else ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
-) + (
-    "GITHUB_PERSONAL_ACCESS_TOKEN",
-    "GH_TOKEN",
 )
+# 废弃（2026-10-12 安全收紧）：不再对所有 MCP server 广播 GitHub token。
+# 旧行为把 GITHUB_PERSONAL_ACCESS_TOKEN/GH_TOKEN 加进全局继承白名单，任何
+# server（哪怕是无关的天气 server）的子进程都能读到仓库级 PAT；最小权限原则
+# 要求按 server 注入——github 系 server 已由 connect() 里的
+# inject_github_plugin_token 按名字门控注入（mcp/github_auth.py），其它 server
+# 如需该变量应走 mcpServers.<name>.env 显式配置。
+# DEFAULT_INHERITED_ENV_VARS = DEFAULT_INHERITED_ENV_VARS + (
+#     "GITHUB_PERSONAL_ACCESS_TOKEN",
+#     "GH_TOKEN",
+# )
 
 
 class MCPError(RuntimeError):
@@ -346,7 +353,7 @@ class MCPClient:
                 {
                     "protocolVersion": CURRENT_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "RxyCode", "version": "1.4.2"},
+                    "clientInfo": {"name": "RxyCode", "version": "1.4.4"},
                 },
             )
             result = self._result_or_raise(response, "initialize")
@@ -574,6 +581,24 @@ class MCPClient:
                 if not isinstance(description, str):
                     description = ""
                 description = _bounded_text(description, 4000)
+                # 2026-10-12 不可信输入审计：description 原样进模型系统提示，
+                # 命中投毒模式时给模型可见的警告前缀并记日志（不静默注册）。
+                # K3-2：参数 description 同样到达模型（args schema），一并扫描。
+                from .tool_poisoning import (
+                    annotate_poisoned_description,
+                    scan_schema_descriptions,
+                    scan_tool_description,
+                )
+                poison = scan_tool_description(description)
+                poison.extend(scan_schema_descriptions(schema))
+                if poison:
+                    description = annotate_poisoned_description(description, poison)
+                    logger.warning(
+                        "MCP tool %s.%s description flagged: %s",
+                        self.name,
+                        remote_name,
+                        "; ".join(poison),
+                    )
                 annotations = raw.get("annotations", {})
                 if not isinstance(annotations, dict):
                     raise MCPError("MCP tool annotations must be an object")
@@ -1081,6 +1106,11 @@ def load_mcp_servers(config: dict[str, Any]) -> MCPLoadResult:
                     metadata={
                         "source": "mcp",
                         "mcp_risk": mcp_risk,
+                        # 2026-10-12 K3-1：清单基线签原始 schema。args_schema 经
+                        # pydantic 化后序列化只剩 repr，参数类型漂移会漏报；
+                        # 原始 dict 存 metadata，签名直接用它。
+                        "mcp_input_schema": discovered.parameters,
+                        "mcp_output_schema": discovered.output_schema,
                     },
                     args_schema=_build_args_schema(
                         discovered.parameters,

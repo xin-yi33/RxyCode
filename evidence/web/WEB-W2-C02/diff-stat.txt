@@ -1,0 +1,9 @@
+ api_server.py                                      |   8 +
+ .../src/rxycode_server/api/__init__.py             |   1 +
+ .../rxycode-server/src/rxycode_server/api/auth.py  | 246 +++++++++++++++++++++
+ .../src/rxycode_server/api/projects.py             | 127 +++++++++++
+ packages/rxycode-server/src/rxycode_server/main.py |  92 ++++++++
+ pyproject.toml                                     |   2 +
+ tests/web/w2/test_w2_c02_module.py                 |  75 +++++++
+ tests/web/w2/test_w2_c02_unit.py                   | 204 +++++++++++++++++
+ 8 files changed, 755 insertions(+)

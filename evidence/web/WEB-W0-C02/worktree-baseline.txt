@@ -1,0 +1,12 @@
+parent_worktree_commit=10e936e5
+parent_status<<
+(empty)
+>>
+nested_worktree_commit=7e25c6d
+nested_status<<
+(empty)
+>>
+research_file_in_nested_commit_7e25c6d=no
+working_tree_body_has_anchor=false
+working_tree_filename_has_anchor=true
+anchor_ruling=card text records the body gap; historical file was not edited

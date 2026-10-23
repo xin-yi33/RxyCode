@@ -11,6 +11,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ..core.session_runtime import resolve_session_path
+from ..utils.output_capture import append_capture_hints
 
 
 class FormatInput(BaseModel):
@@ -218,10 +219,12 @@ async def run_format_async(
         part.strip() for part in (result["stdout"], result["stderr"]) if part.strip()
     )
     if checkOnly:
-        return "File is properly formatted." if result["success"] else "File needs formatting."
-    if not result["success"]:
-        return f"[error: formatter failed: {detail or result['exit_code']}]"
-    return detail or "File formatted successfully."
+        message = "File is properly formatted." if result["success"] else "File needs formatting."
+    elif not result["success"]:
+        message = f"[error: formatter failed: {detail or result['exit_code']}]"
+    else:
+        message = detail or "File formatted successfully."
+    return append_capture_hints(message, result)
 
 
 format_tool = StructuredTool(

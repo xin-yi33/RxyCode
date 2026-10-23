@@ -1,0 +1,6 @@
+parent HEAD b6fb9ca2
+branch feat/rxycode-web
+upstream: none
+packages/rxycode-core/src/rxycode_core/tools/ absent
+ToolOrchestrator.select_tools accepts hints only
+E2E for this card is not a separate UI harness

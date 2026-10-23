@@ -9,6 +9,7 @@ function harness(sessionId = "sess-a") {
     sessionId: string | null;
     client: {
       request: (method: string, params: unknown) => Promise<unknown>;
+      requestWithTimeout?: (method: string, params: unknown, timeoutMs?: number) => Promise<unknown>;
       rejectAllPending: (err?: Error) => void;
     } | null;
     proc: { exitCode: number | null; kill: () => void; exited: Promise<number> } | null;
@@ -28,7 +29,11 @@ function stubAlive(
   raw: ReturnType<typeof harness>["raw"],
   request: (method: string, params: unknown) => Promise<unknown>,
 ) {
-  raw.client = { request, rejectAllPending: () => {} };
+  raw.client = {
+    request,
+    requestWithTimeout: (method: string, params: unknown) => request(method, params),
+    rejectAllPending: () => {},
+  };
   raw.proc = { exitCode: null, kill() {}, exited: new Promise(() => {}) };
   raw.ready = Promise.resolve();
 }
@@ -75,6 +80,10 @@ describe("stdio todo dock transport", () => {
     let release: (value: unknown) => void = () => {};
     raw.client = {
       request: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      requestWithTimeout: () =>
         new Promise((resolve) => {
           release = resolve;
         }),

@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import sys
 from ctypes import wintypes
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .errors import SandboxUnavailableError
@@ -54,8 +56,7 @@ kernel32.CreateJobObjectW.argtypes = [_PVOID, wintypes.LPCWSTR]
 kernel32.SetInformationJobObject.restype = wintypes.BOOL
 kernel32.SetInformationJobObject.argtypes = [_H, ctypes.c_int, _PVOID, wintypes.DWORD]
 kernel32.QueryInformationJobObject.restype = wintypes.BOOL
-kernel32.QueryInformationJobObject.argtypes = [
-    _H, ctypes.c_int, _PVOID, wintypes.DWORD, _PVOID]
+kernel32.QueryInformationJobObject.argtypes = [_H, ctypes.c_int, _PVOID, wintypes.DWORD, _PVOID]
 kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
 kernel32.AssignProcessToJobObject.argtypes = [_H, _H]
 kernel32.OpenProcess.restype = _H
@@ -75,34 +76,97 @@ advapi32.OpenProcessToken.restype = wintypes.BOOL
 advapi32.OpenProcessToken.argtypes = [_H, wintypes.DWORD, ctypes.POINTER(_H)]
 advapi32.CreateRestrictedToken.restype = wintypes.BOOL
 advapi32.CreateRestrictedToken.argtypes = [
-    _H, wintypes.DWORD, wintypes.DWORD, _PVOID,
-    wintypes.DWORD, _PVOID, wintypes.DWORD, _PVOID, ctypes.POINTER(_H)]
+    _H,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    _PVOID,
+    wintypes.DWORD,
+    _PVOID,
+    wintypes.DWORD,
+    _PVOID,
+    ctypes.POINTER(_H),
+]
 advapi32.SetTokenInformation.restype = wintypes.BOOL
-advapi32.SetTokenInformation.argtypes = [
-    _H, ctypes.c_int, _PVOID, wintypes.DWORD]
+advapi32.SetTokenInformation.argtypes = [_H, ctypes.c_int, _PVOID, wintypes.DWORD]
 advapi32.GetTokenInformation.restype = wintypes.BOOL
 advapi32.GetTokenInformation.argtypes = [
-    _H, ctypes.c_int, _PVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    _H,
+    ctypes.c_int,
+    _PVOID,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
 advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
 advapi32.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_PVOID)]
 advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
-advapi32.ConvertSidToStringSidW.argtypes = [
-    _PVOID, ctypes.POINTER(ctypes.c_wchar_p)]
+advapi32.ConvertSidToStringSidW.argtypes = [_PVOID, ctypes.POINTER(ctypes.c_wchar_p)]
 kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
 kernel32.InitializeProcThreadAttributeList.argtypes = [
-    _PVOID, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+    _PVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.POINTER(ctypes.c_size_t),
+]
 kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
 kernel32.UpdateProcThreadAttribute.argtypes = [
-    _PVOID, wintypes.DWORD, wintypes.DWORD, _PVOID, ctypes.c_size_t, _PVOID, _PVOID]
+    _PVOID,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    _PVOID,
+    ctypes.c_size_t,
+    _PVOID,
+    _PVOID,
+]
 kernel32.DeleteProcThreadAttributeList.restype = None
 kernel32.DeleteProcThreadAttributeList.argtypes = [_PVOID]
 kernel32.LocalFree.restype = _H
 kernel32.LocalFree.argtypes = [_PVOID]
+advapi32.FreeSid.restype = None
+advapi32.FreeSid.argtypes = [_PVOID]
+
+userenv = ctypes.windll.userenv
+userenv.DeriveAppContainerSidFromAppContainerName.restype = ctypes.c_long
+userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [
+    wintypes.LPCWSTR,
+    ctypes.POINTER(_PVOID),
+]
+userenv.CreateAppContainerProfile.restype = ctypes.c_long
+userenv.CreateAppContainerProfile.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(_PVOID),
+]
+userenv.DeleteAppContainerProfile.restype = ctypes.c_long
+userenv.DeleteAppContainerProfile.argtypes = [wintypes.LPCWSTR]
 
 advapi32.CreateProcessWithTokenW.restype = wintypes.BOOL
 advapi32.CreateProcessWithTokenW.argtypes = [
-    _H, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
-    _PVOID, wintypes.LPCWSTR, _PVOID, _PVOID]
+    _H,
+    wintypes.DWORD,
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    _PVOID,
+    wintypes.LPCWSTR,
+    _PVOID,
+    _PVOID,
+]
+kernel32.CreateProcessW.restype = wintypes.BOOL
+kernel32.CreateProcessW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    _PVOID,
+    _PVOID,
+    wintypes.BOOL,
+    wintypes.DWORD,
+    _PVOID,
+    wintypes.LPCWSTR,
+    _PVOID,
+    _PVOID,
+]
 
 # ---- Job Object 常量 -------------------------------------------------------
 _JOB_NAME = None
@@ -124,8 +188,8 @@ PROCESS_SET_QUOTA = 0x0100
 PROCESS_TERMINATE = 0x0001
 TokenIntegrityLevel = 25
 SE_GROUP_INTEGRITY = 0x00000020
-LOW_INTEGRITY_SID = "S-1-16-4096"       # Low Mandatory Level
-RESTRICTED_GROUP_SID = "S-1-5-12"        # NT AUTHORITY\RESTRICTED
+LOW_INTEGRITY_SID = "S-1-16-4096"  # Low Mandatory Level
+RESTRICTED_GROUP_SID = "S-1-5-12"  # NT AUTHORITY\RESTRICTED
 
 
 class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
@@ -143,10 +207,17 @@ class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
 
 
 class IO_COUNTERS(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_uint64) for name in (
-        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-    )]
+    _fields_ = [
+        (name, ctypes.c_uint64)
+        for name in (
+            "ReadOperationCount",
+            "WriteOperationCount",
+            "OtherOperationCount",
+            "ReadTransferCount",
+            "WriteTransferCount",
+            "OtherTransferCount",
+        )
+    ]
 
 
 class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
@@ -166,23 +237,33 @@ class TOKEN_MANDATORY_LABEL(ctypes.Structure):
 
 class STARTUPINFOW(ctypes.Structure):
     _fields_ = [
-        ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
-        ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
-        ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
-        ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
-        ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
-        ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
-        ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        ("dwX", wintypes.DWORD),
+        ("dwY", wintypes.DWORD),
+        ("dwXSize", wintypes.DWORD),
+        ("dwYSize", wintypes.DWORD),
+        ("dwXCountChars", wintypes.DWORD),
+        ("dwYCountChars", wintypes.DWORD),
+        ("dwFillAttribute", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
         ("lpReserved2", ctypes.c_void_p),
-        ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
         ("hStdError", wintypes.HANDLE),
     ]
 
 
 class PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [
-        ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
-        ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+        ("hProcess", wintypes.HANDLE),
+        ("hThread", wintypes.HANDLE),
+        ("dwProcessId", wintypes.DWORD),
+        ("dwThreadId", wintypes.DWORD),
     ]
 
 
@@ -250,13 +331,15 @@ def open_job(plan: JobPlan) -> int:
 def assign_pid_to_job_handle(job_handle: int, pid: int) -> None:
     proc = kernel32.OpenProcess(
         PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-        False, pid,
+        False,
+        pid,
     )
     if not proc:
         raise _win_err(f"OpenProcess 失败（pid={pid}）")
     try:
         if not kernel32.AssignProcessToJobObject(
-                wintypes.HANDLE(job_handle), wintypes.HANDLE(proc)):
+            wintypes.HANDLE(job_handle), wintypes.HANDLE(proc)
+        ):
             raise _win_err(f"AssignProcessToJobObject 失败（pid={pid}）")
     finally:
         kernel32.CloseHandle(wintypes.HANDLE(proc))
@@ -419,39 +502,45 @@ def query_job_limits(job_handle: int) -> tuple[int, int, int]:
 
 
 def unenforced_constraints(policy: SandboxPolicy) -> list[str]:
-    """列出 Windows Job-only 形态**无法落实**的策略约束（诚实清单）。
+    """列出 Windows 受限令牌形态**无法落实**的策略约束（诚实清单）。
 
-    Job Object 管进程树连坐回收 + 进程数/内存限额；它不管文件路径写域、
-    网络、读遮蔽（Codex 的 deny-SID/能力 SID 层留待 v1.4.2 接缝）。调用方
-    必须据此 fail_closed 拒绝或响亮降级——绝不返回仿佛全策略已落实的结果。
+    Job Object 管进程树连坐回收 + 进程数/内存限额；受限令牌 + Low IL
+    （tokenlaunch 启动器路径）落实 ``mode=workspace`` 写域——MIC 的
+    No-Write-Up 让 Low IL 子进程写不了默认 Medium IL 的宿主文件，工作区
+    经 icacls 标 Low 后按 DACL 可写。仍不管：read-only 全域禁写粒度、
+    网络、读遮蔽（deny-SID/能力 SID 层留待后续接缝）。调用方必须据此
+    fail_closed 拒绝或响亮降级——绝不返回仿佛全策略已落实的结果。
     """
     missing: list[str] = []
     if policy.mode == "read-only":
         missing.append("mode=read-only（全文件系统禁写）")
-    else:
-        missing.append("mode=workspace（写域收窄 workspace/extra_write_roots）")
-    if policy.network == "none":
+    if policy.network == "none" and (
+        policy.mode == "read-only" or policy.on_missing_capability == "fail_closed"
+    ):
+        # workspace 模式走 AppContainer：无能力 SID 即无网络，network=none
+        # 主路径已落实；但运行期可能退化到 Low IL 兜底（网络不在管内），
+        # 所以 fail_closed 下仍按「不可保证」列出。read-only 是 Job-only
+        # 形态，网络始终落空。
         missing.append("network=none（禁网）")
     if policy.deny_read_globs:
         missing.append("deny_read_globs（敏感路径读遮蔽）")
     return missing
 
 
-def plan_windows_command(
-    policy: SandboxPolicy, argv: list[str], cwd: Any
-) -> WrappedCommand:
-    """v1.4.1 接线形态：argv 原样（PowerShell 包装在 shell.py 完成），
-    Job 计划从 policy 生成；禁止 I/O（能力是运行期再证）。
+def plan_windows_command(policy: SandboxPolicy, argv: list[str], cwd: Any) -> WrappedCommand:
+    """spawn 交付：workspace 模式包 ``tokenlaunch`` 启动器 argv——子进程
+    以受限令牌 + Low IL 出生（写域由 MIC 内核强制），Job 计划照旧返回
+    给调用方落到启动器 root（子孙经 Job 继承自动入列，kill-on-close
+    连坐回收整棵树）。read-only/网络/读遮蔽等落空约束按 policy 语义
+    fail_closed 或响亮降级，绝不静默。
 
-    能力诚实（2026-10-07 审计修）：Job-only 只落实限额 + kill-on-close；
-    落空约束按 policy 语义处置——fail_closed 抛 SandboxUnavailableError，
-    downgrade 响亮降级（logger.warning + downgraded=True + detail 列明），
-    绝不返回仿佛全部策略已落实的 applied=True。"""
-    del cwd
+    启动器形态是异步 spawn 链拿到受限令牌的唯一桥（asyncio 无法直接注入
+    token——launcher 把自己的管道句柄转交给受限子进程）。
+    """
     missing = unenforced_constraints(policy)
     if missing and policy.on_missing_capability == "fail_closed":
         raise SandboxUnavailableError(
-            "os_sandbox fail_closed：Windows Job-only 后端无法落实 "
+            "os_sandbox fail_closed：Windows 受限令牌后端无法落实 "
             + "、".join(missing)
             + "。放宽约束改用 on_missing_capability=downgrade（显式降级），"
             "或迁往 bwrap/seatbelt 宿主。"
@@ -461,6 +550,35 @@ def plan_windows_command(
         max_processes=policy.max_processes,
         kill_on_close=True,
     )
+    if policy.mode == "workspace":
+        # 用启动器的绝对文件路径而不是 -m：spawn 的 cwd 是用户工作区，
+        # 包导入路径不保证可见（tokenlaunch 自带 sys.path 自举）。
+        launcher = [
+            sys.executable,
+            str(Path(__file__).with_name("tokenlaunch.py")),
+            "--workspace",
+            str(policy.workspace_root),
+        ]
+        for root in policy.extra_write_roots:
+            launcher += ["--write", str(root)]
+        launcher += ["--cwd", str(cwd or Path.cwd()), "--", *argv]
+        detail = "Windows AppContainer 能力 SID + Low IL（写域内核隔离）+ Job（限额 + kill-on-close）"
+        if missing:
+            detail += "；未落实：" + "、".join(missing)
+            _logger.warning(
+                "os_sandbox 显式降级：Windows 后端未落实 %s——本次命令的写域"
+                "已由 Low IL 收窄，其余约束未落实。要拒绝请设 "
+                "execution.os_sandbox.on_missing_capability=fail_closed。",
+                "、".join(missing),
+            )
+        return WrappedCommand(
+            argv=launcher,
+            job_plan=plan,
+            backend="job+token",
+            applied=True,
+            downgraded=bool(missing),
+            detail=detail,
+        )
     detail = "Windows Job Object（限额 + kill-on-close）"
     if missing:
         detail += "；未落实：" + "、".join(missing)
@@ -489,17 +607,15 @@ class RestrictedProcess:
     thread_handle: int
     job_handle: int = 0
     token_handle: int = 0
-    detail: str = ""           # "low-il" | "restricted-only (IL unsupported: ...)"
+    detail: str = ""  # "low-il" | "restricted-only (IL unsupported: ...)"
 
     def wait(self, timeout_ms: int = 15000) -> int:
-        waited = kernel32.WaitForSingleObject(
-            wintypes.HANDLE(self.process_handle), timeout_ms)
+        waited = kernel32.WaitForSingleObject(wintypes.HANDLE(self.process_handle), timeout_ms)
         if waited != 0:  # WAIT_OBJECT_0
             kernel32.TerminateProcess(wintypes.HANDLE(self.process_handle), 1)
             kernel32.WaitForSingleObject(wintypes.HANDLE(self.process_handle), 3000)
         code = wintypes.DWORD(0)
-        kernel32.GetExitCodeProcess(
-            wintypes.HANDLE(self.process_handle), ctypes.byref(code))
+        kernel32.GetExitCodeProcess(wintypes.HANDLE(self.process_handle), ctypes.byref(code))
         return int(code.value)
 
     def close(self) -> None:
@@ -521,14 +637,21 @@ def _sid_for(sid_text: str) -> ctypes.c_void_p:
 def _create_low_integrity_restricted_token() -> int:
     current = wintypes.HANDLE()
     access = TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY
-    if not advapi32.OpenProcessToken(
-            kernel32.GetCurrentProcess(), access, ctypes.byref(current)):
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), access, ctypes.byref(current)):
         raise _win_err("OpenProcessToken 失败")
     try:
         new_token = wintypes.HANDLE()
         if not advapi32.CreateRestrictedToken(
-                current, DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
-                0, None, 0, None, 0, None, ctypes.byref(new_token)):
+            current,
+            DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
+            0,
+            None,
+            0,
+            None,
+            0,
+            None,
+            ctypes.byref(new_token),
+        ):
             raise _win_err("CreateRestrictedToken 失败（DISABLE_MAX_PRIVILEGE|LUA）")
         return new_token.value
     finally:
@@ -549,23 +672,252 @@ def _new_low_il_attribute_list() -> tuple[ctypes.Array, ctypes.c_void_p]:
     label_sid = _sid_for(LOW_INTEGRITY_SID)
     label = TOKEN_MANDATORY_LABEL(Label=label_sid.value, Attributes=SE_GROUP_INTEGRITY)
     if not kernel32.UpdateProcThreadAttribute(
-            buf, 0, PROC_THREAD_ATTRIBUTE_MANDATORY_LABEL,
-            ctypes.byref(label), ctypes.sizeof(label), None, None):
+        buf,
+        0,
+        PROC_THREAD_ATTRIBUTE_MANDATORY_LABEL,
+        ctypes.byref(label),
+        ctypes.sizeof(label),
+        None,
+        None,
+    ):
         kernel32.DeleteProcThreadAttributeList(buf)
         kernel32.LocalFree(label_sid)
         raise _win_err("UpdateProcThreadAttribute 失败（Low IL 属性）")
     return buf, label_sid
 
 
+STARTF_USESTDHANDLES = 0x00000100
+STD_INPUT_HANDLE = -10 & 0xFFFFFFFF
+STD_OUTPUT_HANDLE = -11 & 0xFFFFFFFF
+STD_ERROR_HANDLE = -12 & 0xFFFFFFFF
+PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
+
+
+class SID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+
+class SECURITY_CAPABILITIES(ctypes.Structure):
+    _fields_ = [
+        ("AppContainerSid", ctypes.c_void_p),
+        ("Capabilities", ctypes.c_void_p),  # PSID_AND_ATTRIBUTES
+        ("CapabilityCount", wintypes.DWORD),
+        ("Reserved", wintypes.DWORD),
+    ]
+
+
+def derive_appcontainer_sid(name: str) -> tuple[ctypes.c_void_p, str]:
+    """派生（不注册）稳定的能力 SID——同一名字永远得到同一 SID，可先用
+    ``icacls /grant \"*<sid>\"`` 给写域授权再 spawn。返回 (sid_ptr,
+    sid_text)；调用方用完 ``advapi32.FreeSid(sid_ptr)``。"""
+    sid = ctypes.c_void_p()
+    hr = userenv.DeriveAppContainerSidFromAppContainerName(name, ctypes.byref(sid))
+    if hr != 0:
+        raise SandboxUnavailableError(
+            f"DeriveAppContainerSidFromAppContainerName 失败（HRESULT=0x{hr & 0xFFFFFFFF:08x}）"
+        )
+    text = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        advapi32.FreeSid(sid)
+        raise _win_err("ConvertSidToStringSid 失败（AppContainer SID）")
+    return sid, str(text.value)
+
+
+def ensure_appcontainer(name: str) -> tuple[ctypes.c_void_p, str]:
+    """确保 AppContainer profile 已注册并返回其 SID——SECURITY_CAPABILITIES
+    spawn 要求 profile 真实存在（只 Derive 不注册时 CreateProcessW 报
+    ERROR_FILE_NOT_FOUND）。已存在时回退 Derive 拿同一 SID。"""
+    sid = ctypes.c_void_p()
+    hr = userenv.CreateAppContainerProfile(
+        name,
+        "RxyCode Sandboxed Commands",
+        "Commands executed inside the RxyCode kernel sandbox",
+        None,
+        0,
+        ctypes.byref(sid),
+    )
+    if hr != 0:
+        if (hr & 0xFFFFFFFF) != 0x800700B7:  # ERROR_ALREADY_EXISTS
+            raise SandboxUnavailableError(
+                f"CreateAppContainerProfile 失败（HRESULT=0x{hr & 0xFFFFFFFF:08x}）"
+            )
+        sid = ctypes.c_void_p()
+        hr = userenv.DeriveAppContainerSidFromAppContainerName(name, ctypes.byref(sid))
+        if hr != 0:
+            raise SandboxUnavailableError(
+                f"DeriveAppContainerSidFromAppContainerName 失败（HRESULT=0x{hr & 0xFFFFFFFF:08x}）"
+            )
+    text = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        advapi32.FreeSid(sid)
+        raise _win_err("ConvertSidToStringSid 失败（AppContainer SID）")
+    return sid, str(text.value)
+
+
+def spawn_appcontainer_sync(
+    argv: list[str],
+    cwd: str,
+    appcontainer_sid: ctypes.c_void_p,
+    *,
+    stdio: tuple[int, int, int] | None = None,
+) -> RestrictedProcess:
+    """AppContainer spawn（免特权、内核强制）：子进程出生即 Low IL 且只
+    能触碰授予该能力 SID 的对象——工作区经 icacls 授权后成为唯一可写
+    域（Chromium 子进程沙箱同款机制；普通用户可用，不需 SE_IMPERSONATE）。
+    """
+    if not argv:
+        raise ValueError("argv 为空")
+    cmdline = " ".join(f'"{part}"' if " " in part else part for part in argv)
+    flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT
+    info = STARTUPINFOEXW()
+    info.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+    if stdio is not None:
+        info.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
+        info.StartupInfo.hStdInput = wintypes.HANDLE(stdio[0])
+        info.StartupInfo.hStdOutput = wintypes.HANDLE(stdio[1])
+        info.StartupInfo.hStdError = wintypes.HANDLE(stdio[2])
+    caps = SECURITY_CAPABILITIES(
+        AppContainerSid=appcontainer_sid.value,
+        Capabilities=None,
+        CapabilityCount=0,
+        Reserved=0,
+    )
+    size = ctypes.c_size_t(0)
+    kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+    attr_buf = ctypes.create_string_buffer(size.value)
+    if not kernel32.InitializeProcThreadAttributeList(attr_buf, 1, 0, ctypes.byref(size)):
+        raise _win_err("InitializeProcThreadAttributeList 失败")
+    if not kernel32.UpdateProcThreadAttribute(
+        attr_buf,
+        0,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        ctypes.byref(caps),
+        ctypes.sizeof(caps),
+        None,
+        None,
+    ):
+        kernel32.DeleteProcThreadAttributeList(attr_buf)
+        raise _win_err("UpdateProcThreadAttribute 失败（SECURITY_CAPABILITIES）")
+    info.lpAttributeList = ctypes.cast(attr_buf, ctypes.c_void_p)
+    pi = PROCESS_INFORMATION()
+    try:
+        created = kernel32.CreateProcessW(
+            None,
+            cmdline,
+            None,
+            None,
+            True,
+            flags,
+            None,
+            str(cwd),
+            ctypes.byref(info),
+            ctypes.byref(pi),
+        )
+    finally:
+        kernel32.DeleteProcThreadAttributeList(attr_buf)
+    if not created:
+        raise _win_err("CreateProcessW 失败（AppContainer spawn）")
+    try:
+        suspend_count = kernel32.ResumeThread(wintypes.HANDLE(pi.hThread))
+        if suspend_count == 0xFFFFFFFF:
+            raise _win_err("ResumeThread 失败")
+        return RestrictedProcess(
+            pid=int(pi.dwProcessId),
+            process_handle=int(pi.hProcess),
+            thread_handle=int(pi.hThread),
+            detail="appcontainer",
+        )
+    except BaseException:
+        kernel32.TerminateProcess(wintypes.HANDLE(pi.hProcess), 1)
+        kernel32.WaitForSingleObject(wintypes.HANDLE(pi.hProcess), 3000)
+        _close_handle(pi.hThread)
+        _close_handle(pi.hProcess)
+        raise
+
+
+def spawn_low_il_sync(
+    argv: list[str],
+    cwd: str,
+    *,
+    stdio: tuple[int, int, int] | None = None,
+) -> RestrictedProcess:
+    """免特权 Low IL spawn：普通 ``CreateProcessW`` +
+    ``PROC_THREAD_ATTRIBUTE_MANDATORY_LABEL`` 让子进程出生即低完整性。
+
+    ``CreateProcessWithTokenW`` 要求调用方持 SE_IMPERSONATE_NAME（普通
+    交互进程没有），因此普通权限下的内核写隔离走本条路径：Low IL 子
+    进程受 MIC No-Write-Up 约束——写不了默认 Medium IL 的宿主文件，标
+    Low 的工作区按 DACL 可写。受限令牌（组/特权裁剪）是
+    ``spawn_restricted_sync`` 的加强项，需要特权宿主才有意义。
+
+    ``stdio`` 为 (stdin, stdout, stderr) 的可继承 Win32 句柄——
+    launcher 用它把调用方管道原样转交给子进程。
+    """
+    if not argv:
+        raise ValueError("argv 为空")
+    cmdline = " ".join(f'"{part}"' if " " in part else part for part in argv)
+    flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT
+    info = STARTUPINFOEXW()
+    info.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+    if stdio is not None:
+        info.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
+        info.StartupInfo.hStdInput = wintypes.HANDLE(stdio[0])
+        info.StartupInfo.hStdOutput = wintypes.HANDLE(stdio[1])
+        info.StartupInfo.hStdError = wintypes.HANDLE(stdio[2])
+    attr_buf, label_sid = _new_low_il_attribute_list()
+    info.lpAttributeList = ctypes.cast(attr_buf, ctypes.c_void_p)
+    pi = PROCESS_INFORMATION()
+    try:
+        created = kernel32.CreateProcessW(
+            None,
+            cmdline,
+            None,
+            None,
+            True,  # bInheritHandles：stdio 句柄转交子进程
+            flags,
+            None,
+            str(cwd),
+            ctypes.byref(info),
+            ctypes.byref(pi),
+        )
+    finally:
+        kernel32.DeleteProcThreadAttributeList(attr_buf)
+        kernel32.LocalFree(label_sid)
+    if not created:
+        raise _win_err("CreateProcessW 失败（Low IL spawn）")
+    try:
+        suspend_count = kernel32.ResumeThread(wintypes.HANDLE(pi.hThread))
+        if suspend_count == 0xFFFFFFFF:
+            raise _win_err("ResumeThread 失败")
+        return RestrictedProcess(
+            pid=int(pi.dwProcessId),
+            process_handle=int(pi.hProcess),
+            thread_handle=int(pi.hThread),
+            detail="low-il (no restricted token — unprivileged host)",
+        )
+    except BaseException:
+        kernel32.TerminateProcess(wintypes.HANDLE(pi.hProcess), 1)
+        kernel32.WaitForSingleObject(wintypes.HANDLE(pi.hProcess), 3000)
+        _close_handle(pi.hThread)
+        _close_handle(pi.hProcess)
+        raise
+
+
 def spawn_restricted_sync(
     argv: list[str],
     cwd: str,
     policy: SandboxPolicy,
+    *,
+    stdio: tuple[int, int, int] | None = None,
 ) -> RestrictedProcess:
     """Codex 路线同步原语：受限令牌 + Low IL + 可挂 Job + ResumeThread。
 
     返回 ``RestrictedProcess``（调用方持有，wait/close 自查）。
     cmdline 首个拼接带引号；argv[0] 必须是可执行文件全名（cmd.exe 等）。
+
+    ``stdio``（可选）为 (stdin, stdout, stderr) 的 Win32 句柄三元组——
+    launcher 用它把调用方给的管道直接交给受限子进程（post-W7 track C：
+    让异步 spawn 链借 launcher 间接拿到 token spawn 的输出）。
     """
     if not argv:
         raise ValueError("argv 为空")
@@ -577,14 +929,17 @@ def spawn_restricted_sync(
             + "（Low IL 是粗粒度整体性约束，不是按路径的策略域）。"
         )
     token = _create_low_integrity_restricted_token()
-    cmdline = " ".join(
-        f'"{part}"' if " " in part else part for part in argv
-    )
+    cmdline = " ".join(f'"{part}"' if " " in part else part for part in argv)
     detail = "low-il"
     flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
     attr_buf, label_sid = None, None
     info = STARTUPINFOEXW()
     info.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+    if stdio is not None:
+        info.StartupInfo.dwFlags |= STARTF_USESTDHANDLES
+        info.StartupInfo.hStdInput = wintypes.HANDLE(stdio[0])
+        info.StartupInfo.hStdOutput = wintypes.HANDLE(stdio[1])
+        info.StartupInfo.hStdError = wintypes.HANDLE(stdio[2])
     try:
         attr_buf, label_sid = _new_low_il_attribute_list()
         info.lpAttributeList = ctypes.cast(attr_buf, ctypes.c_void_p)
@@ -636,11 +991,13 @@ def spawn_restricted_sync(
     job = 0
     try:
         if policy.max_memory_mb > 0 or policy.max_processes > 0:
-            job = open_job(JobPlan(
-                max_memory_bytes=policy.max_memory_mb * 1024 * 1024,
-                max_processes=policy.max_processes,
-                kill_on_close=True,
-            ))
+            job = open_job(
+                JobPlan(
+                    max_memory_bytes=policy.max_memory_mb * 1024 * 1024,
+                    max_processes=policy.max_processes,
+                    kill_on_close=True,
+                )
+            )
             assign_pid_to_job_handle(job, pi.dwProcessId)
         # ResumeThread 失败返回 0xFFFFFFFF（DWORD）——Python 里它是真值，
         # 废弃代码（2026-10-06 版）：if not kernel32.ResumeThread(...) 会把
@@ -674,21 +1031,19 @@ def query_token_integrity(pid: int) -> str:
         raise _win_err(f"OpenProcess 失败（pid={pid}）")
     try:
         token = wintypes.HANDLE()
-        if not advapi32.OpenProcessToken(
-                wintypes.HANDLE(proc), TOKEN_QUERY, ctypes.byref(token)):
+        if not advapi32.OpenProcessToken(wintypes.HANDLE(proc), TOKEN_QUERY, ctypes.byref(token)):
             raise _win_err("OpenProcessToken(子进程) 失败")
         try:
             size = wintypes.DWORD(0)
-            advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0,
-                                         ctypes.byref(size))
+            advapi32.GetTokenInformation(token, TokenIntegrityLevel, None, 0, ctypes.byref(size))
             buf = ctypes.create_string_buffer(size.value)
             if not advapi32.GetTokenInformation(
-                    token, TokenIntegrityLevel, buf, size, ctypes.byref(size)):
+                token, TokenIntegrityLevel, buf, size, ctypes.byref(size)
+            ):
                 raise _win_err("GetTokenInformation(Integrity) 失败")
             label = ctypes.cast(buf, ctypes.POINTER(TOKEN_MANDATORY_LABEL)).contents
             text = ctypes.c_wchar_p()
-            if not advapi32.ConvertSidToStringSidW(
-                    label.Label, ctypes.byref(text)):
+            if not advapi32.ConvertSidToStringSidW(label.Label, ctypes.byref(text)):
                 raise _win_err("ConvertSidToStringSid 失败")
             return str(text.value or "")
         finally:
@@ -711,17 +1066,16 @@ def token_group_has(pid: int, sid_text: str) -> bool:
         raise _win_err(f"OpenProcess 失败（pid={pid}）")
     try:
         token = wintypes.HANDLE()
-        if not advapi32.OpenProcessToken(
-                wintypes.HANDLE(proc), TOKEN_QUERY, ctypes.byref(token)):
+        if not advapi32.OpenProcessToken(wintypes.HANDLE(proc), TOKEN_QUERY, ctypes.byref(token)):
             raise _win_err("OpenProcessToken(子进程) 失败")
         try:
             size = wintypes.DWORD(0)
             token_groups = 2  # TokenGroups
-            advapi32.GetTokenInformation(token, token_groups, None, 0,
-                                         ctypes.byref(size))
+            advapi32.GetTokenInformation(token, token_groups, None, 0, ctypes.byref(size))
             buf = ctypes.create_string_buffer(size.value)
             if size.value == 0 or not advapi32.GetTokenInformation(
-                    token, token_groups, buf, size, ctypes.byref(size)):
+                token, token_groups, buf, size, ctypes.byref(size)
+            ):
                 raise _win_err("GetTokenInformation(Groups) 失败")
             count = int.from_bytes(buf.raw[:4], "little")
             entry = _SID_AND_ATTRIBUTES()
@@ -735,8 +1089,10 @@ def token_group_has(pid: int, sid_text: str) -> bool:
                     ctypes.sizeof(entry),
                 )
                 text = ctypes.c_wchar_p()
-                if advapi32.ConvertSidToStringSidW(
-                        entry.Sid, ctypes.byref(text)) and text.value == sid_text:
+                if (
+                    advapi32.ConvertSidToStringSidW(entry.Sid, ctypes.byref(text))
+                    and text.value == sid_text
+                ):
                     return True
             return False
         finally:

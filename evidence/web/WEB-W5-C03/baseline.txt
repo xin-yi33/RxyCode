@@ -1,0 +1,4 @@
+parent: 9d6976bc297e1701561deae0ccf237aa5fd0708d
+branch: feat/rxycode-web
+e2e: no independent UI E2E
+checkout: inside the sandbox, not a host git clone

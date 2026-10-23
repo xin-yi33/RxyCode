@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to RxyCode are documented in this file.
 
@@ -10,6 +10,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 No unreleased changes recorded.
+
+---
+
+## [1.4.4] - 2026-10-22
+
+Web release: `feat/rxycode-web` lands the hosted product on top of the shared
+harness. Product metadata is `1.4.4`; JSON-RPC remains `1.1.0`. The CLI,
+OpenTUI, and Desktop surfaces keep their v1.4.3 behavior — no new Desktop
+installer is published.
+
+- **RxyCode Web (new surface)**: browser console at `https://rxycode.xyz` —
+  visitor shell, email+code auth with ALTCHA proof-of-work and per-IP /
+  per-account rate ceilings, single-device login lock with takeover, BYOK
+  key vault (AES-256-GCM, provider discovery, model picker in the composer),
+  durable runs on PostgreSQL with worker leases, Redis SSE fan-out, per-run
+  userns sandboxes, session workspace file list/download, Markdown tool
+  cards and collapsible reasoning blocks, mobile viewport support.
+- **Device bridge**: `rxycode connect` pairs a local machine over outbound
+  WSS; the cloud dispatches bash invocations through an approval inbox,
+  confined to the connect workspace root — verified end-to-end on Windows.
+- **Ops**: worker replicas capped at 3 (`RXYCODE_WORKER_REPLICAS`), daily
+  pg_dump backup cron, tenant-isolated workspaces, C0/NUL sanitization at
+  the API boundary, pending→cancelled fast path.
+
+See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.4.md) and the
+full [v1.4.4 changelog](docs/release-notes/CHANGELOG_v1.4.4.md).
+
+## [1.4.3] - 2026-10-14
+
+CLI / OpenTUI release. Product metadata is `1.4.3`; JSON-RPC remains
+`1.1.0`. Ships one source distribution, `rxycode-1.4.3.tar.gz`. No new
+Desktop installer.
+
+### Added
+
+- On-demand MCP and plugin schemas through `tool_search`, bound to the real
+  message context. Full discoveries stay out of generic dedupe and the
+  2000-character tool-output cut.
+- Syntax and linter findings on code writes. Python uses `compile` plus
+  ruff `F` and `E9`.
+- A hard shell blacklist for catastrophic Linux, macOS, and Windows commands.
+  Approval and `full_auto` cannot override it.
+- Head-and-tail presentation for command output longer than 200 lines, with
+  the full text stored for `read`.
+- Tool audit records with duration, session, context, success rate, and
+  alerts for repeated failures, timeouts, and spill failures.
+
+See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.3.md) and the
+[development changelog](docs/release-notes/CHANGELOG_v1.4.3.md).
 
 ## [1.4.2] - 2026-10-09
 
@@ -38,8 +87,9 @@ Ships one source distribution, not a new Desktop installer.
 ### Added
 
 - Model-written `todo_write` on the existing task store, authoritative
-  TodoSnapshot events and `todo/get`, and an OpenTUI dock. `Ctrl+T` toggles
-  Todo; `Ctrl+E` toggles thinking.
+  TodoSnapshot events and `todo/get`, and an OpenTUI dock. `Ctrl+E` toggles
+  Todo; `Ctrl+T` toggles thinking (keymap corrected in v1.4.3: `Ctrl+T` has
+  always been the thinking toggle — see CHANGELOG_v1.4.3).
 - A model-facing status band shared by the fast and graph paths. Todo
   projection and recovery read persisted state without another Todo-summary
   model call.

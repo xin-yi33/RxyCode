@@ -21,9 +21,10 @@ export type StatusSegment = { key: string; text: string; fg: string; bold?: bool
 
 // 2026-10-09 修复：快捷键段被整段剪没时 Ctrl+P和法律其余提示完全不可见
 // （终端 <126 列实测）——先试全文，放不下退紧凑文案，再放不下才剪。
-// 紧凑版必须保留 Ctrl+P（设置/命令面板入口）与 Ctrl+T:Todo。
-const SHORTCUTS_FULL = "Tab:切换 /:命令 Ctrl+E:思考 Ctrl+T:Todo Ctrl+P:设置";
-const SHORTCUTS_COMPACT = "Tab切换 /命令 Ctrl+P设置 Ctrl+T:Todo";
+// 紧凑版必须保留 Ctrl+P（设置/命令面板入口）与 Ctrl+T:思考（2026-10-11
+// 键位换回：Ctrl+T=思考展开，Todo 移到 Ctrl+E）。
+const SHORTCUTS_FULL = "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+E:Todo Ctrl+P:设置";
+const SHORTCUTS_COMPACT = "Tab切换 /命令 Ctrl+P设置 Ctrl+T:思考";
 
 /** Classic Ink StatusBar segments (multi-color). */
 export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
@@ -48,7 +49,7 @@ export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
       fg: input.thinkingExpanded ? C.green : C.overlay2,
     },
     { key: "cancel", text: "Esc:终止", fg: C.overlay2 },
-    { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+E:思考 Ctrl+T:Todo Ctrl+P:设置", fg: C.overlay2 },
+    { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+E:Todo Ctrl+P:设置", fg: C.overlay2 },
   ];
   if (input.teamRole) {
     all.splice(4, 0, { key: "teamRole", text: `[${input.teamRole}]`, fg: C.yellow, bold: true });

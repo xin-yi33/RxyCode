@@ -1,0 +1,9 @@
+command: D:\Anaconda3\python.exe -m pytest tests/web/w6/test_w6_c02_unit.py tests/web/w6/test_w6_c02_module.py -q --tb=line
+cwd: D:\agent-demo\RxyCode\RxyCode1_1_0
+parent HEAD: d3df8710
+result: 3 failed in 0.30s
+
+FAILED tests/web/w6/test_w6_c02_unit.py::test_w6_c02_contract - ModuleNotFoundError: No module named 'rxycode_core.tools.coding_workflow'
+FAILED tests/web/w6/test_w6_c02_unit.py::test_w6_c02_negative - ModuleNotFoundError: No module named 'rxycode_core.tools.coding_workflow'
+FAILED tests/web/w6/test_w6_c02_module.py::test_w6_c02_integration - ModuleNotFoundError: No module named 'rxycode_core.tools.coding_workflow'
+3 failed in 0.30s

@@ -507,7 +507,7 @@ async def test_interrupt_before_prompt_task_runs_still_answers():
     worker = AgentWorker()
     worker._agent = object()
 
-    def fake_bind(session_id, tui):
+    def fake_bind(session_id, tui, **kwargs):
         return (None, None)
 
     def fake_reset(tokens):
@@ -524,7 +524,7 @@ async def test_interrupt_before_prompt_task_runs_still_answers():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", fake_bind)
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", fake_reset)
-    monkeypatch.setattr("appserver.agent_worker.Session", _BlockingSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: _BlockingSession)
     messages: list[dict] = []
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",
@@ -1077,7 +1077,7 @@ async def test_worker_interrupt_cancels_run_task(monkeypatch):
     slow = _SlowAgent()
     worker._agent = slow
 
-    def fake_bind(session_id, tui):
+    def fake_bind(session_id, tui, **kwargs):
         return (None, None)
 
     def fake_reset(tokens):
@@ -1092,7 +1092,7 @@ async def test_worker_interrupt_cancels_run_task(monkeypatch):
 
     monkeypatch.setattr("appserver.agent_worker.bind_prompt_context", fake_bind)
     monkeypatch.setattr("appserver.agent_worker.reset_prompt_context", fake_reset)
-    monkeypatch.setattr("appserver.agent_worker.Session", FakeSession)
+    monkeypatch.setattr("appserver.agent_worker.session_type_for_worker", lambda: FakeSession)
     messages: list[dict] = []
     monkeypatch.setattr(
         "appserver.agent_worker.write_message",

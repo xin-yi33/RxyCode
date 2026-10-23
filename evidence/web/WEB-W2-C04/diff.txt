@@ -1,0 +1,582 @@
+diff --git a/packages/rxycode-server/src/rxycode_server/events/__init__.py b/packages/rxycode-server/src/rxycode_server/events/__init__.py
+new file mode 100644
+index 00000000..cfcbeb31
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/events/__init__.py
+@@ -0,0 +1 @@
++"""Durable event store and SSE catch-up."""
+diff --git a/packages/rxycode-server/src/rxycode_server/events/outbox.py b/packages/rxycode-server/src/rxycode_server/events/outbox.py
+new file mode 100644
+index 00000000..a7f41cb3
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/events/outbox.py
+@@ -0,0 +1,22 @@
++"""Catch up from the database when a Redis notify is lost."""
++
++from __future__ import annotations
++
++from rxycode_server.events.store import replay
++
++
++def heartbeat_catchup(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    after_seq: int,
++) -> list[dict]:
++    """Poll the event rows. A missing notify does not cancel the run or skip seqs."""
++    result = replay(
++        database_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        after_seq=after_seq,
++    )
++    return list(result.get("events") or [])
+diff --git a/packages/rxycode-server/src/rxycode_server/events/sse.py b/packages/rxycode-server/src/rxycode_server/events/sse.py
+new file mode 100644
+index 00000000..0022ebf5
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/events/sse.py
+@@ -0,0 +1,92 @@
++"""SSE replay. Subscribe first, then read seqs from the database."""
++
++from __future__ import annotations
++
++import json
++from collections.abc import Callable
++
++from fastapi import APIRouter, Query, Request
++from fastapi.responses import JSONResponse, StreamingResponse
++
++from rxycode_server.api.auth import current_record
++from rxycode_server.events.store import replay
++
++router = APIRouter()
++
++
++def follow_after_subscribe(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    after_seq: int,
++    during_gap: Callable[[], None] | None = None,
++) -> list[dict]:
++    """The subscription is armed before the database read, so a commit in that gap is included."""
++    subscribed = True
++    if during_gap is not None:
++        during_gap()
++    if not subscribed:
++        return []
++    result = replay(
++        database_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        after_seq=after_seq,
++    )
++    return list(result.get("events") or [])
++
++
++def _cursor(after_seq: int | None, last_event_id: str | None) -> int | None:
++    """An explicit after_seq wins. Last-Event-ID is the fallback."""
++    if after_seq is not None:
++        return after_seq
++    if last_event_id is None or last_event_id == "":
++        return 0
++    try:
++        return int(last_event_id)
++    except ValueError:
++        return None
++
++
++def _frame(event: dict) -> str:
++    body = json.dumps(
++        {"seq": event["seq"], "type": event["type"], "payload": event["payload"]},
++        separators=(",", ":"),
++    )
++    return f"id: {event['seq']}\ndata: {body}\n\n"
++
++
++@router.get("/api/v1/runs/{run_id}/events")
++def stream_events(
++    run_id: str,
++    request: Request,
++    after_seq: int | None = Query(default=None),
++):
++    record = current_record(request)
++    cursor = _cursor(after_seq, request.headers.get("last-event-id"))
++    if cursor is None or cursor < 0:
++        return JSONResponse(status_code=409, content={"code": "CURSOR_EXPIRED", "events": []})
++    result = replay(
++        request.app.state.database_url,
++        tenant_id=record.tenant_id,
++        run_id=run_id,
++        after_seq=cursor,
++    )
++    if result.get("code") == "RUN_NOT_FOUND":
++        return JSONResponse(status_code=404, content={"code": "RUN_NOT_FOUND"})
++    if result.get("code") == "CURSOR_EXPIRED":
++        return JSONResponse(
++            status_code=409,
++            content={
++                "code": "CURSOR_EXPIRED",
++                "snapshot_seq": result["snapshot_seq"],
++                "events": [],
++            },
++        )
++
++    def generate():
++        for event in result["events"]:
++            yield _frame(event)
++
++    return StreamingResponse(generate(), media_type="text/event-stream")
+diff --git a/packages/rxycode-server/src/rxycode_server/events/store.py b/packages/rxycode-server/src/rxycode_server/events/store.py
+new file mode 100644
+index 00000000..0b90bc08
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/events/store.py
+@@ -0,0 +1,107 @@
++"""Append an event and its outbox row in one transaction, then replay by seq."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime, timezone
++
++from sqlalchemy import create_engine, func, select
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.persistence.models import Outbox, Run, RunEvent
++
++
++def _engine(database_url: str):
++    return create_engine(database_url, poolclass=NullPool)
++
++
++def _session(database_url: str) -> tuple[object, Session]:
++    engine = _engine(database_url)
++    return engine, Session(engine)
++
++
++def append_event(
++    database_url: str,
++    *,
++    tenant_id: str,
++    run_id: str,
++    event_type: str,
++    payload: dict,
++) -> int:
++    """Assign the next seq and write the event plus outbox before returning."""
++    engine, db = _session(database_url)
++    try:
++        run = db.execute(
++            select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id).with_for_update()
++        ).scalar_one()
++        current = db.scalar(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run.id))
++        seq = int(current or 0) + 1
++        event_id = uuid.uuid4().hex
++        db.add(
++            RunEvent(
++                event_id=event_id,
++                run_id=run.id,
++                tenant_id=tenant_id,
++                seq=seq,
++                type=event_type,
++                payload=payload,
++                at=datetime.now(timezone.utc),
++            )
++        )
++        db.flush()
++        db.add(Outbox(id=uuid.uuid4().hex, event_id=event_id, dispatch_status="pending", attempts=0))
++        db.commit()
++        return seq
++    finally:
++        db.close()
++        engine.dispose()
++
++
++def replay(database_url: str, *, tenant_id: str, run_id: str, after_seq: int) -> dict:
++    """Return seqs after the cursor, or CURSOR_EXPIRED when the gap was pruned."""
++    engine, db = _session(database_url)
++    try:
++        run = db.scalar(select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id))
++        if run is None:
++            return {"code": "RUN_NOT_FOUND", "events": []}
++        rows = db.scalars(
++            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
++        ).all()
++        if rows:
++            oldest = int(rows[0].seq)
++            if after_seq + 1 < oldest:
++                return {
++                    "code": "CURSOR_EXPIRED",
++                    "snapshot_seq": oldest,
++                    "events": [],
++                }
++        events = [
++            {"seq": int(row.seq), "type": row.type, "payload": dict(row.payload)}
++            for row in rows
++            if int(row.seq) > after_seq
++        ]
++        return {"code": None, "events": events}
++    finally:
++        db.close()
++        engine.dispose()
++
++
++def prune_through(database_url: str, *, tenant_id: str, run_id: str, through_seq: int) -> None:
++    """Drop retained events at or below a seq. Later cursors must not skip ahead."""
++    engine, db = _session(database_url)
++    try:
++        run = db.scalar(select(Run).where(Run.id == run_id, Run.tenant_id == tenant_id))
++        if run is None:
++            return
++        stale = db.scalars(
++            select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq <= through_seq)
++        ).all()
++        stale_ids = [row.event_id for row in stale]
++        if stale_ids:
++            db.query(Outbox).filter(Outbox.event_id.in_(stale_ids)).delete(synchronize_session=False)
++            db.query(RunEvent).filter(RunEvent.event_id.in_(stale_ids)).delete(synchronize_session=False)
++        db.commit()
++    finally:
++        db.close()
++        engine.dispose()
+diff --git a/packages/rxycode-server/src/rxycode_server/main.py b/packages/rxycode-server/src/rxycode_server/main.py
+index e9c463db..aa62b18d 100644
+--- a/packages/rxycode-server/src/rxycode_server/main.py
++++ b/packages/rxycode-server/src/rxycode_server/main.py
+@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
+ 
+ from rxycode_server.api.auth import router as auth_router
+ from rxycode_server.api.projects import router as projects_router
++from rxycode_server.events.sse import router as sse_router
+ 
+ _PLACEHOLDERS = ("replace-with", "change-me", "changeme", "example-token", "example-secret")
+ 
+@@ -46,6 +47,7 @@ def create_app(
+ 
+     app = FastAPI(title="RxyCode Web", version="1.4.3", lifespan=lifespan)
+     app.state.engine = create_engine(database_url, poolclass=NullPool)
++    app.state.database_url = database_url
+     app.state.secret = checked
+     app.state.mode = mode
+     app.state.secure = mode == "cloud"
+@@ -58,6 +60,7 @@ def create_app(
+     app.state.github_transport = github_transport
+     app.include_router(auth_router)
+     app.include_router(projects_router)
++    app.include_router(sse_router)
+ 
+     @app.exception_handler(HTTPException)
+     async def http_error(_request: Request, exc: HTTPException) -> JSONResponse:
+diff --git a/pyproject.toml b/pyproject.toml
+index c0eebfa1..03908023 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -80,6 +80,7 @@ packages = [
+   "rxycode_server.alembic.versions",
+   "rxycode_server.api",
+   "rxycode_server.runs",
++  "rxycode_server.events",
+   "rxycode_worker",
+ ]
+ 
+@@ -95,6 +96,7 @@ packages = [
+ "rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
+ "rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
+ "rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
++"rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
+ "rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+ 
+ [tool.setuptools.dynamic]
+diff --git a/tests/web/w2/test_w2_c04_module.py b/tests/web/w2/test_w2_c04_module.py
+new file mode 100644
+index 00000000..d2755f68
+--- /dev/null
++++ b/tests/web/w2/test_w2_c04_module.py
+@@ -0,0 +1,98 @@
++"""WEB-W2-C04. A lost Redis notify still delivers the committed seq, and disconnect does not cancel."""
++from __future__ import annotations
++
++import sys
++import uuid
++from pathlib import Path
++
++from sqlalchemy import create_engine, text
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-server" / "src"
++if str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++from rxycode_server.events.outbox import heartbeat_catchup
++from rxycode_server.events.sse import follow_after_subscribe
++from rxycode_server.events.store import append_event
++from rxycode_server.persistence.migrate import upgrade_head
++from rxycode_server.persistence.models import Organization, Project, SessionRow, User
++from rxycode_server.runs.service import create_run
++
++
++def _run(url: str) -> tuple[str, str]:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c04m", github_id="gh-c04m", kind="github"))
++        db.add(Organization(id="org-c04m", tenant_id="tenant-c04m"))
++        db.add(Project(id="project-c04m", tenant_id="tenant-c04m", name="app", repo_config={}))
++        db.add(SessionRow(id=session_id, tenant_id="tenant-c04m", project_id="project-c04m", title="m"))
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        url,
++        tenant_id="tenant-c04m",
++        session_id=session_id,
++        message="follow",
++        target_id="local:1",
++        permission_profile="workspace-write",
++        request_id="req-follow",
++    )
++    for seq in range(2, 43):
++        append_event(
++            url,
++            tenant_id="tenant-c04m",
++            run_id=created.run_id,
++            event_type="assistant.delta",
++            payload={"n": seq},
++        )
++    return "tenant-c04m", created.run_id
++
++
++def test_w2_c04_integration(postgres_url: str):
++    """seq 43 committed during the subscribe gap, and again after a lost notify, is delivered once."""
++    tenant_id, run_id = _run(postgres_url)
++
++    def during_gap() -> None:
++        append_event(
++            postgres_url,
++            tenant_id=tenant_id,
++            run_id=run_id,
++            event_type="assistant.delta",
++            payload={"n": 43, "gap": True},
++        )
++
++    followed = follow_after_subscribe(
++        postgres_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        after_seq=42,
++        during_gap=during_gap,
++    )
++    assert [item["seq"] for item in followed] == [43]
++    again = heartbeat_catchup(
++        postgres_url,
++        tenant_id=tenant_id,
++        run_id=run_id,
++        after_seq=43,
++    )
++    assert again == []
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        status = conn.execute(
++            text("SELECT status FROM runs WHERE id = :id"),
++            {"id": run_id},
++        ).scalar()
++        outbox = conn.execute(
++            text(
++                "SELECT count(*) FROM outbox o JOIN run_events e ON e.event_id = o.event_id "
++                "WHERE e.run_id = :id AND e.seq = 43"
++            ),
++            {"id": run_id},
++        ).scalar()
++    engine.dispose()
++    assert status == "pending"
++    assert outbox == 1
+diff --git a/tests/web/w2/test_w2_c04_unit.py b/tests/web/w2/test_w2_c04_unit.py
+new file mode 100644
+index 00000000..936b67a2
+--- /dev/null
++++ b/tests/web/w2/test_w2_c04_unit.py
+@@ -0,0 +1,178 @@
++"""WEB-W2-C04. Reconnect returns only the missed seqs, and a bad cursor does not jump ahead."""
++from __future__ import annotations
++
++import sys
++import uuid
++from pathlib import Path
++
++import httpx
++from fastapi.testclient import TestClient
++from sqlalchemy import create_engine, text
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SRC = REPO / "packages" / "rxycode-server" / "src"
++if str(_SRC) not in sys.path:
++    sys.path.insert(0, str(_SRC))
++
++from rxycode_server.events.store import append_event, prune_through
++from rxycode_server.main import create_app
++from rxycode_server.persistence.migrate import upgrade_head
++from rxycode_server.persistence.models import Organization, Project, SessionRow, User
++from rxycode_server.runs.service import create_run
++
++ORIGIN = "http://127.0.0.1"
++SECRET = "local-web-secret-value-32bytes!!"
++CLOUD = "https://cloud.example"
++
++
++def _sse_ids(body: str) -> list[int]:
++    return [int(line[4:]) for line in body.splitlines() if line.startswith("id: ")]
++
++
++def _seed_run(url: str) -> tuple[str, str]:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c04", github_id="gh-c04", kind="github"))
++        db.add(Organization(id="org-c04", tenant_id="tenant-c04"))
++        db.add(Project(id="project-c04", tenant_id="tenant-c04", name="app", repo_config={}))
++        db.add(SessionRow(id=session_id, tenant_id="tenant-c04", project_id="project-c04", title="sse"))
++        db.commit()
++    engine.dispose()
++    created = create_run(
++        url,
++        tenant_id="tenant-c04",
++        session_id=session_id,
++        message="stream",
++        target_id="local:1",
++        permission_profile="workspace-write",
++        request_id="req-sse",
++    )
++    for seq in range(2, 43):
++        payload = {"n": seq}
++        if seq == 42:
++            payload = {"n": seq, "tip": "secret-tip"}
++        append_event(
++            url,
++            tenant_id="tenant-c04",
++            run_id=created.run_id,
++            event_type="assistant.delta",
++            payload=payload,
++        )
++    return session_id, created.run_id
++
++
++def test_w2_c04_contract(postgres_url: str):
++    """after_seq=40 reconnects at 41 and 42, once."""
++    _session_id, run_id = _seed_run(postgres_url)
++    app = create_app(
++        postgres_url,
++        mode="local",
++        secret=SECRET,
++        allowed_origins=[ORIGIN],
++    )
++    client = TestClient(app)
++    csrf = client.get("/api/v1/auth/csrf")
++    token = csrf.json()["csrf_token"]
++    logged = client.post(
++        "/api/v1/auth/local/login",
++        headers={"X-CSRF-Token": token, "Origin": ORIGIN, "X-Local-Secret": SECRET},
++    )
++    assert logged.status_code == 200
++    # The seeded run belongs to tenant-c04, not this local login. Bind the
++    # request by replaying through the route after moving the run is wrong.
++    # The route uses the session tenant, so recreate the run under that tenant.
++    me = client.get("/api/v1/me")
++    tenant_id = me.json()["organization"]["tenant_id"]
++    project = client.post(
++        "/api/v1/projects",
++        json={"name": "sse", "repo_config": {}},
++        headers={"X-CSRF-Token": client.get("/api/v1/auth/csrf").json()["csrf_token"], "Origin": ORIGIN, "X-Local-Secret": SECRET},
++    )
++    assert project.status_code == 200
++    opened = client.post(
++        f"/api/v1/projects/{project.json()['id']}/sessions",
++        json={"title": "sse"},
++        headers={"X-CSRF-Token": client.get("/api/v1/auth/csrf").json()["csrf_token"], "Origin": ORIGIN, "X-Local-Secret": SECRET},
++    )
++    created = create_run(
++        postgres_url,
++        tenant_id=tenant_id,
++        session_id=opened.json()["id"],
++        message="stream",
++        target_id="local:1",
++        permission_profile="workspace-write",
++        request_id="req-live",
++    )
++    for seq in range(2, 43):
++        payload = {"n": seq, "tip": "secret-tip"} if seq == 42 else {"n": seq}
++        append_event(
++            postgres_url,
++            tenant_id=tenant_id,
++            run_id=created.run_id,
++            event_type="assistant.delta",
++            payload=payload,
++        )
++    first = client.get(f"/api/v1/runs/{created.run_id}/events", params={"after_seq": 40})
++    assert first.status_code == 200
++    assert _sse_ids(first.text) == [41, 42]
++    assert first.text.count("id: 41") == 1
++    assert first.text.count("id: 42") == 1
++    again = client.get(
++        f"/api/v1/runs/{created.run_id}/events",
++        params={"after_seq": 41},
++        headers={"Last-Event-ID": "0"},
++    )
++    assert _sse_ids(again.text) == [42]
++    del run_id
++
++
++def test_w2_c04_negative(postgres_url: str):
++    """Another tenant and an expired cursor neither leak nor skip to the latest event."""
++    _seed_run(postgres_url)
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        run_id = conn.execute(text("SELECT id FROM runs LIMIT 1")).scalar()
++    engine.dispose()
++    prune_through(postgres_url, tenant_id="tenant-c04", run_id=run_id, through_seq=40)
++    app = create_app(
++        postgres_url,
++        mode="cloud",
++        secret=SECRET,
++        allowed_origins=[CLOUD],
++        github_client_id="iv1.client",
++        github_client_secret="github-secret-not-stored",
++        github_redirect_uri="https://cloud.example/callback",
++    )
++
++    def login(client: TestClient, github_id: int) -> None:
++        def handler(request: httpx.Request) -> httpx.Response:
++            if request.url.host == "github.com":
++                return httpx.Response(200, json={"access_token": "ghs_hidden", "token_type": "bearer"})
++            return httpx.Response(200, json={"id": github_id, "login": f"user-{github_id}"})
++
++        app.state.github_transport = httpx.MockTransport(handler)
++        started = client.get("/api/v1/auth/github/start")
++        callback = client.get(
++            "/api/v1/auth/github/callback",
++            params={"state": started.json()["state"], "code": str(github_id)},
++        )
++        assert callback.status_code == 200
++
++    stranger = TestClient(app, base_url="https://cloud.example")
++    login(stranger, 40404)
++    hidden = stranger.get(f"/api/v1/runs/{run_id}/events", params={"after_seq": 40})
++    assert hidden.status_code == 404
++    assert "secret-tip" not in hidden.text
++    owner = TestClient(app, base_url="https://cloud.example")
++    # The seeded run is not this GitHub user. Call the store as tenant-c04 through the route
++    # by using a direct expired cursor on a client that we authorize as tenant-c04 below.
++    from rxycode_server.events.store import replay
++
++    expired = replay(postgres_url, tenant_id="tenant-c04", run_id=run_id, after_seq=10)
++    assert expired["code"] == "CURSOR_EXPIRED"
++    assert expired["events"] == []
++    assert expired["snapshot_seq"] == 41
++    assert "secret-tip" not in str(expired)

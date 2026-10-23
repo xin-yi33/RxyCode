@@ -1,0 +1,5 @@
+Parent HEAD before this card: a8b7d5d9 feat/rxycode-web. Not pushed.
+Nested whitelist: 1dae741 on docs/plans/opus5-plan feat/rxycode-web. Not pushed.
+apps/web/src/features/onboarding did not exist. The card's acceptance check treats that directory as a prerequisite, so this card creates it under the nested ruling.
+RED: contract timed out clicking 本地 because the control was not in the build.
+E2E-WEB-01 screenshots are not produced on this card.

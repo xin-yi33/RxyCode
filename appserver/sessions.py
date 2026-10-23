@@ -360,7 +360,7 @@ class SessionStore:
         record.title_is_manual = True
         record.title_source = "manual"
         self._touch(record)
-        self._persist(record)
+        self._persist(record, defer=True)
         return record
 
     def note_user_prompt(self, session_id: str, text: str) -> AppSessionRecord | None:
@@ -499,7 +499,7 @@ class SessionStore:
             return None
         record.status = status
         self._touch(record)
-        self._persist(record)
+        self._persist(record, defer=True)
         return record
 
     def update_usage(self, session_id: str, usage: dict[str, object]) -> AppSessionRecord | None:
@@ -517,7 +517,7 @@ class SessionStore:
             if key in usage:
                 record.usage[key] = usage[key]
         self._touch(record)
-        self._persist(record)
+        self._persist(record, defer=True)
         return record
 
     def hydrate(self, session_id: str | None = None) -> AppSessionRecord | None:
@@ -589,7 +589,7 @@ class SessionStore:
     def _touch(record: AppSessionRecord) -> None:
         record.updated_at = _now()
 
-    def _persist(self, record: AppSessionRecord) -> None:
+    def _persist(self, record: AppSessionRecord, *, defer: bool = False) -> None:
         if self._task_store is None:
             return
         if not record.created_at:
@@ -630,6 +630,7 @@ class SessionStore:
             title_is_manual=record.title_is_manual,
             title_source=record.title_source,
             title_llm_pass=record.title_llm_pass,
+            defer=defer,
         )
 
 

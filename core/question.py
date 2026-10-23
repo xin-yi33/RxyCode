@@ -8,8 +8,14 @@ separate request/response registry and transport.
 from __future__ import annotations
 
 import asyncio
+import importlib as _importlib
+import json
+import os
+import re
+import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 
@@ -86,6 +92,11 @@ class SseQuestionBroker:
         event = asyncio.Event()
         owner_loop = asyncio.get_running_loop()
         question_id = request.question_id
+        mark_question_pending(
+            question_id,
+            session_id=_caller_session_id(),
+            prompt=request.question,
+        )
         self._pending[question_id] = event
         self._pending_loops[question_id] = owner_loop
         self._requests[question_id] = request
@@ -97,12 +108,31 @@ class SseQuestionBroker:
             self._pending.pop(question_id, None)
             self._pending_loops.pop(question_id, None)
             self._requests.pop(question_id, None)
+            clear_question_pending(question_id)
             return QuestionResponse(question_id=question_id, unavailable=True)
         try:
+            deadline = None
             if self.timeout and self.timeout > 0:
-                await asyncio.wait_for(event.wait(), timeout=self.timeout)
-            else:
-                await event.wait()
+                deadline = asyncio.get_running_loop().time() + self.timeout
+            while not event.is_set():
+                mailed = take_question_answer(question_id)
+                if mailed is not None:
+                    self._responses[question_id] = QuestionResponse(
+                        question_id=question_id,
+                        answer=mailed,
+                    )
+                    event.set()
+                    break
+                remaining = None if deadline is None else deadline - asyncio.get_running_loop().time()
+                if remaining is not None and remaining <= 0:
+                    raise asyncio.TimeoutError
+                try:
+                    await asyncio.wait_for(
+                        event.wait(),
+                        timeout=0.2 if remaining is None else min(0.2, remaining),
+                    )
+                except asyncio.TimeoutError:
+                    continue
         except asyncio.TimeoutError:
             return QuestionResponse(question_id=question_id, timed_out=True)
         else:
@@ -115,6 +145,7 @@ class SseQuestionBroker:
             self._pending_loops.pop(question_id, None)
             self._requests.pop(question_id, None)
             self._responses.pop(question_id, None)
+            clear_question_pending(question_id)
 
     def _resolve_on_owner_loop(
         self,
@@ -185,6 +216,199 @@ class SseQuestionBroker:
         for question_id in list(self._pending):
             cancelled += int(self.cancel(question_id))
         return cancelled
+
+
+def _question_dir() -> Path:
+    folder = Path.home() / ".rxycode" / "questions"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def _question_token(question_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", question_id):
+        raise ValueError("question_id is not a safe token")
+    return question_id
+
+
+def _caller_session_id() -> str:
+    try:
+        get_bound_session_id = _importlib.import_module("appserver.runtime").get_bound_session_id
+    except ImportError:
+        get_bound_session_id = None
+    if get_bound_session_id is not None:
+        bound = str(get_bound_session_id() or "").strip()
+        if bound and bound != "latest":
+            return bound
+    else:
+        bound = ""
+    try:
+        current_session_id = _importlib.import_module(
+            f"{__package__}.session_runtime"
+        ).current_session_id
+    except ImportError:
+        return bound
+    try:
+        current = str(current_session_id() or "").strip()
+    except (TypeError, ValueError):
+        return bound
+    if current and current != "latest":
+        return current
+    return bound or current
+
+
+def mark_question_pending(question_id: str, *, session_id: str = "", prompt: str = "") -> None:
+    token = _question_token(question_id)
+    payload = {"question_id": token, "session_id": session_id, "prompt": prompt}
+    (_question_dir() / f"{token}.pending.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def _question_lock(token: str):
+    path = _question_dir() / f"{token}.lock"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    if os.lseek(fd, 0, os.SEEK_END) < 1:
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+
+    class _Lock:
+        def __enter__(self):
+            if os.name == "nt":
+                msvcrt = _importlib.import_module("msvcrt")
+
+                while True:
+                    try:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        return self
+                    except OSError:
+                        time.sleep(0.01)
+            fcntl = _importlib.import_module("fcntl")
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            try:
+                if os.name == "nt":
+                    msvcrt = _importlib.import_module("msvcrt")
+
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl = _importlib.import_module("fcntl")
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+            return False
+
+    return _Lock()
+
+
+def question_pending_for_session(question_id: str, session_id: str) -> bool:
+    token = _question_token(question_id)
+    pending = _question_dir() / f"{token}.pending.json"
+    if not pending.is_file():
+        return False
+    try:
+        body = json.loads(pending.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return str(body.get("session_id") or "") == session_id
+
+
+def publish_question_answer(
+    question_id: str,
+    answer: str,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    token = _question_token(question_id)
+    with _question_lock(token):
+        pending = _question_dir() / f"{token}.pending.json"
+        if not pending.is_file():
+            return False
+        try:
+            pending_body = json.loads(pending.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        owner = str(pending_body.get("session_id") or "")
+        if session_id is not None and owner != session_id:
+            return False
+        folder = _question_dir()
+        answer_path = folder / f"{token}.answer.json"
+        if answer_path.exists() or not pending.is_file():
+            return False
+        payload = json.dumps({"question_id": token, "answer": answer})
+        temporary = folder / f"{token}.answer.{uuid.uuid4().hex}.tmp"
+        temporary.write_text(payload, encoding="utf-8")
+        if not pending.is_file():
+            temporary.unlink(missing_ok=True)
+            return False
+        try:
+            os.link(temporary, answer_path)
+        except FileExistsError:
+            temporary.unlink(missing_ok=True)
+            return False
+        temporary.unlink(missing_ok=True)
+        if not pending.is_file():
+            answer_path.unlink(missing_ok=True)
+            return False
+        return True
+
+
+def question_has_answer(question_id: str) -> bool:
+    token = _question_token(question_id)
+    return (_question_dir() / f"{token}.answer.json").is_file()
+
+
+def clear_question_pending(question_id: str) -> None:
+    token = _question_token(question_id)
+    with _question_lock(token):
+        folder = _question_dir()
+        (folder / f"{token}.pending.json").unlink(missing_ok=True)
+        (folder / f"{token}.answer.json").unlink(missing_ok=True)
+
+
+def take_question_answer(question_id: str) -> str | None:
+    token = _question_token(question_id)
+    with _question_lock(token):
+        path = _question_dir() / f"{token}.answer.json"
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or "answer" not in payload:
+            return None
+        (_question_dir() / f"{token}.pending.json").unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+        answer = payload.get("answer")
+        return str(answer) if answer is not None else None
+
+
+def list_pending_questions(session_id: str = "") -> list[dict[str, str]]:
+    found: list[dict[str, str]] = []
+    for path in _question_dir().glob("*.pending.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if session_id and str(payload.get("session_id") or "") != session_id:
+            continue
+        if (_question_dir() / f"{payload.get('question_id')}.answer.json").is_file():
+            continue
+        found.append(
+            {
+                "question_id": str(payload.get("question_id") or ""),
+                "prompt": str(payload.get("prompt") or ""),
+                "session_id": str(payload.get("session_id") or ""),
+            }
+        )
+    return found
 
 
 _broker: Optional[SseQuestionBroker] = None

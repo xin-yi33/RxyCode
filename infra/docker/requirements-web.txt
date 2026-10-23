@@ -1,0 +1,128 @@
+# W10-D1: pinned dependency set for the production api + worker images.
+#
+# Provenance: union of the `pip install` lists the compose services used to run
+# at every `up` (api: fastapi/uvicorn[standard]/sqlalchemy/alembic/psycopg/
+# httpx/pydantic/boto3; migrate: sqlalchemy/alembic/psycopg; worker: the repo
+# requirements.txt), resolved to the exact versions the running `rxydemo`
+# containers report via `pip freeze` (api and worker, 2026-10-20). Pinning the
+# full transitive closure — not just the direct requirements — keeps the image
+# builds reproducible even when PyPI publishes a newer transitive release.
+#
+# Deliberate exceptions:
+#   - rxycode-runner is NOT pip-installed; like the compose stack it is a
+#     source package placed on PYTHONPATH (/repo/packages/*/src).
+#   - websockets is pinned to 16.1.1 (the worker container's version): the
+#     api container ran 17.3, but a langgraph-sdk bound caps the union set
+#     below 17 — uvicorn[standard] accepts 16.x for the api's WS surface.
+#   - pywinpty stays out: it is Windows-only (requirements.txt env marker) and
+#     these images are Linux.
+
+aiosqlite==0.22.1
+alembic==1.20.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anthropic==0.125.0
+anyio==4.15.1
+attrs==26.1.0
+boto3==1.43.115
+botocore==1.43.115
+brotli==1.2.0
+cbor2==5.9.0
+certifi==2026.10.19
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.0
+cryptography==50.0.2
+ddgs==9.16.0
+distro==1.9.0
+docstring_parser==0.18.0
+fastapi==0.151.0
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httpcore2==2.15.1
+httptools==0.9.0
+httpx==0.28.1
+httpx2==2.15.1
+idna==3.20
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+jeepney==0.9.0
+jiter==0.17.0
+jmespath==1.1.0
+jsonpatch==1.36
+jsonpointer==3.4
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+keyring==25.7.0
+langchain==1.4.6
+langchain-anthropic==1.5.6
+langchain-core==1.6.12
+langchain-openai==1.7.2
+langchain-protocol==0.0.19
+langgraph==1.2.16
+langgraph-checkpoint==4.3.0
+langgraph-checkpoint-postgres==3.2.0
+langgraph-prebuilt==1.1.1
+langgraph-sdk==0.4.8
+langsmith==0.14.11
+lxml==6.1.3
+Mako==1.4.3
+markdown-it-py==4.2.0
+MarkupSafe==3.0.4
+mdurl==0.1.2
+more-itertools==11.2.1
+numpy==2.5.4
+openai==3.35.1
+opentelemetry-api==1.45.1
+orjson==3.13.0
+ormsgpack==1.13.0
+packaging==26.3
+pillow==12.3.0
+playwright==1.64.0
+primp==2.0.1
+psutil==7.2.2
+psycopg==3.3.6
+psycopg-binary==3.3.6
+psycopg-pool==3.3.3
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pybreaker==1.4.1
+pycparser==3.11
+pydantic==2.14.1
+pydantic_core==2.50.1
+pyee==14.0.0
+Pygments==2.21.0
+pyOpenSSL==26.4.0
+pyotp==2.10.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
+PyYAML==6.0.3
+redis==6.4.0
+referencing==0.37.0
+regex==2026.9.29
+requests==2.34.2
+requests-toolbelt==1.0.0
+rich==15.0.0
+rpds-py==2026.9.1
+s3transfer==0.19.3
+SecretStorage==3.5.0
+six==1.17.0
+sniffio==1.3.1
+SQLAlchemy==2.0.55
+starlette==1.9.0
+tenacity==9.2.1
+tiktoken==0.14.0
+truststore==0.10.5
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0
+uuid_utils==0.18.0
+uvicorn==0.54.0
+uvloop==0.23.0
+watchfiles==1.3.0
+webauthn==2.8.0
+websockets==16.1.1
+xxhash==4.0.2
+zstandard==0.25.0

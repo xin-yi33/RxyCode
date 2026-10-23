@@ -1,0 +1,434 @@
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/audit.py b/packages/rxycode-runner/src/rxycode_runner/local/audit.py
+new file mode 100644
+index 00000000..1be47890
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/audit.py
+@@ -0,0 +1,26 @@
++"""Append-only local audit. Secrets and clipboard text are not stored."""
++
++from __future__ import annotations
++
++import json
++import re
++from pathlib import Path
++from typing import Any
++
++_SECRET = re.compile(r"sk-[A-Za-z0-9_-]+")
++
++
++class AuditLog:
++    def __init__(self, path: Path) -> None:
++        self.path = Path(path)
++
++    def write(self, row: dict[str, Any]) -> None:
++        cleaned: dict[str, str] = {}
++        for key, value in row.items():
++            if key == "clipboard":
++                cleaned[key] = "[redacted]"
++                continue
++            cleaned[key] = _SECRET.sub("[redacted]", str(value))
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        with self.path.open("a", encoding="utf-8") as handle:
++            handle.write(json.dumps(cleaned, ensure_ascii=False) + "\n")
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/emergency.py b/packages/rxycode-runner/src/rxycode_runner/local/emergency.py
+new file mode 100644
+index 00000000..d60e4f79
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/emergency.py
+@@ -0,0 +1,59 @@
++"""Local kill switch. It runs before any cloud acknowledgement."""
++
++from __future__ import annotations
++
++from collections.abc import Callable
++from dataclasses import dataclass
++
++from rxycode_runner.local.audit import AuditLog
++from rxycode_runner.local.supervisor import ProcessSupervisor
++
++_BOUND: dict[str, "EmergencyStop"] = {}
++
++
++@dataclass
++class StopResult:
++    ok: bool
++    waited_for_cloud: bool
++
++
++class EmergencyStop:
++    def __init__(
++        self,
++        supervisor: ProcessSupervisor,
++        *,
++        audit: AuditLog | None = None,
++        cloud_ack: Callable[[], None] | None = None,
++    ) -> None:
++        self.supervisor = supervisor
++        self.audit = audit
++        self.cloud_ack = cloud_ack
++
++    def press(self) -> StopResult:
++        self.supervisor.kill_tree()
++        cloud = ""
++        if self.cloud_ack is not None:
++            try:
++                self.cloud_ack()
++            except OSError as exc:
++                cloud = str(exc)
++        if self.audit is not None:
++            self.audit.write(
++                {
++                    "event": "emergency_stop",
++                    "cloud": cloud or "not_sent",
++                }
++            )
++        return StopResult(ok=True, waited_for_cloud=False)
++
++
++def bind_local_hotkey(stop: EmergencyStop) -> None:
++    """Remember the local switch. A tray click and a hotkey both call press."""
++    _BOUND["local"] = stop
++
++
++def press_local_hotkey() -> StopResult:
++    stop = _BOUND.get("local")
++    if stop is None:
++        raise RuntimeError("no local emergency stop")
++    return stop.press()
+diff --git a/packages/rxycode-runner/src/rxycode_runner/local/supervisor.py b/packages/rxycode-runner/src/rxycode_runner/local/supervisor.py
+new file mode 100644
+index 00000000..a395b01b
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/local/supervisor.py
+@@ -0,0 +1,177 @@
++"""Track a local process tree so an emergency stop can end it. Not a sandbox."""
++
++from __future__ import annotations
++
++import ctypes
++import subprocess
++from dataclasses import dataclass
++from pathlib import Path
++
++_CREATE_SUSPENDED = 0x00000004
++_JOB_OBJECT_EXTENDED_LIMIT = 9
++_KILL_ON_JOB_CLOSE = 0x2000
++
++
++class _StartupInfo(ctypes.Structure):
++    _fields_ = [
++        ("cb", ctypes.c_uint),
++        ("lpReserved", ctypes.c_wchar_p),
++        ("lpDesktop", ctypes.c_wchar_p),
++        ("lpTitle", ctypes.c_wchar_p),
++        ("dwX", ctypes.c_uint),
++        ("dwY", ctypes.c_uint),
++        ("dwXSize", ctypes.c_uint),
++        ("dwYSize", ctypes.c_uint),
++        ("dwXCountChars", ctypes.c_uint),
++        ("dwYCountChars", ctypes.c_uint),
++        ("dwFillAttribute", ctypes.c_uint),
++        ("dwFlags", ctypes.c_uint),
++        ("wShowWindow", ctypes.c_ushort),
++        ("cbReserved2", ctypes.c_ushort),
++        ("lpReserved2", ctypes.c_void_p),
++        ("hStdInput", ctypes.c_void_p),
++        ("hStdOutput", ctypes.c_void_p),
++        ("hStdError", ctypes.c_void_p),
++    ]
++
++
++class _ProcessInfo(ctypes.Structure):
++    _fields_ = [
++        ("hProcess", ctypes.c_void_p),
++        ("hThread", ctypes.c_void_p),
++        ("dwProcessId", ctypes.c_uint),
++        ("dwThreadId", ctypes.c_uint),
++    ]
++
++
++class _BasicLimits(ctypes.Structure):
++    _fields_ = [
++        ("PerProcessUserTimeLimit", ctypes.c_longlong),
++        ("PerJobUserTimeLimit", ctypes.c_longlong),
++        ("LimitFlags", ctypes.c_uint),
++        ("MinimumWorkingSetSize", ctypes.c_size_t),
++        ("MaximumWorkingSetSize", ctypes.c_size_t),
++        ("ActiveProcessLimit", ctypes.c_uint),
++        ("Affinity", ctypes.c_size_t),
++        ("PriorityClass", ctypes.c_uint),
++        ("SchedulingClass", ctypes.c_uint),
++    ]
++
++
++class _IoCounters(ctypes.Structure):
++    _fields_ = [(f"c{i}", ctypes.c_ulonglong) for i in range(6)]
++
++
++class _ExtendedLimits(ctypes.Structure):
++    _fields_ = [
++        ("BasicLimitInformation", _BasicLimits),
++        ("IoInfo", _IoCounters),
++        ("ProcessMemoryLimit", ctypes.c_size_t),
++        ("JobMemoryLimit", ctypes.c_size_t),
++        ("PeakProcessMemoryUsed", ctypes.c_size_t),
++        ("PeakJobMemoryUsed", ctypes.c_size_t),
++    ]
++
++
++@dataclass
++class SpawnResult:
++    started: bool
++    pid: int | None = None
++
++
++def _kernel32() -> ctypes.WinDLL:
++    library = ctypes.WinDLL("kernel32", use_last_error=True)
++    library.CreateProcessW.argtypes = [
++        ctypes.c_wchar_p,
++        ctypes.c_wchar_p,
++        ctypes.c_void_p,
++        ctypes.c_void_p,
++        ctypes.c_int,
++        ctypes.c_uint,
++        ctypes.c_void_p,
++        ctypes.c_wchar_p,
++        ctypes.c_void_p,
++        ctypes.c_void_p,
++    ]
++    library.CreateProcessW.restype = ctypes.c_int
++    library.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
++    library.CreateJobObjectW.restype = ctypes.c_void_p
++    library.SetInformationJobObject.argtypes = [
++        ctypes.c_void_p,
++        ctypes.c_int,
++        ctypes.c_void_p,
++        ctypes.c_uint,
++    ]
++    library.SetInformationJobObject.restype = ctypes.c_int
++    library.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
++    library.AssignProcessToJobObject.restype = ctypes.c_int
++    library.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
++    library.TerminateJobObject.restype = ctypes.c_int
++    library.ResumeThread.argtypes = [ctypes.c_void_p]
++    library.ResumeThread.restype = ctypes.c_ulong
++    library.CloseHandle.argtypes = [ctypes.c_void_p]
++    library.CloseHandle.restype = ctypes.c_int
++    library.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
++    library.TerminateProcess.restype = ctypes.c_int
++    return library
++
++
++class ProcessSupervisor:
++    """One job per spawn. TerminateJobObject ends the parent and its children."""
++
++    def __init__(self) -> None:
++        self._stopped = False
++        self._jobs: list[int] = []
++
++    def spawn(self, argv: list[str], cwd: Path) -> SpawnResult:
++        if self._stopped:
++            return SpawnResult(started=False)
++        kernel = _kernel32()
++        startup = _StartupInfo()
++        startup.cb = ctypes.sizeof(startup)
++        info = _ProcessInfo()
++        command = subprocess.list2cmdline(argv)
++        created = kernel.CreateProcessW(
++            None,
++            command,
++            None,
++            None,
++            0,
++            _CREATE_SUSPENDED,
++            None,
++            str(cwd),
++            ctypes.byref(startup),
++            ctypes.byref(info),
++        )
++        if not created:
++            raise OSError(ctypes.get_last_error())
++        job = kernel.CreateJobObjectW(None, None)
++        if not job:
++            kernel.TerminateProcess(info.hProcess, 1)
++            kernel.CloseHandle(info.hThread)
++            kernel.CloseHandle(info.hProcess)
++            raise OSError(ctypes.get_last_error())
++        limits = _ExtendedLimits()
++        limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
++        kernel.SetInformationJobObject(
++            job,
++            _JOB_OBJECT_EXTENDED_LIMIT,
++            ctypes.byref(limits),
++            ctypes.sizeof(limits),
++        )
++        if not kernel.AssignProcessToJobObject(job, info.hProcess):
++            kernel.CloseHandle(job)
++            kernel.ResumeThread(info.hThread)
++            raise OSError(ctypes.get_last_error())
++        kernel.ResumeThread(info.hThread)
++        kernel.CloseHandle(info.hThread)
++        self._jobs.append(job)
++        return SpawnResult(started=True, pid=int(info.dwProcessId))
++
++    def kill_tree(self) -> None:
++        self._stopped = True
++        kernel = _kernel32()
++        for job in self._jobs:
++            kernel.TerminateJobObject(job, 1)
++            kernel.CloseHandle(job)
++        self._jobs.clear()
+diff --git a/tests/web/w4/test_w4_c06_module.py b/tests/web/w4/test_w4_c06_module.py
+new file mode 100644
+index 00000000..4dfc8be0
+--- /dev/null
++++ b/tests/web/w4/test_w4_c06_module.py
+@@ -0,0 +1,59 @@
++"""WEB-W4-C06. Emergency stop does not wait for the cloud."""
++
++from __future__ import annotations
++
++import sys
++import time
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++SRC = REPO / "packages" / "rxycode-runner" / "src"
++if str(SRC) not in sys.path:
++    sys.path.insert(0, str(SRC))
++
++
++def _alive(pid: int) -> bool:
++    import ctypes
++
++    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
++    if not handle:
++        return False
++    code = ctypes.c_ulong()
++    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
++    ctypes.windll.kernel32.CloseHandle(handle)
++    return int(code.value) == 259
++
++
++def test_w4_c06_integration(tmp_path: Path) -> None:
++    """A local stop still kills the tree when the cloud ack fails."""
++    from rxycode_runner.local.audit import AuditLog
++    from rxycode_runner.local.emergency import EmergencyStop
++    from rxycode_runner.local.supervisor import ProcessSupervisor
++
++    work = tmp_path / "offline"
++    work.mkdir()
++    script = work / "sleep.py"
++    script.write_text("import os,time\nfrom pathlib import Path\nPath('pid.txt').write_text(str(os.getpid()))\ntime.sleep(60)\n", encoding="utf-8")
++    supervisor = ProcessSupervisor()
++    audit = AuditLog(tmp_path / "audit.jsonl")
++    started = supervisor.spawn([sys.executable, str(script)], cwd=work)
++    assert started.started is True
++    deadline = time.time() + 8
++    while time.time() < deadline and not (work / "pid.txt").exists():
++        time.sleep(0.05)
++    pid = int((work / "pid.txt").read_text(encoding="utf-8"))
++    assert _alive(pid)
++
++    def _cloud() -> None:
++        raise OSError("cloud unreachable")
++
++    stopped = EmergencyStop(supervisor, audit=audit, cloud_ack=_cloud).press()
++    assert stopped.ok is True
++    assert stopped.waited_for_cloud is False
++    deadline = time.time() + 5
++    while time.time() < deadline and _alive(pid):
++        time.sleep(0.05)
++    assert not _alive(pid)
++    text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
++    assert "emergency_stop" in text
++    assert "cloud unreachable" in text
+diff --git a/tests/web/w4/test_w4_c06_unit.py b/tests/web/w4/test_w4_c06_unit.py
+new file mode 100644
+index 00000000..651adf0c
+--- /dev/null
++++ b/tests/web/w4/test_w4_c06_unit.py
+@@ -0,0 +1,83 @@
++"""WEB-W4-C06. A local emergency stop kills the process tree and blocks new tools."""
++
++from __future__ import annotations
++
++import sys
++import time
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++SRC = REPO / "packages" / "rxycode-runner" / "src"
++if str(SRC) not in sys.path:
++    sys.path.insert(0, str(SRC))
++
++
++def _alive(pid: int) -> bool:
++    import ctypes
++
++    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
++    if not handle:
++        return False
++    code = ctypes.c_ulong()
++    ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
++    ctypes.windll.kernel32.CloseHandle(handle)
++    return int(code.value) == 259
++
++
++def test_w4_c06_contract(tmp_path: Path) -> None:
++    """Local emergency stop ends the parent, the child, and the next command."""
++    from rxycode_runner.local.emergency import EmergencyStop, bind_local_hotkey, press_local_hotkey
++    from rxycode_runner.local.supervisor import ProcessSupervisor
++
++    work = tmp_path / "tree"
++    work.mkdir()
++    child_script = work / "child.py"
++    child_script.write_text("import os,time\nfrom pathlib import Path\nPath('child.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n", encoding="utf-8")
++    parent_script = work / "parent.py"
++    parent_script.write_text(
++        "import subprocess,sys,time\nfrom pathlib import Path\n"
++        "subprocess.Popen([sys.executable, 'child.py'])\n"
++        "Path('parent.pid').write_text(str(__import__('os').getpid()))\n"
++        "time.sleep(60)\n",
++        encoding="utf-8",
++    )
++    supervisor = ProcessSupervisor()
++    started = supervisor.spawn([sys.executable, str(parent_script)], cwd=work)
++    assert started.started is True
++    deadline = time.time() + 8
++    while time.time() < deadline and not (work / "child.pid").exists():
++        time.sleep(0.05)
++    assert (work / "child.pid").exists()
++    parent_pid = int((work / "parent.pid").read_text(encoding="utf-8"))
++    child_pid = int((work / "child.pid").read_text(encoding="utf-8"))
++    assert _alive(parent_pid) and _alive(child_pid)
++    bind_local_hotkey(EmergencyStop(supervisor))
++    press_local_hotkey()
++    deadline = time.time() + 5
++    while time.time() < deadline and (_alive(parent_pid) or _alive(child_pid)):
++        time.sleep(0.05)
++    assert not _alive(parent_pid)
++    assert not _alive(child_pid)
++    blocked = supervisor.spawn([sys.executable, "-c", "print('no')"], cwd=work)
++    assert blocked.started is False
++
++
++def test_w4_c06_negative(tmp_path: Path) -> None:
++    """The audit log keeps the event and drops secrets and clipboard text."""
++    from rxycode_runner.local.audit import AuditLog
++
++    secret = "sk-proj-c06-secret-value"
++    clipboard = "clipboard plaintext c06"
++    log = AuditLog(tmp_path / "audit.jsonl")
++    log.write(
++        {
++            "tool": "bash",
++            "output": f"token={secret}",
++            "clipboard": clipboard,
++            "note": "stopped",
++        }
++    )
++    text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
++    assert "stopped" in text
++    assert secret not in text
++    assert clipboard not in text

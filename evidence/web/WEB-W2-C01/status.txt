@@ -1,0 +1,11 @@
+branch=feat/rxycode-web
+upstream=none
+parent_code=357b8a335e73a2b8946b44f5de9b8039acd3550e
+parent_unlink=ef3ad475ffc3feb9c644faa7212d09e73bd47e0c
+parent_fix=3812ad79
+nested_whitelist=f9a3ca5a967c72b3d048abff5844c8f8cce6c52e
+nested_fix=5ac3f54
+base=28835728
+unit=2 passed
+module=2 passed
+pushed=no

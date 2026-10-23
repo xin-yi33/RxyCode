@@ -9,6 +9,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from ..core.session_runtime import resolve_session_path
+from ..utils.output_capture import append_capture_hints
 from ..utils.shell import shell_executor
 
 
@@ -92,6 +93,44 @@ def _build_git_command(operation: str, args: str) -> list[str] | str:
     )
 
 
+def _git_argv_writes_files(argv: list[str]) -> bool:
+    """True when this git argv can create or truncate a file."""
+    for index, token in enumerate(argv):
+        lowered = str(token).lower()
+        if lowered in {"--output", "-o"}:
+            return True
+        if lowered.startswith("--output="):
+            return True
+        if lowered == "--" and index + 1 < len(argv):
+            continue
+    return False
+
+
+def git_invocation_is_readonly(operation: str, args: str = "") -> bool:
+    """True only when the same argv the git tool would run cannot change files."""
+    command = _build_git_command(operation or "status", args or "")
+    if not isinstance(command, list) or len(command) < 2:
+        return False
+    if _git_argv_writes_files(command):
+        return False
+    verb = command[1]
+    rest = command[2:]
+    if verb in {"status", "diff", "log"}:
+        return True
+    if verb == "remote" and rest in ([], ["-v"]):
+        return True
+    if verb == "stash" and rest in ([], ["list"]):
+        return True
+    if verb != "branch":
+        return False
+    if rest in ([], ["-a"], ["-v"], ["-vv"], ["--list"]):
+        return True
+    mutating = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy"}
+    if any(token in mutating or not str(token).startswith("-") for token in rest):
+        return False
+    return True
+
+
 def run_git(operation: str = "status", path: str = ".", args: str = "") -> str:
     repo_path = str(resolve_session_path(path))
     if not os.path.isdir(repo_path):
@@ -115,8 +154,11 @@ async def run_git_async(
     result = await shell_executor.execute_argv_async(
         command, workdir=repo_path, timeout=60  # git 快照短命令，不是已废弃的 bash 60s 默认
     )
-    return _format_git_result(
-        result["stdout"], result["stderr"], result["success"]
+    return append_capture_hints(
+        _format_git_result(
+            result["stdout"], result["stderr"], result["success"]
+        ),
+        result,
     )
 
 

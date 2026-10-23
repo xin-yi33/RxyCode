@@ -1,0 +1,13 @@
+# Default cloud sandbox. Privileged, the Docker socket, and host mounts stay off.
+privileged: false
+docker_socket: false
+network_mode: none
+block_metadata: true
+block_private: true
+cpu: "0.5"
+memory: 256m
+pids: 64
+ttl_seconds: 3600
+user: "65534:65534"
+cap_drop: [ALL]
+security_opt: [no-new-privileges]

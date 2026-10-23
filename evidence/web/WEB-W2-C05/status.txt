@@ -1,0 +1,16 @@
+parent_code=12662832
+parent_head=c399a716
+nested=e8aa3d8
+nested_fix=399f23e
+branch=feat/rxycode-web
+pushed=no
+unit=5 passed
+integration=1 passed
+cache=30 passed, 2 pre-existing skips
+verdict=VERDICT: NO_REMAINING_PROBLEMS
+codex_session=01a140a7-2cc1-7f61-bdab-2af627f08e80
+model=gpt-6.1-sol
+effort=high
+red=ModuleNotFoundError checkpoints and recovery
+checkpointer=langgraph-checkpoint-postgres 3.2.0 AsyncPostgresSaver
+postgres=127.0.0.1:55432 container rxy-w2c01-pg

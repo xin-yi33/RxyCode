@@ -1,0 +1,14 @@
+parent_code=3abc977d
+parent_head=2f82fc08
+nested=49864a1
+verdict=VERDICT: NO_REMAINING_PROBLEMS
+codex_session=01a140a7-2cc1-7f61-bdab-2af627f08e80
+model=gpt-6.1-sol
+effort=high
+branch=feat/rxycode-web
+pushed=no
+unit=4 passed
+integration=1 passed
+red=ModuleNotFoundError rxycode_server.approvals
+anchor=class JsonRpcApproval unchanged
+postgres=127.0.0.1:55432 container rxy-w2c01-pg

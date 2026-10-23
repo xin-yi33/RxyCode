@@ -1,0 +1,9 @@
+WEB-W1-C03 RED before ExecutionPort existed.
+
+python -m pytest tests/web/w1/test_w1_c03_unit.py tests/web/w1/test_w1_c03_module.py -q --tb=line
+FAILED test_w1_c03_contract - ModuleNotFoundError: No module named 'rxycode_core.runtime'
+FAILED test_w1_c03_negative - ModuleNotFoundError: No module named 'rxycode_core.runtime'
+FAILED test_w1_c03_integration - assert 'DANGER' in "[rejected: no approval broker available for WRITE tool 'mcp_wipe']"
+3 failed in 0.38s
+
+The integration failure is the shipped gate: an unknown MCP tool with destructiveHint is still WRITE.

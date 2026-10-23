@@ -39,6 +39,15 @@ describe("followupQueue", () => {
     expect(taken.remaining.map((row) => row.text)).toEqual(["first"]);
   });
 
+  test("queued attachments are immutable metadata and survive edit/restore", () => {
+    const attachments = [{ path: "C:\\tmp\\image.png", name: "image.png" }];
+    const queued = enqueueFollowup([], "inspect", "build", attachments);
+    attachments[0]!.path = "C:\\changed.png";
+    expect(queued[0]?.attachments?.[0]?.path).toBe("C:\\tmp\\image.png");
+    const restored = putBackFollowup([], queued[0] ?? null);
+    expect(restored[0]?.attachments?.[0]?.name).toBe("image.png");
+  });
+
   test("removeFollowup deletes without sending", () => {
     const seeded = enqueueFollowup(enqueueFollowup([], "keep", "build"), "drop", "plan");
     const next = removeFollowup(seeded, seeded[1]!.id);

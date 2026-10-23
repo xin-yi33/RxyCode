@@ -240,12 +240,22 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
             "secret",
             "secrets",
         }
+
+        def leaks_workspace_state(path: PurePosixPath) -> bool:
+            # A forbidden name only counts as runtime state at the payload
+            # root or directly under the embedded checkout root — nested
+            # package dirs (e.g. rxycode_server/artifacts) are shipped code.
+            for index, part in enumerate(path.parts):
+                if part.casefold() not in forbidden_directories:
+                    continue
+                if index == 0 or path.parts[:index] == VERSIONED_ROOT.parts:
+                    return True
+            return False
+
         leaked = [
             str(path)
             for path in paths
-            if forbidden_directories.intersection(
-                part.casefold() for part in path.parts
-            )
+            if leaks_workspace_state(path)
             or path.suffix.casefold() in {".log", ".key", ".pem"}
             or path.name.casefold()
             in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}
@@ -257,7 +267,7 @@ def test_wheel_contains_runtime_contract_without_workspace_state(
         )
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
         assert metadata["Name"] == "rxycode"
-        assert metadata["Version"] == "1.4.2"
+        assert metadata["Version"] == "1.4.4"
         requirements = [
             value.casefold() for value in metadata.get_all("Requires-Dist", [])
         ]
@@ -302,7 +312,7 @@ def test_sdist_contains_bootstraps_without_runtime_state(
     leaked = [
         str(path)
         for path in relative
-        if forbidden.intersection(part.casefold() for part in path.parts)
+        if path.parts and path.parts[0].casefold() in forbidden
         or path.suffix.casefold() in {".log", ".key", ".pem"}
         or path.name.casefold()
         in {".env", "credentials.yaml", ".coveragerc", "agents.md", "pytest.ini"}
@@ -330,7 +340,7 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         cwd=installed_package.workdir,
         env=installed_package.env,
     )
-    assert "1.4.2" in version.stdout + version.stderr
+    assert "1.4.4" in version.stdout + version.stderr
 
     providers = _run(
         [
@@ -411,3 +421,56 @@ def test_fresh_install_runs_console_and_module_entrypoints(
         assert "ERR_MODULE_NOT_FOUND" not in output
         assert "Cannot find module" not in output
         assert "Traceback (most recent call last)" not in output
+
+
+def test_installed_wheel_session_identity_matches_legacy(
+    installed_package: InstalledPackage,
+):
+    """WEB-W1-C01 wheel smoke: packaged Session is the installed legacy class."""
+    probe = _run(
+        [
+            str(installed_package.python),
+            "-c",
+            "import RxyCode.RxyCode1_1_0.core.session as legacy\n"
+            "import rxycode_core\n"
+            "assert rxycode_core.Session is legacy.Session\n"
+            "assert rxycode_core.reuse_or_create_session is legacy.reuse_or_create_session\n"
+            "print(rxycode_core.audit_class_identity([rxycode_core.Session, legacy.Session]))\n",
+        ],
+        cwd=installed_package.workdir,
+        env=installed_package.env,
+    )
+    assert probe.stdout.strip() == "OK"
+
+
+def test_runner_connect_installs_in_fresh_venv(tmp_path: Path) -> None:
+    """WEB-W4-C07: the runner package installs its connect entry in an empty venv."""
+    venv = tmp_path / "runner-venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
+    python = _venv_executable(venv, "python")
+    runner = PROJECT_ROOT / "packages" / "rxycode-runner"
+    installed = subprocess.run(
+        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(runner)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+    probe = _run(
+        [
+            str(python),
+            "-c",
+            "from rxycode_runner.desktop.capabilities import release_status\n"
+            "labels = release_status({'windows'})\n"
+            "assert labels['macos'] == 'unverified'\n"
+            "assert labels['linux'] == 'unverified'\n"
+            "print('runner install OK')",
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": ""},
+    )
+    assert "runner install OK" in probe.stdout
+    script_name = "rxycode-connect.exe" if os.name == "nt" else "rxycode-connect"
+    script_dir = venv / "Scripts" if os.name == "nt" else venv / "bin"
+    assert (script_dir / script_name).is_file()

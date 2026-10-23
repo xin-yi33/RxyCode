@@ -8,9 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from contextlib import contextmanager
+from collections.abc import Iterator
+
 from .credential_store import (
     atomic_write_text,
     delete_credential,
+    exclusive_file_lock,
     load_credential,
     restrict_file_permissions,
     store_credential,
@@ -68,8 +72,21 @@ def _copy_missing_items(source: Path, target: Path) -> None:
             shutil.copy2(item, dst)
 
 
+# 一次性幂等迁移的进程内记忆（2026-10-11）：get_data_dir 热路径上每次调用都
+# 重跑一遍 legacy 目录扫描（profile：models/list 2.08s 中 0.47s 来自 59 次
+# 重复迁移检查）。迁移本来就是幂等的"缺则补齐"，同一目标目录进程内做一次即可；
+# 失败也标记（best-effort，下个进程会重试）。换 RXYCODE_DATA_DIR 的测试不受影响：
+# 记忆按目标路径区分，新目录仍会迁移一次。
+_MIGRATED_TARGETS: set[str] = set()
+_MIGRATED_LOCK = threading.Lock()
+
+
 def _migrate_legacy_data_if_needed(target: Path) -> None:
     """Best-effort migration from previous user and in-repo data roots."""
+    key = str(target.resolve())
+    with _MIGRATED_LOCK:
+        if key in _MIGRATED_TARGETS:
+            return
     try:
         if target == DEFAULT_CONFIG_DIR:
             _copy_missing_items(LEGACY_USER_DATA_DIR, target)
@@ -77,6 +94,8 @@ def _migrate_legacy_data_if_needed(target: Path) -> None:
     except Exception:
         # Migration is best-effort; never block startup on it.
         pass
+    with _MIGRATED_LOCK:
+        _MIGRATED_TARGETS.add(key)
 
 
 def get_date_stamp(moment: datetime | None = None) -> str:
@@ -136,6 +155,18 @@ def get_settings() -> dict:
     ``schedule.revive_orphans_on_restore``).
     """
     return deepcopy(_default_config())
+
+
+@contextmanager
+def hold_config_lock() -> Iterator[None]:
+    """Hold the config file lock across one read-modify-write.
+
+    ``load_config`` and ``save_config`` each take only the in-process lock.
+    Callers that change models must hold this lock from the fresh read
+    through the matching save. Network probes stay outside it.
+    """
+    with exclusive_file_lock(get_config_path()):
+        yield
 
 
 def load_config() -> dict:
@@ -379,6 +410,10 @@ def _default_config() -> dict:
             "tool_journal_enabled": True,
             "tool_journal_retention": 100,
             "tool_journal_max_result_chars": 30000,
+            # Primary Build workflow contract. A new goal is classified once;
+            # the same goal reuses that judgment. Development verification and
+            # the safety floor stay on even when the model skips other stages.
+            "build_workflow": {"enabled": True},
             # Workspace mode constrains the selected cwd. Docker mode adds an
             # OS boundary and defaults to no network; operators can opt into it
             # once the configured image contains their required toolchain.

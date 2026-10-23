@@ -5,6 +5,7 @@ import type { ApprovalDecision } from "../ApprovalDialog.tsx";
 import {
   questionInfoFromParams,
   questionResultFromReply,
+  type QuestionInfo,
   type QuestionReply,
 } from "../questionInfo.ts";
 import {
@@ -19,7 +20,7 @@ import {
   type CommandResult,
 } from "./httpAdmin.ts";
 import { applyThoughtExpandedOverride, nextThoughtExpanded, resetThinkingDisplay } from "../lib/thinkingDisplay.ts";
-import { looksLikePlanDocument, parsePlanDoc } from "../planDoc.ts";
+import { finalTextOpensPlan, parsePlanDoc } from "../planDoc.ts";
 import { liveProgressText, notifyToStreamEvent, toolWaitText } from "./notifyToStreamEvent.ts";
 import {
   composeTurnWithSteers,
@@ -47,6 +48,8 @@ import type {
   SubagentResult,
 } from "./types.ts";
 import { sessionEventsToMessages } from "../dialog/sessionEventsToMessages.ts";
+import { MAX_CLIPBOARD_ATTACHMENTS, type ClipboardAttachment } from "../clipboard.ts";
+import type { PromptRequest } from "../../../protocol-client/src/generated/types.ts";
 
 const DEFAULT_INIT_TIMEOUT_MS = 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
@@ -54,6 +57,11 @@ const DEFAULT_SESSION_TIMEOUT_MS = 60_000;
 const MODEL_SET_ACTIVE_TIMEOUT_MS = 10_000;
 const SESSION_SET_MODEL_TIMEOUT_MS = 40_000; // server agent_host 上限 30s + 余量
 const STATUS_SNAPSHOT_TIMEOUT_MS = 5_000;
+// 2026-10-11 /session 目录有界等待：原来 request 无超时，服务端静默丢应答时
+// 会话对话框长转圈；超时直接交还 UI 错误态，不触发 respawn（与进程已死区分）。
+const SESSIONS_LIST_TIMEOUT_MS = 8_000;
+/** Bounded wait for catalog/admin reads. session/prompt stays unbounded. */
+const DEFAULT_ADMIN_RPC_TIMEOUT_MS = 8_000;
 let warmOnOpenStarted = false;
 
 function newId(suffix: string): string {
@@ -78,6 +86,11 @@ function initTimeoutMs(): number {
 function sessionTimeoutMs(): number {
   const raw = Number(process.env.RXYCODE_APPSERVER_SESSION_TIMEOUT_MS ?? "");
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_SESSION_TIMEOUT_MS;
+}
+
+function adminRpcTimeoutMs(): number {
+  const raw = Number(process.env.RXYCODE_ADMIN_RPC_TIMEOUT_MS ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_ADMIN_RPC_TIMEOUT_MS;
 }
 
 type PromptResult = {
@@ -106,6 +119,11 @@ export class StdioAppserverSession {
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private client: ProtocolClient | null = null;
   private sessionId: string | null = null;
+  private serverCapabilities: Record<string, unknown> = {};
+
+  getCurrentSessionId(): string | null {
+    return this.sessionId;
+  }
   private ready: Promise<void> | null = null;
   private lastStatus: StatusInfo | null = null;
   private pendingApprovals = new Map<
@@ -113,6 +131,21 @@ export class StdioAppserverSession {
     (decision: ApprovalDecision) => void
   >();
   private approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** FIFO of approval request ids. The dialog shows only the head, so a second request cannot replace it. */
+  private approvalQueue: string[] = [];
+  private approvalInfo = new Map<string, {
+    approvalId: string;
+    tool: string;
+    risk: string;
+    args: string;
+    description: string;
+  }>();
+  /** In-flight handleLine calls. The read pump does not await them: an approval wait must not stall later RPCs. */
+  private lineJobs = new Set<Promise<void>>();
+  /** Bumped to retire a connection writer before its pending replies run. */
+  private writerGeneration = 0;
+  private questionQueue: string[] = [];
+  private questionInfo = new Map<string, QuestionInfo>();
   private pendingQuestions = new Map<string, (reply: QuestionReply) => void>();
   private activePromptAbort: AbortController | null = null;
   private activeCallbacks: ChatApiCallbacks | null = null;
@@ -122,6 +155,11 @@ export class StdioAppserverSession {
   onTodo: ((snapshot: TodoDockSnapshot) => void) | null = null;
   private todoView: TodoDockSnapshot = { list_id: "default", revision: 0, items: [] };
   private todoTicket = 0;
+  /** Worker model label. Set when a session switch fails so polls do not show the new global default. */
+  /** Config id of the open task's model. Display text is derived from this id. */
+  private sessionModelId: string | null = null;
+  /** Bumped on every attach so a slower older load cannot commit a newer session. */
+  private attachGeneration = 0;
   private steerMarks: SteerMark[] = [];
   private liveTurn: {
     epoch: number;
@@ -144,25 +182,98 @@ export class StdioAppserverSession {
     return process.env.RXYCODE_WORKSPACE_ROOT ?? this.projectRoot();
   }
 
+  private emitApprovalHead(): void {
+    const head = this.approvalQueue[0];
+    if (!head) {
+      this.activeCallbacks?.onApprovalRequest?.(null);
+      return;
+    }
+    const info = this.approvalInfo.get(head);
+    if (info) this.activeCallbacks?.onApprovalRequest?.(info);
+  }
+
+  private enqueueApproval(info: {
+    approvalId: string;
+    tool: string;
+    risk: string;
+    args: string;
+    description: string;
+  }): void {
+    this.approvalInfo.set(info.approvalId, info);
+    if (!this.approvalQueue.includes(info.approvalId)) this.approvalQueue.push(info.approvalId);
+    if (this.approvalQueue[0] === info.approvalId) this.emitApprovalHead();
+  }
+
+  private settleApproval(requestId: string): void {
+    this.approvalQueue = this.approvalQueue.filter((id) => id !== requestId);
+    this.approvalInfo.delete(requestId);
+    this.emitApprovalHead();
+  }
+
   private clearPendingApprovals(decision: ApprovalDecision = "rejected"): void {
     for (const timer of this.approvalTimers.values()) {
       clearTimeout(timer);
     }
     this.approvalTimers.clear();
-    for (const resolve of this.pendingApprovals.values()) {
-      resolve(decision);
-    }
+    this.approvalQueue = [];
+    this.approvalInfo?.clear();
+    const pending = [...this.pendingApprovals.values()];
     this.pendingApprovals.clear();
+    this.activeCallbacks?.onApprovalRequest?.(null);
+    for (const resolve of pending) resolve(decision);
+  }
+
+  /** Parse one stdout line without waiting for a human approval inside it. */
+  private pumpLine(line: string): void {
+    const client = this.client;
+    if (!client) return;
+    let job: Promise<void> = Promise.resolve();
+    job = client.handleLine(line).catch(() => {
+      // handleLine reports RPC errors itself. A rejection must not stop the read pump.
+    }).finally(() => {
+      this.lineJobs.delete(job);
+    });
+    this.lineJobs.add(job);
+  }
+
+  private emitQuestionHead(): void {
+    const head = this.questionQueue[0];
+    if (!head) {
+      this.activeCallbacks?.onQuestionRequest?.(null);
+      return;
+    }
+    const info = this.questionInfo.get(head);
+    if (info) this.activeCallbacks?.onQuestionRequest?.(info);
+  }
+
+  private enqueueQuestion(info: QuestionInfo): void {
+    this.questionInfo.set(info.questionId, info);
+    if (!this.questionQueue.includes(info.questionId)) this.questionQueue.push(info.questionId);
+    if (this.questionQueue[0] === info.questionId) this.emitQuestionHead();
+  }
+
+  private settleQuestion(questionId: string): void {
+    this.questionQueue = this.questionQueue.filter((id) => id !== questionId);
+    this.questionInfo.delete(questionId);
+    this.emitQuestionHead();
   }
 
   private clearPendingQuestions(reply: QuestionReply = { cancelled: true }): void {
-    for (const resolve of this.pendingQuestions.values()) {
-      resolve(reply);
-    }
-    this.pendingQuestions.clear();
+    this.questionQueue = [];
+    this.questionInfo?.clear();
+    const pending = [...(this.pendingQuestions?.values() ?? [])];
+    this.pendingQuestions?.clear();
+    this.activeCallbacks?.onQuestionRequest?.(null);
+    for (const resolve of pending) resolve(reply);
+  }
+
+  /** Drop this connection's writer so a late approval reply cannot hit a dead pipe or the next process. */
+  private invalidateWriter(): void {
+    this.writerGeneration += 1;
   }
 
   private resetSession(reason?: Error): void {
+    this.invalidateWriter();
     this.clearPendingApprovals();
     this.clearPendingQuestions();
     if (this.client) {
@@ -178,6 +289,8 @@ export class StdioAppserverSession {
     this.proc = null;
     this.client = null;
     this.sessionId = null;
+    this.serverCapabilities = {};
+    this.sessionModelId = null;
     this.forgetTodoView();
     this.childViewSessionId = null;
     this.ready = null;
@@ -256,8 +369,26 @@ export class StdioAppserverSession {
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+    const generation = ++this.writerGeneration;
+    const proc = this.proc;
     const client = new ProtocolClient((line) => {
-      stdin.write(encoder.encode(`${line}\n`));
+      // A closed generation must not write. A live write error is recorded and rethrown.
+      if (
+        generation !== this.writerGeneration ||
+        !proc ||
+        this.proc !== proc ||
+        proc.exitCode !== null
+      ) {
+        return;
+      }
+      try {
+        stdin.write(encoder.encode(`${line}\n`));
+      } catch (err) {
+        this.writerGeneration += 1;
+        const message = err instanceof Error ? err.message : String(err);
+        this.lastProcessFailed = message;
+        throw err;
+      }
     });
     this.client = client;
     client.onNotification = (method, params) => {
@@ -274,9 +405,9 @@ export class StdioAppserverSession {
         // 超时不适用于 question；后端同样不限时）。
         const reply = await new Promise<QuestionReply>((resolve) => {
           this.pendingQuestions.set(info.questionId, resolve);
-          this.activeCallbacks?.onQuestionRequest?.(info);
+          this.enqueueQuestion(info);
         });
-        this.activeCallbacks?.onQuestionRequest?.(null);
+        this.settleQuestion(info.questionId);
         return questionResultFromReply(info.questionId, reply);
       }
       if (method !== "approval/request") {
@@ -294,7 +425,7 @@ export class StdioAppserverSession {
           resolve("rejected");
         }, 120_000);
         this.approvalTimers.set(requestId, timer);
-        this.activeCallbacks?.onApprovalRequest?.({
+        this.enqueueApproval({
           approvalId: requestId,
           tool: String(payload.action ?? "unknown"),
           risk: String(payload.risk_level ?? "WRITE"),
@@ -302,9 +433,12 @@ export class StdioAppserverSession {
             typeof argsRaw === "string"
               ? argsRaw
               : JSON.stringify(argsRaw ?? details ?? {}),
+          description:
+            // 2026-10-12 审批界面回显外部（如 MCP）工具描述，用户复核可见。
+            typeof details?.description === "string" ? details.description : "",
         });
       });
-      this.activeCallbacks?.onApprovalRequest?.(null);
+      this.settleApproval(requestId);
       return { request_id: requestId, decision };
     };
 
@@ -347,12 +481,12 @@ export class StdioAppserverSession {
           while (newline >= 0) {
             const line = buffer.slice(0, newline);
             buffer = buffer.slice(newline + 1);
-            await client.handleLine(line);
+            this.pumpLine(line);
             newline = buffer.indexOf("\n");
           }
         }
         if (buffer.trim()) {
-          await client.handleLine(buffer);
+          this.pumpLine(buffer);
         }
       } catch {
         client.rejectAllPending(new Error("appserver stdout reader failed"));
@@ -370,21 +504,25 @@ export class StdioAppserverSession {
       }
     })();
 
-    await client.requestWithTimeout(
+    const initialized = await client.requestWithTimeout<{ capabilities?: Record<string, unknown> }>(
       "initialize",
       {
         client_name: "opentui",
-        client_version: "1.4.2",
+        client_version: "1.4.4",
         protocol_version: "1.0.0",
       },
       initTimeoutMs(),
-    );
-    const session = (await client.requestWithTimeout<{ session_id: string }>(
+    ) as { capabilities?: Record<string, unknown> };
+    this.serverCapabilities = initialized?.capabilities && typeof initialized.capabilities === "object"
+      ? initialized.capabilities
+      : {};
+    const session = (await client.requestWithTimeout<{ session_id: string; model_id?: string | null }>(
       "session/new",
       { workspace_root: this.workspaceRoot() },
       sessionTimeoutMs(),
-    )) as { session_id: string };
+    )) as { session_id: string; model_id?: string | null };
     this.sessionId = session.session_id;
+    this.sessionModelId = session.model_id ?? null;
     void this.refreshTodo().catch(() => {});
     // Fire-and-forget warm so the first user prompt is not blocked on Agent ctor.
     void this.warmBootstrap().catch(() => {
@@ -407,15 +545,41 @@ export class StdioAppserverSession {
     return this.client !== null && this.sessionId !== null;
   }
 
+  /** Coalesced models/list read — see listModels(). */
+  private inflightModelsList: Promise<ModelsListPayload> | null = null;
+
   async listModels(): Promise<ModelsListPayload> {
-    const client = await this.ensureReady();
-    return (await client.request<ModelsListPayload>("models/list", {})) as ModelsListPayload;
+    // /model 切换成功后 fetchStatus() 与 fetchModels() 同拍触发同一 RPC
+    //（一个读状态一个读目录，数据都是 models/list）：合并 in-flight 读，
+    // 一次请求结果复用，不再串行重发。
+    if (this.inflightModelsList) return this.inflightModelsList;
+    const pending = (async () => {
+      const client = await this.ensureReady();
+      return (await client.requestWithTimeout<ModelsListPayload>(
+        "models/list",
+        {},
+        adminRpcTimeoutMs(),
+      )) as ModelsListPayload;
+    })();
+    this.inflightModelsList = pending;
+    pending
+      .catch(() => {})
+      .finally(() => {
+        if (this.inflightModelsList === pending) this.inflightModelsList = null;
+      });
+    return pending;
   }
 
   async fetchStatusSnapshot(): Promise<StatusInfo | null> {
     try {
       const listed = await this.listModels();
-      this.lastStatus = statusFromModelsList(listed, this.lastStatus);
+      const taskModelId = this.sessionModelId || undefined;
+      this.lastStatus = statusFromModelsList(listed, this.lastStatus, taskModelId);
+      if (this.sessionId && !this.sessionModelId) {
+        const adopted =
+          listed.active || listed.models?.find((item) => item.active)?.id || "";
+        if (adopted) this.sessionModelId = adopted;
+      }
     } catch {
       // Keep lastStatus. Never fall back to HTTP /status (different process, always 0).
     }
@@ -427,6 +591,14 @@ export class StdioAppserverSession {
     // 静默丢应答，对话框就永远停在「正在切换模型…」，后续点击被 switching
     // 门拦死（用户实测）。全部改为有界等待，超时者落为「切换失败」。
     const client = await this.ensureReady();
+    // Captured before any await that can outlive this screen. Later reads of
+    // this.sessionId would aim session/set_model at whatever session loaded
+    // while models/set_active was still in flight.
+    const targetSessionId = this.sessionId;
+    const previousModelId = this.sessionModelId;
+    const generation = this.attachGeneration;
+    const stillThisSession = () =>
+      this.attachGeneration === generation && this.sessionId === targetSessionId;
     const active = (await client.requestWithTimeout<{
       ok?: boolean;
       id?: string;
@@ -442,19 +614,37 @@ export class StdioAppserverSession {
     }
     let sessionSet: "ok" | "skipped" | "error" = "skipped";
     let sessionErr = "";
-    if (this.sessionId) {
+    if (targetSessionId) {
       try {
         await client.requestWithTimeout(
           "session/set_model",
-          { session_id: this.sessionId, model_id: modelId },
+          { session_id: targetSessionId, model_id: modelId },
           // server 侧 agent_host 自带 30s 上限，客户端留余量先收错误。
           SESSION_SET_MODEL_TIMEOUT_MS,
         );
         sessionSet = "ok";
+        if (stillThisSession()) this.sessionModelId = modelId;
       } catch (e) {
         sessionSet = "error";
         sessionErr = e instanceof Error ? e.message : String(e);
+        if (stillThisSession()) this.sessionModelId = previousModelId;
       }
+    }
+    if (!stillThisSession()) {
+      return {
+        ok: false,
+        action: "error",
+        error: "会话已更换",
+        message: "会话已更换",
+      };
+    }
+    if (sessionSet === "error") {
+      // 2026-10-11 假成功修复：全局 active 已持久化但 worker 还跑旧模型——
+      // 不得返回 model_changed；调用方对话框据此提示「切换失败，请重试」。
+      // 同时不刷新状态快照，芯片继续显示 worker 实际在用的旧模型。
+      // （无 session 时 ② 为 skipped：全局默认模型已切，仍算成功。）
+      const message = sessionErr ? `${sessionErr}，请重试` : "切换失败，请重试";
+      return { ok: false, action: "error", error: message, message };
     }
     try {
       await withBoundedWait(
@@ -463,7 +653,20 @@ export class StdioAppserverSession {
         "status refresh timed out",
       );
     } catch {
-      this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
+      // session/set_model already succeeded, so the id is confirmed. The
+      // catalog read did not return a nickname; show the id rather than a
+      // name that was not looked up.
+      if (stillThisSession()) {
+        this.lastStatus = { ...(this.lastStatus ?? {}), model: modelId };
+      }
+    }
+    if (!stillThisSession()) {
+      return {
+        ok: false,
+        action: "error",
+        error: "会话已更换",
+        message: "会话已更换",
+      };
     }
     return {
       ok: true,
@@ -482,10 +685,10 @@ export class StdioAppserverSession {
     if (!this.sessionId) {
       throw new Error("appserver session not ready");
     }
-    const result = (await client.request("session/set_thinking_expanded", {
+    const result = (await client.requestWithTimeout("session/set_thinking_expanded", {
       session_id: this.sessionId,
       expanded,
-    })) as {
+    }, adminRpcTimeoutMs())) as {
       ok?: boolean;
       expanded?: boolean;
       action?: string;
@@ -533,6 +736,8 @@ export class StdioAppserverSession {
   }
 
   async interrupt(): Promise<void> {
+    this.clearPendingApprovals("rejected");
+    this.clearPendingQuestions({ cancelled: true });
     if (shouldClearStreamingOnUserCancel()) {
       this.activeCallbacks?.onStreaming(false);
       this.activeCallbacks?.onProgress?.("");
@@ -541,7 +746,13 @@ export class StdioAppserverSession {
     if (!this.sessionId) return;
     const sessionId = this.sessionId;
     void this.ensureReady()
-      .then((client) => client.request("session/interrupt", { session_id: sessionId }))
+      .then((client) =>
+        client.requestWithTimeout(
+          "session/interrupt",
+          { session_id: sessionId },
+          adminRpcTimeoutMs(),
+        ),
+      )
       .catch(() => {
         // best-effort; UI already left Processing
       });
@@ -554,7 +765,11 @@ export class StdioAppserverSession {
     const sessionId = this.sessionId;
     try {
       const client = await this.ensureReady();
-      await client.request("turn/steer", { session_id: sessionId, text: trimmed });
+      await client.requestWithTimeout(
+        "turn/steer",
+        { session_id: sessionId, text: trimmed },
+        adminRpcTimeoutMs(),
+      );
       const live = this.liveTurn;
       if (live && this.promptEpoch === live.epoch) {
         const at = live.getState().messages.length;
@@ -629,13 +844,24 @@ export class StdioAppserverSession {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void> {
+    if (attachments?.length) {
+      if (attachments.length > MAX_CLIPBOARD_ATTACHMENTS) {
+        throw new Error(`附件最多 ${MAX_CLIPBOARD_ATTACHMENTS} 个；未发送`);
+      }
+      await this.ensureReady();
+      if (this.serverCapabilities.prompt_attachments !== true) {
+        throw new Error("当前 appserver 未声明 prompt_attachments 能力；请重启/更新 server 后再发送，附件草稿已保留");
+      }
+    }
     const userMsg = {
       id: newId("user"),
       role: "user" as const,
       content: displayContent?.trim() ? displayContent : content,
       timestamp: Date.now(),
       mode,
+      ...(attachments?.length ? { attachments: attachments.map((item) => ({ ...item })) } : {}),
     };
     this.promptEpoch += 1;
     const epoch = this.promptEpoch;
@@ -756,7 +982,7 @@ export class StdioAppserverSession {
             lastLiveProgress = "";
             callbacks.onProgress?.("");
           }
-          if (event.type === "tool_result") {
+          if (event.type === "tool_result" && this.pendingApprovals.size === 0 && this.approvalQueue.length === 0) {
             callbacks.onApprovalRequest?.(null);
           }
         }
@@ -778,14 +1004,19 @@ export class StdioAppserverSession {
       abort.signal.addEventListener("abort", onAbort);
 
       try {
+        const promptAttachments = attachments?.length
+          ? attachments.map((item) => ({ ...item })) as PromptRequest["attachments"]
+          : undefined;
+        const promptParams = {
+          session_id: this.sessionId,
+          text: content,
+          mode,
+          thinking_expanded: thinkingExpandedPref,
+          request_id: turnRequestId,
+          ...(promptAttachments ? { attachments: promptAttachments } : {}),
+        } satisfies PromptRequest;
         const result = (await raceWithAbort(
-          client.request<PromptResult>("session/prompt", {
-            session_id: this.sessionId,
-            text: content,
-            mode,
-            thinking_expanded: thinkingExpandedPref,
-            request_id: turnRequestId,
-          }),
+          client.request<PromptResult>("session/prompt", promptParams),
           signal,
           abort.signal,
         )) as PromptResult;
@@ -816,7 +1047,7 @@ export class StdioAppserverSession {
             newId,
           );
           publish(finalEvent);
-          if (mode === "plan" && looksLikePlanDocument(result.text)) {
+          if (finalTextOpensPlan(result.text, mode)) {
             callbacks.onPlan?.(parsePlanDoc(result.text));
           }
         }
@@ -833,6 +1064,7 @@ export class StdioAppserverSession {
           // Keep lastStatus from token_usage / prompt result.
         }
       } catch (e) {
+        if (attachments?.length) throw e;
         if (abort.signal.aborted || (e as Error)?.name === "AbortError") {
           publish({
             ...state,
@@ -891,6 +1123,7 @@ export class StdioAppserverSession {
           return [...prev.slice(0, idx + 1), ...settleActiveMessages(state.messages)];
         });
       }
+      if (attachments?.length) throw e;
       if (signal?.aborted || (e as Error)?.name === "AbortError") {
         callbacks.onMessages((prev) => [
           ...prev,
@@ -931,60 +1164,83 @@ export class StdioAppserverSession {
 
   async shutdown(): Promise<void> {
     if (!this.client) return;
+    const client = this.client;
+    // Answer queued approvals and questions while this writer is still the live one.
+    this.clearPendingApprovals("rejected");
+    this.clearPendingQuestions({ cancelled: true });
+    const jobs = [...this.lineJobs];
+    if (jobs.length > 0) await Promise.allSettled(jobs);
     try {
-      await this.client.request("shutdown", { reason: "opentui exit" });
+      if (this.client === client) {
+        await client.request("shutdown", { reason: "opentui exit" });
+      }
     } catch {
       // ignore
     }
-    this.resetSession();
+    if (this.client === client) this.resetSession();
   }
 
-  private async requestSessionList(): Promise<SessionListRow[]> {
+  private async requestSessionList(timeoutMs: number): Promise<SessionListRow[]> {
     const client = await this.ensureReady();
-    const listed = (await client.request<{ sessions?: SessionListRow[] }>("sessions/list", {})) as {
-      sessions?: SessionListRow[];
-    };
+    const listed = (await client.requestWithTimeout<{ sessions?: SessionListRow[] }>(
+      "sessions/list",
+      {},
+      timeoutMs,
+    )) as { sessions?: SessionListRow[] };
     return Array.isArray(listed.sessions) ? listed.sessions : [];
   }
 
-  async listSessions(): Promise<SessionListRow[]> {
+  async listSessions(timeoutMs = SESSIONS_LIST_TIMEOUT_MS): Promise<SessionListRow[]> {
     try {
-      return await this.requestSessionList();
+      return await this.requestSessionList(timeoutMs);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // RPC 超时（服务端静默丢应答）直接交还 UI 错误态；只有 appserver 进程
+      // 已死（stdout closed / exited）才 reset + respawn 并重试一次。
       if (!message.includes("appserver stdout closed") && !message.includes("appserver exited")) {
         throw err;
       }
       this.resetSession(err instanceof Error ? err : new Error(message));
-      return await this.requestSessionList();
+      return await this.requestSessionList(timeoutMs);
     }
   }
 
-  async attachSession(sessionId: string): Promise<AttachSessionResult> {
+  async attachSession(sessionId: string, modelId?: string | null): Promise<AttachSessionResult> {
     const client = await this.ensureReady();
-    if (this.sessionId && this.sessionId !== sessionId) {
+    const generation = (this.attachGeneration ?? 0) + 1;
+    this.attachGeneration = generation;
+    const previousId = this.sessionId;
+    if (previousId && previousId !== sessionId) {
       try {
         await this.interrupt();
       } catch {
         // switching away from a live turn is best-effort
       }
     }
-    if (this.sessionId !== sessionId) this.forgetTodoView();
-    this.sessionId = sessionId;
-    void this.refreshTodo().catch(() => {});
-    let replay = (await client.request<{
+    if (generation !== this.attachGeneration) {
+      throw new Error("stale session attach");
+    }
+    const timeout = adminRpcTimeoutMs();
+    let replay = (await client.requestWithTimeout<{
       events?: Array<{ method?: string; params?: Record<string, unknown> }>;
       gap_detected?: boolean;
-    }>("session/events", { session_id: sessionId, cursor: 0 })) as {
+    }>("session/events", { session_id: sessionId, cursor: 0 }, timeout)) as {
       events?: Array<{ method?: string; params?: Record<string, unknown> }>;
       gap_detected?: boolean;
     };
     if (replay.gap_detected) {
-      replay = (await client.request("session/events", {
+      replay = (await client.requestWithTimeout("session/events", {
         session_id: sessionId,
         cursor: 0,
-      })) as typeof replay;
+      }, timeout)) as typeof replay;
     }
+    if (generation !== this.attachGeneration) {
+      throw new Error("stale session attach");
+    }
+    if (previousId !== sessionId) this.forgetTodoView();
+    this.sessionId = sessionId;
+    this.sessionModelId = modelId || null;
+    void this.refreshTodo().catch(() => {});
     void this.warmBootstrap().catch(() => {
       // first prompt will bootstrap
     });
@@ -996,17 +1252,26 @@ export class StdioAppserverSession {
 
   async renameSession(sessionId: string, title: string): Promise<SessionListRow> {
     const client = await this.ensureReady();
-    return (await client.request<SessionListRow>("session/rename", { session_id: sessionId, title })) as SessionListRow;
+    return (await client.requestWithTimeout<SessionListRow>(
+      "session/rename",
+      { session_id: sessionId, title },
+      adminRpcTimeoutMs(),
+    )) as SessionListRow;
   }
 
   async trashSession(sessionId: string): Promise<void> {
     const client = await this.ensureReady();
-    await client.request("session/trash", { session_id: sessionId });
+    await client.requestWithTimeout(
+      "session/trash",
+      { session_id: sessionId },
+      adminRpcTimeoutMs(),
+    );
     if (this.sessionId === sessionId) {
-      const created = (await client.request<{ session_id: string }>("session/new", {
+      const created = await client.request<{ session_id: string; model_id?: string | null }>("session/new", {
         workspace_root: this.workspaceRoot(),
-      })) as { session_id: string };
+      });
       this.sessionId = created.session_id;
+      this.sessionModelId = created.model_id ?? null;
       this.forgetTodoView();
       void this.refreshTodo().catch(() => {});
     }
@@ -1014,11 +1279,11 @@ export class StdioAppserverSession {
 
   async pinSession(sessionId: string, pinned: boolean): Promise<void> {
     const client = await this.ensureReady();
-    await client.request("thread/pin", {
+    await client.requestWithTimeout("thread/pin", {
       session_id: sessionId,
       thread_id: sessionId,
       pinned,
-    });
+    }, adminRpcTimeoutMs());
   }
 
   private forgetTodoView(): void {
@@ -1045,7 +1310,11 @@ export class StdioAppserverSession {
     if (!this.client || !this.sessionId) return;
     const sessionId = this.sessionId;
     const ticket = ++this.todoTicket;
-    const result = (await this.client.request("todo/get", { session_id: sessionId })) as {
+    const result = (await this.client.requestWithTimeout(
+      "todo/get",
+      { session_id: sessionId },
+      adminRpcTimeoutMs(),
+    )) as {
       session_id?: string;
     };
     if (ticket !== this.todoTicket || sessionId !== this.sessionId) return;
@@ -1064,6 +1333,10 @@ let sharedSession = new StdioAppserverSession();
 
 export const stdioTransport: ChatTransport = {
   kind: "stdio",
+
+  getCurrentSessionId() {
+    return sharedSession.getCurrentSessionId();
+  },
 
   async fetchStatus(onStatus: (status: StatusInfo | null) => void): Promise<void> {
     onStatus(await sharedSession.fetchStatusSnapshot());
@@ -1142,16 +1415,17 @@ export const stdioTransport: ChatTransport = {
     callbacks: ChatApiCallbacks,
     signal?: AbortSignal,
     displayContent?: string,
+    attachments?: readonly ClipboardAttachment[],
   ): Promise<void> {
-    await sharedSession.sendChatMessage(content, mode, callbacks, signal, displayContent);
+    await sharedSession.sendChatMessage(content, mode, callbacks, signal, displayContent, attachments);
   },
 
   async listSessions() {
     return sharedSession.listSessions();
   },
 
-  async attachSession(sessionId: string) {
-    return sharedSession.attachSession(sessionId);
+  async attachSession(sessionId: string, modelId?: string | null) {
+    return sharedSession.attachSession(sessionId, modelId);
   },
 
   async renameSession(sessionId: string, title: string) {

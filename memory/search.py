@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from dataclasses import dataclass
 
-from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.memory._scope import memory_root
 
 
 @dataclass
@@ -53,7 +53,7 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _collect_memory_dirs() -> list[Path]:
-    base = get_data_dir() / "memory"
+    base = memory_root()
     if not base.exists():
         return []
     dirs = []

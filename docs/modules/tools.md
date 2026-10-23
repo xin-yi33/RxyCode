@@ -9,6 +9,84 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 - An args_schema (Pydantic model for structured input)
 - A func (the actual implementation)
 
+## Two-Tier Tool Schema (2026-10-13, 检索式分层)
+
+Every LLM request's `tools` array is **two tiers**:
+
+- **Frozen core** — the built-ins plus `tool_search`, sorted by name and
+  byte-stable across turns so the provider prefix cache keeps hitting
+  (FX6 unchanged). `tool_search` is registered at agent start by
+  `_ensure_tool_search_tool`.
+- **Deferred** — `metadata["source"] in {"mcp", "plugin"}`, plus the rare
+  installers `download_skill`, `download_mcp`, and `team_install`. These
+  never appear in the request schema. A GitHub-scale MCP connection does
+  not add tens of thousands of schema tokens per round.
+
+Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
+
+1. Model calls `tool_search(query)`. The tool is already on the frozen core,
+   including when no MCP server is connected.
+2. The catalog is one flat keyword list. Each MCP tool is named
+   `mcp_{server}_{tool}`; search does not walk server, then group, then tool.
+   Hits return **full schemas inline in the tool result** (appended to the
+   trajectory; the cache prefix stays put). A tool already exposed in the
+   same message context returns `ALREADY AVAILABLE`.
+3. To invoke a discovered tool the model emits the free-form envelope
+   `<tool_call>{"name": "mcp_x", "arguments": {...}}</tool_call>` — parsed by
+   `parse_deferred_tool_json_calls` into the standard dispatch dicts and
+   executed through the **same** ToolOrchestrator approval/audit path (no
+   second invoke channel). Unknown names and bad JSON become explicit
+   malformed-call feedback, never silent no-ops.
+
+Invariants (current as of 2026-10-13, after `0cedb02e`):
+- `tool_search` is resident from agent start. `_refresh_mcp_tools` may call
+  `_ensure_tool_search_tool` again; that call is idempotent and is not the
+  registration trigger. Subset policies force-include it. `risk=read` is a
+  floor, so the tool is READ in `core/safety/policy.py` and in
+  `PLAN_READONLY_TOOL_NAMES`.
+- `_get_core_tools()` changes only when the frozen core changes. Adding or
+  removing an MCP server does not change the request schema.
+- Prewarm binds through the same `_get_core_tools()` (`core/prewarm.py`
+  `core_tools_for`), so the hello-turn prefix equals the work-turn prefix.
+- A full discovery carries `DISCOVERY_PIN_MARKER` and stays at its position
+  through ordinary compaction. `tool_search` owns its own dedupe and size
+  cap. The generic tool-output dedupe and the 2000-character truncation do
+  not rewrite that message.
+- Fast exposure is `(session_id, message-context id, schema sha256)`.
+  Append-only chat keeps the id. Clearing history, switching session,
+  approving a plan, or loading another chat rotates it. A partial rewind
+  revokes only discoveries that left the prefix. Graph tasks use a
+  ContextVar and drop that key when the task ends. A schema change
+  re-exposes the tool.
+- `defercall_N` ids increase monotonically for the session; mixed
+  native+envelope replies get every envelope rejected with an explicit
+  ToolMessage (never silently dropped); an unterminated envelope is an
+  explicit parse error, never silently treated as the final answer.
+- Graph path (`execution/executor.py`) shares the tier: `create_agent` is
+  bound with the frozen list only (proxies resolved back to the registered
+  tool for the deferred flag), and `_DeferredEnvelopeDispatchMiddleware`
+  dispatches envelopes through the same orchestrator (approval/audit/journal).
+
+### Resident / on-demand / compat entry（K例复审裁定表）
+
+频率口径：**按调用形态与失败的代价比第一原则评估**（现有审计日志混有来源
+不明的调用，不足以支撑"无人使用"结论——这也是裁定边界）。
+
+| 工具 | 层 | 理由 |
+|---|---|---|
+| read/view/ls/grep/glob | 常驻 | 每个编码轮次的观察面（read 与 view 语义重叠但参数/行区间行为不同，合并会断既有调用） |
+| write/edit/patch | 常驻 | 代码改写主力；语义不同（write 全量、edit 点改、patch 标准 diff），不合并 |
+| bash | 常驻 | Shell 出入口，几乎所有构建/测试/探查路径 |
+| websearch/webfetch | 常驻 | 联网搜索/抓取高频且为只读 |
+| task(todo)/task_manage/todo_write | 常驻 | 状态带与长程任务源；两个入口已统一单一 in_progress 校验（K3-9） |
+| memory/history | 常驻 | 上下文检索（memory 是持久层示意，history 是会话轨迹轴；作用域不同并存） |
+| vision/open_file | 常驻 | TUI/Desktop 日常预览路径 |
+| download_file/change_directory/diagnostics/datetime/format/question/skill/final_answer | 常驻 | 日常功能面/对话管理 |
+| **download_skill / download_mcp / team_install** | **按需**（`DEFERRED_BUILTIN_TOOL_NAMES`） | 安装类动作低频、高危（DANGER）；不进 schema 既省预算也不做错误默认项。经 `tool_search` 暴露、envelope 派发 |
+| **workflow** | 常驻（观察评估中，待单独审计） | 长任务编排工具，新特性还在被验证（另一会话工作流）；本批不动它的层级，**待该特性独立验收后再裁定** |
+| 所有 MCP / 插件 | 按需 | `metadata.source` 标记层 |
+| 兼容入口 | — | `_select_turn_tools` 已废弃；`task`/`task_manage` 兼容名字仍在；`shell` 归一 `bash` |
+
 ## Key Files
 | File | Purpose |
 |------|---------|
@@ -184,10 +262,20 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
 - Captures stdout/stderr separately
 - Handles Windows PowerShell vs cmd detection
 - Supports working directory changes
-- Combined output longer than 30000 chars is middle-truncated (head + tail
-  kept, ~15000 chars each) with a "[输出已截断...]" hint telling the agent to
-  use grep / redirect-to-file for the rest (Tier1 style, adapted from
-  memory/compressor.py:170-194)
+- Uses the bounded `ShellExecutor` previews and raw stdout/stderr artifacts;
+  bash formats the previews without reading the complete artifact back into
+  memory. Artifact paths retain the `Full output saved to:` prefix, duplicate
+  large captures are still omitted, and model-visible previews pass through
+  secret redaction. Combined preview text above 30000 chars is middle-truncated
+  with a hint to read the artifact in segments. A failed spill reports
+  `[spill write failed; output truncated]` and never claims the full output
+  was saved. The shared `append_capture_hints()` presentation helper is also
+  used by workflow, Git, formatter, installer/MCP, screenshot, and file-opener
+  callers of `ShellExecutor`, so their bounded previews retain a path to the
+  complete local artifact without loading it back into memory. If a truncated
+  stream contains a secret-redaction marker, its raw tail is conservatively
+  omitted before tool-orchestrator redaction; the exact bytes remain in the
+  local artifact.
 
 ### ReadTool (read.py)
 - Reads file contents with optional line range (offset/limit)

@@ -1,0 +1,3 @@
+Parent HEAD before this card: 3df9d805 feat/rxycode-web. Not pushed.
+RED: TerminalPane.tsx was missing. 3 failed in the pytest line log.
+E2E-WEB-05 screenshots are not produced.

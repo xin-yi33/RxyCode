@@ -290,11 +290,14 @@ async def _capture_screenshot_async() -> str:
         )
 
     from ..utils.shell import shell_executor
+    from ..utils.output_capture import append_capture_hints
 
     timeout_s = float(os.environ.get("RXYCODE_SCREEN_CAPTURE_TIMEOUT", "5"))
     first, second = _capture_candidates()
     result = await shell_executor.execute_argv_async(first, timeout=timeout_s)
+    earlier_results = []
     if not result["success"] and "No module named" in (result["stderr"] or ""):
+        earlier_results.append(result)
         result = await shell_executor.execute_argv_async(
             second, timeout=timeout_s
         )
@@ -305,11 +308,16 @@ async def _capture_screenshot_async() -> str:
         )
     if not result["success"]:
         detail = (result["stderr"] or "unknown error").strip()[:300]
-        return (
+        message = (
             f"[error: screen capture failed "
             f"(exit {result['exit_code']}): {detail}]"
         )
-    return (result["stdout"] or "").strip()
+        output = append_capture_hints(message, result)
+    else:
+        output = append_capture_hints((result["stdout"] or "").strip(), result)
+    for earlier in earlier_results:
+        output = append_capture_hints(output, earlier)
+    return output
 
 
 vision_tool = StructuredTool(

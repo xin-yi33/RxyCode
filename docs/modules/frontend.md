@@ -18,8 +18,9 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 - Ink 5.x under `frontend/` (React 18) — rollback / `RXYCODE_TUI=ink`
 - **Chat transport** (P5): `RXYCODE_TRANSPORT=stdio|http` (default `stdio`)
   - `stdio` (default): spawns `python -m appserver`, uses `@rxycode/protocol-client` JSON-RPC
-  - `/session` attach 走 `session/events` → `sessionEventsToMessages`：恢复 thought（`event/final.thinking`）、已结束的 tool card、`done` 的 assistant（Markdown 编译后展示）。禁止把加载消息剥成只有 role/content（会让 tool 一直 `[running]`、MD 变源码）
+  - `/session` attach 走完整 `session/events`（不是截断后的 `session/items` 页）→ `sessionEventsToMessages`：用 `call_id` 索引配 tool_end，恢复 thought（`event/final.thinking`）、已结束的 tool card、`done` 的 assistant（Markdown 编译后展示）。没有 begin 的 tool_end 仍保留为一条 tool。禁止把加载消息剥成只有 role/content（会让 tool 一直 `[running]`、MD 变源码）。会话列表每次刷新（打开、置顶、重命名、Fork）都递增请求序号，只有最新一次能改列表和缓存。`models/list`、`session/events` 等管理 RPC 有超时；`session/prompt` 没有。任务模型身份是配置里的 `model_id`（`sessions/list` 已带回），显示名和上下文上限都从这一条取出。失败的 `session/set_model` 之后继续显示这个 id，不改其它窗口的全局 active；换会话、重连或成功切模会换掉它。切模请求在等待期间固定发起时的 `session_id` 和代次，迟到成功或失败都不改已经加载的另一会话。关闭会话弹窗后，置顶、重命名、Fork 的迟到回调不再刷新列表缓存。
   - `http`: embedded FastAPI + SSE (`chatApi` → `/chat/stream`) — fallback via `RXYCODE_TRANSPORT=http`
+  - Clipboard attachments are OpenTUI-only: bracketed text paste stays literal; Ctrl+V uses a short fallback for terminals that swallow an empty image/file paste, while Alt+V and `/paste` explicitly invoke the one-shot Python helper. Pure local Windows path pastes become attachment chips only after asynchronous regular-file checks. The frontend stores and replays path/name metadata only (never image bytes). stdio may send attachments only when `initialize.capabilities.prompt_attachments === true`; older servers reject visibly and the draft remains available. HTTP uses the existing `/chat/stream` `ChatRequest.attachments` field and requires `GET /status` to advertise `capabilities.prompt_attachments === true` before an attachment request; ordinary turns do not add this preflight. Admission failures remain visible without automatically retrying attachment requests. Follow-up queue items retain their own attachment metadata; immediate `turn/steer` remains text-only.
   - Status bar 上下文/缓存: stdio 消费 `event/token_usage` + `models/list.context_window`（不再依赖 HTTP `/status`）
   - Esc 立即结束 Processing，后台再发 `session/interrupt`
 - Settings dialogs (models, MCP, memory) still use HTTP API in both modes。**例外（UPDATE-01 轨 H）**：`/session` 列表走 stdio JSON-RPC `sessions/list`，不走 HTTP `sendCommand("/session")`。**例外（UPDATE-01 轨 I）**：`/effort` overlay 标题锁定 `Select effort`；`/model` 换模型与 `/addmodel` 后弹出同一 overlay；esc = `default`。禁止把命令改名为 `/variant`。**例外（UPDATE-01 轨 J）**：已发送 **user** 气泡右键弹出 `Message Actions`（命中=灰底；**运行中仍弹**）。Revert/Copy/Fork。Copy/Fork 不 interrupt；Revert busy 先 `session/interrupt`。禁止 `session/fork` 当 Fork。**例外（UPDATE-01 轨 K）**：换模型不新开 session；隔夜 attach 同一 `session_id` 后 hydrate dated memory。禁止把列表当 transcript
@@ -30,11 +31,13 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 | File | Purpose |
 |------|---------|
 | opentui-app/src/App.tsx | Main OpenTUI app — chat, input, shortcuts, dialog routing。composer 元信息行：`{mode} · {model} · {effortChip}`（UPDATE-01 U54）；禁止改 `formatHeaderLine` 三参换芯片。已发送 user 气泡右键 Message Actions（U58）；Revert 横幅（U59） |
+| opentui-app/src/TranscriptMountWindow.tsx / `transcriptMountBudget.ts` | Transcript render budget: tail-first 80-message native mount window with 40-message overlapping older/newer pages. Full `messages` remains authoritative; `/copy`, tool/thought/markdown cards, revert/fork and source data are not truncated. The top/bottom controls and PageUp/PageDown move a bounded sliding window; anchor rows keep their viewport line across a page prepend. New session loads and `/clear` reset the window. |
 | opentui-app/src/followupQueue.ts | Processing 时 follow-up 队列（FIFO，上限 10）；立即发送走 `turn/steer` |
 | opentui-app/src/FollowupQueueBar.tsx | 队列行：立即发送 / 编辑 / 删除 |
 | opentui-app/src/index.tsx | OpenTUI entry — CliRenderer alternate screen + lifecycle |
 | opentui-app/src/chatApi.ts | Transport facade — delegates to `transport/` (http or stdio) |
 | opentui-app/src/transport/ | P5 transport layer: `httpTransport`, `stdioTransport`, `httpAdmin.ts`, `notifyToStreamEvent.ts`, `sseParser.ts` |
+| opentui-app/src/clipboard.ts | One-shot clipboard helper lifecycle, strict bounded metadata parsing, conservative path-drop parsing and async file validation |
 | opentui-app/src/mention.ts | `@agent` mention autocomplete + dispatch over stdio `agent/invoke` |
 | opentui-app/src/dialog/* | Nested settings / select / confirm / prompt dialogs。`/session` 默认走 `DialogSessionList` + JSON-RPC `sessions/list`（UPDATE-01 轨 H）；禁止 HTTP `sendCommand("/session")` 读 `chat_storage`。Esc 关闭不变。`/effort` 走 `DialogEffort` + `effortPicker.ts`（UPDATE-01 轨 I；标题 `Select effort`） |
 | opentui-app/src/CommandPalette.tsx | Ctrl+P command palette |
@@ -49,6 +52,13 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 | opentui-app/src/dialog/messageActions.ts | UPDATE-01 轨 J：`shouldOpenMessageActions` / `pointInUserBubble` / overlay 文案。右键 `button===2`。**busy 仍弹 overlay**。Fork 方法锁定 `thread/fork`。Revert busy 走 `revertNeedsAbort` → `session/interrupt` |
 | opentui-app/src/dialog/DialogMessageActions.tsx | 用户气泡 Message Actions overlay（Revert / Copy / Fork）。复用 DialogSelect，禁止重写导航 |
 | opentui-app/src/Modal.tsx / brand.ts / statusBar.ts | Shared UI primitives |
+
+**Transcript native mount budget (OpenTUI):** `ScrollBox` viewport culling only
+skips drawing off-screen children; it does not unmount their native renderables.
+`TranscriptMountWindow` therefore mounts at most 80 transcript messages and
+slides that bounded window by 40 messages when navigating older/newer pages.
+Message objects and their content remain in App state; this is a render-tree
+budget, not transcript deletion, summarization, or an RSS/Private-memory claim.
 
 ## Key Files (Ink — fallback)
 | File | Purpose |
@@ -137,6 +147,12 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 
 ## Environment (OpenTUI)
 
+2026-10-13: the unified `edit` file tool uses the existing edit-family card.
+`operation="write"` (or an unambiguous historical content payload) displays
+`Wrote` and the content preview; replace/patch display `Edited` and red/green
+differences. Old write/edit/patch cards remain readable. Whole-file overwrite
+previews still show submitted content, not a verified before/after diff.
+
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `RXYCODE_TRANSPORT` | `stdio` | `stdio` = appserver subprocess (default); `http` = SSE via embedded API |
@@ -151,3 +167,89 @@ protocol-client package keeps its independent version; JSON-RPC stays 1.1.0.
 - Tests: npx vitest run
 - Dev mode: npm run dev (tsx)
 - Production: npm run build && npm start
+
+## Web (apps/web)
+
+Web theme state remains in the existing app-root `ThemeSync`: `rxy_theme` cookie initializes Zustand, and the selected theme updates the root `.dark` class and `data-theme`. Cookie reads and writes are best-effort so browser storage restrictions do not prevent an in-memory theme change; no localStorage fallback is used. The global CSS declares `color-scheme: light` for the light theme and `dark` for `.dark`, including native controls. This does not guarantee immunity to vendor-forced night-mode transformations.
+
+ALTCHA 3.4.1 must receive its endpoint through `challenge`, not the unsupported legacy `challengeurl`. The widget uses the supported JSON `configuration` attribute for `hideFooter`/`hideLogo`, and clears its single-use payload whenever it leaves the verified state. The server's V1 challenge format, signing, and verification remain unchanged. Browser regression coverage lives in `tests/web/w3/test_w3_c08_browser_regressions.py`; run it with `python -m pytest tests/web/w3/test_w3_c08_browser_regressions.py -k chromium -q`. WebKit and physical-device behavior require separate available runtimes.
+
+When ALTCHA 3.4.1 emits its `error` state, the auth widget makes one bounded
+fallback attempt using a same-origin V1 challenge and the pinned `js-sha256`
+pure-JavaScript implementation. The fallback runs only in a secure context,
+hashes the unchanged `SHA-256(salt + decimal counter)` input, yields in small
+main-thread batches, and stops on abort, expiry, or the existing 90-second
+limit. Failure leaves the auth token empty; another attempt requires the
+visible retry button. The normal worker-backed widget path is unchanged.
+
+The console stylesheet is built with Tailwind CSS `3.4.19`, PostCSS `8.5.31`,
+and Autoprefixer `10.6.1` (exact versions in both `package-lock.json` and
+`bun.lock`). The previous Tailwind v4 output relied on cascade layers and newer
+color/transition CSS; Chromium `98.0.4758.0` ignored the utility rules and left
+the `/app` flex shell and fixed mobile sidebar unstyled. `tailwind.config.js`
+maps the existing semantic palette to comma-separated RGB custom properties so
+v3 opacity utilities such as `bg-card/60` and `bg-waiting/15` remain valid; the
+`shadow-sm` value is pinned to the prior console elevation. `vite.config.ts`
+uses conservative syntax targets (`chrome90`, `safari14`, `es2020`) only; these
+are not a browser-support promise and do not add polyfills.
+
+Composer request IDs prefer `crypto.randomUUID()`. Where that method is absent,
+`src/lib/secureRequestId.ts` uses `crypto.getRandomValues()` and sets RFC 4122
+UUIDv4 version/variant bits; there is no `Math.random()` path. If secure random
+values themselves are unavailable, the composer shows an inline error and
+does not issue a task request. A network-failed retry retains the same draft
+ID; server responses continue to follow the existing request-id reset rules.
+
+The production CSS and computed-layout regressions are in
+`tests/web/w3/test_w3_c08_browser_regressions.py`. They build and serve a
+production bundle only when selected, reject cascade layers, `@property`, CSS
+nesting, `color-mix()` and `oklch()`, and inspect mobile/desktop shell layout,
+sidebar overlay, theme, composer transition completion, and model-button text
+colors. To run those checks use
+`python -m pytest tests/web/w3/test_w3_c08_browser_regressions.py -k 'production_css or production_app_layout' -q`.
+The optional `RXYCODE_LEGACY_CHROMIUM` environment variable points to a real
+Chromium 98 executable; the test checks its actual browser version and does not
+spoof the user agent. The secure request-ID fallback test can be run against a
+real Chromium 90 executable using `RXYCODE_UUID_FALLBACK_CHROMIUM`; otherwise
+it removes only `randomUUID` in the modern test context while retaining real
+`getRandomValues`. These checks do not establish general Chrome 90/Safari 14
+support; WebKit, Safari, and physical-device behavior remain separate targets.
+
+### 2026-10-22 CAPTCHA transport and execution-path correction
+
+This section supersedes the earlier ALTCHA note above only where it says the
+fallback requires `isSecureContext === true` or that the normal widget is
+unchanged on every device. The compatibility solver requires an HTTPS page (or
+loopback HTTP for local development), not the browser's `isSecureContext` flag,
+Worker, or `crypto.subtle`. Public `rxycode.xyz` and `www.rxycode.xyz` HTTP
+entries upgrade before React renders; other non-loopback HTTP origins render no
+auth form. Caddy independently redirects allowlisted public HTTP using
+Cloudflare's overwritten `X-Forwarded-Proto`, with explicit route ordering and
+one-day HSTS without subdomain/preload flags.
+
+Mobile-like clients selected by touch, viewport, and mobile-UA signals start
+the chunked pure-JS solver directly. Desktop clients dynamically load the
+official ALTCHA worker widget and fall back to the same solver on widget error
+or load failure. These signals affect execution only: all clients submit the
+same V1 payload to the same server HMAC verifier, with unchanged endpoint,
+counter maximum, TTL, and replay protection. The UA is never an authorization
+signal. The public HTTP 200 observation established that HTTP could be served;
+it did not establish the URL used by the user's handset or an HTTPS
+`isSecureContext` regression on that handset.
+
+The focused regressions and opt-in anonymous live smoke are in
+`tests/web/w3/test_w3_c08_browser_regressions.py`. The live smoke requires an
+isolated Playwright context and makes no auth POST; it checks the public HTTP
+308 with a raw `http.client` request rather than relying on browser/CLI HTTPS
+upgrade behavior. Local focused browser runs completed with 24 passed and 3
+WebKit cases skipped because its browser binary is not installed; web typecheck
+passed, and official Caddy `v2.11.7 validate` accepted `Caddyfile.prod` after
+the downloaded release matched its published SHA-512. The anonymous live smoke,
+parent's fresh full-file run, and deployment verification remain pending; those
+results belong in `OPS-LOG.md` only after the parent supplies evidence. The
+brief upstream comparison is in
+`docs/deploy/mobile-browser-adaptation-20261022.md`.
+
+## Web 控制台（UI-2026-10-22 开发包，apps/web）
+
+路由：`/app`（会话）、`/app/p/:projectId`（项目首页）、`/scheduled`（定时任务）、`/settings/:section`（general/appearance/notifications/security/archived/models）、`/plugins`（占位）；`/app/settings?section=x` 旧深链重定向到对应新分区。侧栏三分区：导航（新任务/Ctrl+K 搜索/定时任务）+ 项目 + 会话（置顶与最近分组、⋯ 菜单走 sessions 生命周期 API）；桌面收起为 56px 图标轨。`SearchModal`：250ms 防抖、AbortController、IME 安全、五类搜索与 cursor 分页。外观引擎 `lib/appearance.ts` 把服务端偏好解析为 `<html>` data 属性与 `--rxy-*` 变量；`rxy_theme` cookie 仅作访客回退，无 localStorage。i18n `lib/i18n.tsx`（auto/zh-CN/en），偏好 locale 优先、`rxy_locale` cookie 次之、navigator 兜底。归档会话在 SessionPage 显示只读横幅并隐藏 Composer。安全：thinking 时间线条目为纯进度块，不渲染 reasoning/intermediate 原始文本（`tests/web/w3/test_w3_c03_unit.py` 契约）。后端 API 契约测试在 `tests/web/w10/`（postgres 容器同 w9）。

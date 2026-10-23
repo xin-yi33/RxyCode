@@ -10,6 +10,10 @@ _ISOLATION_KEYS = (
     "RXYCODE_V2_CONFIG_DIR",
     "HOME",
     "USERPROFILE",
+    # A web DB leaked into the process env (e.g. serve()/publish_database_url
+    # called in-process by another test) must not make the live CLI worker
+    # try to bind a web run — binding stays opt-in per real deployment.
+    "RXYCODE_WEB_DATABASE_URL",
 )
 
 

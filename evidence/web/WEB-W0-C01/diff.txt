@@ -1,0 +1,193 @@
+diff --git a/.gitignore b/.gitignore
+index ca8288ce..29e7b105 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -151,7 +151,24 @@ docs/*
+ !docs/development-order.yaml
+ !docs/specs/
+ !docs/specs/**
+-docs/plans/
++# docs/plans stays ignored, except the Web plan tracked by WEB-W0-C01.
++# Parent directories must be re-included before a nested exception can match.
++!docs/plans/
++docs/plans/*
++!docs/plans/opus5-plan/
++docs/plans/opus5-plan/*
++!docs/plans/opus5-plan/rxycode -web/
++!docs/plans/opus5-plan/rxycode -web/**
++# The un-ignore above is later, so secret and archive names must be closed again.
++docs/plans/opus5-plan/rxycode -web/**/.env
++docs/plans/opus5-plan/rxycode -web/**/.env.*
++docs/plans/opus5-plan/rxycode -web/**/credentials.yaml
++docs/plans/opus5-plan/rxycode -web/**/*.secret
++docs/plans/opus5-plan/rxycode -web/**/secrets.json
++docs/plans/opus5-plan/rxycode -web/**/secret.txt
++docs/plans/opus5-plan/rxycode -web/**/live_credentials.*
++docs/plans/opus5-plan/rxycode -web/**/rxycode_gh_secret.txt
++docs/plans/opus5-plan/rxycode -web/**/*.rar
+ 
+ # --- 璁″垝鐩綍閲岀殑鍘嬬缉鍖?/ 闆舵暎绗旇锛堜笉鍏ュ簱锛?--
+ docs/plans/opus5-plan.rar
+diff --git a/evidence/web/WEB-W0-C01/baseline.txt b/evidence/web/WEB-W0-C01/baseline.txt
+new file mode 100644
+index 00000000..102b89ad
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/baseline.txt
+@@ -0,0 +1,14 @@
++parent_head=ed9cacb3228d0526936e25dfdaf911aaf20d89ed
++parent_branch=feat/rxycode-web
++parent_upstream=none
++nested_repo=docs/plans/opus5-plan
++nested_head=5578d74
++nested_remote=none
++anchors=AGENTS.md Module Documentation Index; .gitignore docs; DEV-ORDER 娲诲紑鍙戦『搴?+check_ignore_web=not ignored in parent and not ignored in the embedded plans repo
++check_ignore_kept=opus5-plan.rar, .env, and the old rxycode tree stay ignored
++static_audit=AUDIT docs=37 cards=48 tests=173 errors=0
++parent_porcelain_lines=154
++card_stages_only=.gitignore, tests/web/w0/test_w0_c01_unit.py, tests/web/w0/test_w0_c01_module.py, evidence/web/WEB-W0-C01/
++web_local_secret_check=.env credentials.yaml history.rar under rxycode -web are ignored; README.md is not
++unrelated_dirty_left_unstaged=yes
+diff --git a/evidence/web/WEB-W0-C01/contract.txt b/evidence/web/WEB-W0-C01/contract.txt
+new file mode 100644
+index 00000000..4756dabc
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/contract.txt
+@@ -0,0 +1,2 @@
++AUDIT docs=37 cards=48 tests=173 errors=0
++PASS static documentation check; NOT a claim of product implementation or runtime tests
+diff --git a/evidence/web/WEB-W0-C01/handoff.md b/evidence/web/WEB-W0-C01/handoff.md
+new file mode 100644
+index 00000000..3b102059
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/handoff.md
+@@ -0,0 +1,6 @@
++# WEB-W0-C01 handoff
++
++Card: WEB-W0-C01 鍘熻鍒掕拷婧€佺増鏈拷韪笌宸ヤ綔鏍戦攣瀹?+Next card: WEB-W0-C02, only after this card's Codex audit reports no remaining problems.
++Branch: feat/rxycode-web in D:\agent-demo\RxyCode\RxyCode1_1_0. Not pushed.
++Not started: WEB-W0-C02 and every later card.
+diff --git a/evidence/web/WEB-W0-C01/integration.txt b/evidence/web/WEB-W0-C01/integration.txt
+new file mode 100644
+index 00000000..263adb2a
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/integration.txt
+@@ -0,0 +1,2 @@
++.                                                                        [100%]
++1 passed in 0.31s
+diff --git a/evidence/web/WEB-W0-C01/red.txt b/evidence/web/WEB-W0-C01/red.txt
+new file mode 100644
+index 00000000..7afb61dd
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/red.txt
+@@ -0,0 +1,11 @@
++FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-8vew68rm
++
++================================== FAILURES ===================================
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_unit.py:22: AttributeError: module 'rxycode_web_check_plan' has no attribute 'scan_contract'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_unit.py:31: AttributeError: module 'rxycode_web_check_plan' has no attribute 'authority_status'
++D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c01_module.py:21: AttributeError: module 'rxycode_web_check_plan' has no attribute 'tracking_status'
++=========================== short test summary info ===========================
++FAILED tests/web/w0/test_w0_c01_unit.py::test_w0_c01_contract - AttributeErro...
++FAILED tests/web/w0/test_w0_c01_unit.py::test_w0_c01_negative - AttributeErro...
++FAILED tests/web/w0/test_w0_c01_module.py::test_w0_c01_integration - Attribut...
++3 failed in 0.12s
+diff --git a/evidence/web/WEB-W0-C01/self-audit.md b/evidence/web/WEB-W0-C01/self-audit.md
+new file mode 100644
+index 00000000..0b7da66d
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/self-audit.md
+@@ -0,0 +1,13 @@
++# WEB-W0-C01 self-audit
++
++The shipped scanner is `docs/plans/opus5-plan/rxycode -web/scripts/check_plan.py`.
++`test_w0_c01_contract` calls `scan_contract` on the real plan directory.
++`test_w0_c01_negative` calls `authority_status` on a missing path and on the real DEV-ORDER.
++`test_w0_c01_integration` calls `tracking_status` on the real repository.
++
++Red run failed because those functions did not exist (`evidence/web/WEB-W0-C01/red.txt`).
++Green run: unit 2 passed, integration 1 passed, static audit errors=0.
++
++`.gitignore` re-includes only `docs/plans/opus5-plan/rxycode -web/`. The RAR, `.env`, and the old `rxycode/` tree stay ignored.
++
++`docs/plans/opus5-plan` is an embedded git repository, so the parent repository cannot store those Markdown blobs. The Web files are untracked and not ignored inside that repository. This is recorded in `16-DOC-AUDIT-CHANGE-CONTROL.md` 搂4.1.
+diff --git a/evidence/web/WEB-W0-C01/unit.txt b/evidence/web/WEB-W0-C01/unit.txt
+new file mode 100644
+index 00000000..aff0ffe0
+--- /dev/null
++++ b/evidence/web/WEB-W0-C01/unit.txt
+@@ -0,0 +1,2 @@
++..                                                                       [100%]
++2 passed in 0.10s
+diff --git a/tests/web/w0/test_w0_c01_module.py b/tests/web/w0/test_w0_c01_module.py
+new file mode 100644
+index 00000000..0dd2c40c
+--- /dev/null
++++ b/tests/web/w0/test_w0_c01_module.py
+@@ -0,0 +1,28 @@
++"""WEB-W0-C01 integration: real gitignore, real Web docs, secrets stay ignored."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
++
++
++def _scanner():
++    path = PLAN / "scripts" / "check_plan.py"
++    spec = importlib.util.spec_from_file_location("rxycode_web_check_plan", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_w0_c01_integration():
++    """Given the repo gitignore, Web docs are trackable and leftover secrets are not."""
++    report = _scanner().tracking_status(REPO)
++    assert report["web_doc_ignored"] is False
++    assert report["plans_archive_ignored"] is True
++    assert report["secret_ignored"] is True
++    assert report["legacy_plan_tree_ignored"] is True
++    assert report["web_local_env_ignored"] is True
++    assert report["web_local_credentials_ignored"] is True
++    assert report["web_local_archive_ignored"] is True
+diff --git a/tests/web/w0/test_w0_c01_unit.py b/tests/web/w0/test_w0_c01_unit.py
+new file mode 100644
+index 00000000..ce52cff2
+--- /dev/null
++++ b/tests/web/w0/test_w0_c01_unit.py
+@@ -0,0 +1,33 @@
++"""WEB-W0-C01 unit contracts. These call the shipped plan scanner."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++PLAN = REPO / "docs" / "plans" / "opus5-plan" / "rxycode -web"
++DEV_ORDER = REPO / "docs" / "plans" / "opus5-plan" / "rxycode" / "architecture" / "DEV-ORDER.md"
++
++
++def _scanner():
++    path = PLAN / "scripts" / "check_plan.py"
++    spec = importlib.util.spec_from_file_location("rxycode_web_check_plan", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_w0_c01_contract():
++    """Given the Web plan exists, scanning the index finds unique cards and a link for every file."""
++    report = _scanner().scan_contract(PLAN)
++    assert report["card_count"] == 48
++    assert report["duplicate_cards"] == []
++    assert report["unindexed_files"] == []
++
++
++def test_w0_c01_negative(tmp_path: Path):
++    """Given the old DEV-ORDER is missing, the scan is BLOCKED_PREREQUISITE."""
++    missing = tmp_path / "DEV-ORDER.md"
++    status = _scanner().authority_status(missing)
++    assert status == "BLOCKED_PREREQUISITE"
++    assert _scanner().authority_status(DEV_ORDER) == "OK"

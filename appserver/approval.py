@@ -45,7 +45,11 @@ class JsonRpcApproval(ApprovalBroker):
                         "request_id": request.approval_id,
                         "risk_level": request.risk.name,
                         "action": request.tool_name,
-                        "details": {"args": request.args_summary},
+                        "details": {
+                            "args": request.args_summary,
+                            # 2026-10-12 审批界面回显完整外部 description。
+                            "description": request.tool_description,
+                        },
                     },
                 ),
                 timeout=self.timeout,

@@ -12,13 +12,73 @@ _tui: ContextVar[Any | None] = ContextVar("appserver_tui", default=None)
 _delegate_depth: ContextVar[int] = ContextVar("appserver_delegate_depth", default=0)
 
 
-def bind_prompt_context(session_id: str, tui: Any) -> tuple[Token[str], Token[Any | None]]:
-    return _session_id.set(session_id), _tui.set(tui)
+def _run_context_module() -> Any:
+    import importlib
+    import sys
+    from pathlib import Path
+
+    try:
+        return importlib.import_module("rxycode_protocol.run_context")
+    except ImportError:
+        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-protocol" / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        return importlib.import_module("rxycode_protocol.run_context")
 
 
-def reset_prompt_context(tokens: tuple[Token[str], Token[Any | None]]) -> None:
+def server_run_context(session_id: str, claimed: Any | None = None) -> Any:
+    """Mint a run from the worker session. The client body cannot set tenant or run id."""
+    RunContext = _run_context_module().RunContext
+
+    authenticated = {
+        "tenant_id": "local",
+        "actor_id": "local",
+        "project_id": session_id,
+        "session_id": session_id,
+        "target_id": session_id,
+        "permission_profile": "default",
+        "deadline_at": "none",
+        "trace_id": session_id,
+    }
+    return RunContext.from_authenticated(authenticated, claimed=claimed)
+
+
+def bind_prompt_context(
+    session_id: str,
+    tui: Any,
+    run_context: Any | None = None,
+) -> tuple[Token[str], Token[Any | None], Token[Any | None]]:
+    """Bind the prompt TUI plus an explicit RunContext for this task.
+
+    Existing callers that only pass session id and TUI still work. When no
+    context is supplied, the server mints one for that session id. The third
+    token is reset by reset_prompt_context. This does not change the process
+    working directory.
+    """
+    bind_run_context = _run_context_module().bind_run_context
+
+    if run_context is None:
+        run_context = server_run_context(session_id)
+    return (
+        _session_id.set(session_id),
+        _tui.set(tui),
+        bind_run_context(run_context),
+    )
+
+
+def reset_prompt_context(
+    tokens: tuple[Token[str], Token[Any | None], Token[Any | None]],
+) -> None:
+    reset_run_context = _run_context_module().reset_run_context
+
     _session_id.reset(tokens[0])
     _tui.reset(tokens[1])
+    reset_run_context(tokens[2])
+
+
+def current_run_context() -> Any | None:
+    """Return the RunContext bound for this task, or None."""
+    return _run_context_module().current_run_context()
 
 
 def get_bound_session_id() -> str:

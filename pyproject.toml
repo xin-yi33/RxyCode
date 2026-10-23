@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxycode"
-version = "1.4.2"
+version = "1.4.4"
 description = "Plan-and-execute AI coding agent with verification and safe tool orchestration"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -71,11 +71,55 @@ packages = [
   "RxyCode.RxyCode1_1_0.tools",
   "RxyCode.RxyCode1_1_0.utils",
   "RxyCode.RxyCode1_1_0.validation",
+  "rxycode_core",
+  "rxycode_core.runtime",
+  "rxycode_core.tools",
+  "rxycode_protocol",
+  "rxycode_server",
+  "rxycode_server.persistence",
+  "rxycode_server.alembic",
+  "rxycode_server.alembic.versions",
+  "rxycode_server.api",
+  "rxycode_server.runs",
+  "rxycode_server.events",
+  "rxycode_server.approvals",
+  "rxycode_server.artifacts",
+  "rxycode_server.usage",
+  "rxycode_server.devices",
+  "rxycode_worker",
+  "rxycode_runner",
+  "rxycode_runner.local",
+  "rxycode_runner.desktop",
+  "rxycode_runner.remote",
+  "rxycode_runner.transport",
+  "rxycode_runner.browser",
 ]
 
 [tool.setuptools.package-dir]
 "RxyCode" = "_package_root/RxyCode"
 "RxyCode.RxyCode1_1_0" = "."
+"rxycode_core" = "packages/rxycode-core/src/rxycode_core"
+"rxycode_core.runtime" = "packages/rxycode-core/src/rxycode_core/runtime"
+"rxycode_core.tools" = "packages/rxycode-core/src/rxycode_core/tools"
+"rxycode_protocol" = "packages/rxycode-protocol/src/rxycode_protocol"
+"rxycode_server" = "packages/rxycode-server/src/rxycode_server"
+"rxycode_server.persistence" = "packages/rxycode-server/src/rxycode_server/persistence"
+"rxycode_server.alembic" = "packages/rxycode-server/alembic"
+"rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
+"rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
+"rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
+"rxycode_server.events" = "packages/rxycode-server/src/rxycode_server/events"
+"rxycode_server.approvals" = "packages/rxycode-server/src/rxycode_server/approvals"
+"rxycode_server.artifacts" = "packages/rxycode-server/src/rxycode_server/artifacts"
+"rxycode_server.usage" = "packages/rxycode-server/src/rxycode_server/usage"
+"rxycode_server.devices" = "packages/rxycode-server/src/rxycode_server/devices"
+"rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+"rxycode_runner" = "packages/rxycode-runner/src/rxycode_runner"
+"rxycode_runner.local" = "packages/rxycode-runner/src/rxycode_runner/local"
+"rxycode_runner.desktop" = "packages/rxycode-runner/src/rxycode_runner/desktop"
+"rxycode_runner.remote" = "packages/rxycode-runner/src/rxycode_runner/remote"
+"rxycode_runner.transport" = "packages/rxycode-runner/src/rxycode_runner/transport"
+"rxycode_runner.browser" = "packages/rxycode-runner/src/rxycode_runner/browser"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

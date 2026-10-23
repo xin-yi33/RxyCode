@@ -1,0 +1,7 @@
+WEB-W1-C02 RED before RunContext existed.
+
+python -m pytest tests/web/w1/test_w1_c02_unit.py tests/web/w1/test_w1_c02_module.py -q --tb=line
+FAILED test_w1_c02_contract - ModuleNotFoundError: No module named 'rxycode_protocol'
+FAILED test_w1_c02_negative - ModuleNotFoundError: No module named 'rxycode_protocol'
+FAILED test_w1_c02_integration - ImportError: cannot import name 'current_run_context' from 'appserver.runtime'
+3 failed in 0.26s

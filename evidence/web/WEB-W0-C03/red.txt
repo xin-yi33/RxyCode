@@ -1,0 +1,7 @@
+.F.                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-c35i46ep
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w0\test_w0_c03_unit.py:48: AttributeError: module 'rxycode_web_check_plan_c03' has no attribute 'baseline_file_status'
+=========================== short test summary info ===========================
+FAILED tests/web/w0/test_w0_c03_unit.py::test_w0_c03_negative - AttributeErro...
+1 failed, 2 passed in 0.26s

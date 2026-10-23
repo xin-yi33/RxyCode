@@ -1,0 +1,14 @@
+branch=feat/rxycode-web
+upstream=none
+parent_code=ed824e05
+parent_fix=719cadc0
+parent_fix2=d1b2d9bd
+audit=VERDICT: NO_REMAINING_PROBLEMS
+session_id=01a140a7-2cc1-7f61-bdab-2af627f08e80
+model=gpt-6.1-sol
+reasoning=high
+nested_whitelist=fa7d5f4
+base=2fbb7475
+unit=2 passed
+module=1 passed
+pushed=no

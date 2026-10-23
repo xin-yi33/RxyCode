@@ -162,12 +162,11 @@ def dispatch_subagent_task_sync(
 subagent_task_tool = StructuredTool(
     name="task",
     description=(
-        "Spawn an isolated child subagent (own context, permissions, budget). "
-        "Use agent_id='explore' for read-only codebase investigation: find files, "
-        "grep symbols, explain how a module works; explore cannot edit. "
-        "Use general/scout/reviewer for other delegated analysis. "
-        "Do not spawn for greetings or a single-file bugfix the parent can do. "
-        "Returns a structured result summary."
+        "Synchronous alias of spawn_subagent. Isolated child: own system prompt, "
+        "own context, own tools. Prefer spawn_subagent when you need async, stream, "
+        "cancel, or a follow-up message. explore is only the read-only investigator, "
+        "not the whole collaboration system. list_agents shows the other roles. "
+        "Do not spawn for greetings or a single-file bugfix the parent can do."
     ),
     func=dispatch_subagent_task_sync,
     coroutine=dispatch_subagent_task_async,

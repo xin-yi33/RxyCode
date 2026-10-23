@@ -1,0 +1,11 @@
+FFF                                                                      [100%]RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-at0i8r12
+
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c07_unit.py:39: ImportError: cannot import name 'release_status' from 'rxycode_runner.desktop.capabilities' (D:\agent-demo\RxyCode\RxyCode1_1_0\packages\rxycode-runner\src\rxycode_runner\desktop\capabilities.py)
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c07_unit.py:107: ImportError: cannot import name 'release_status' from 'rxycode_runner.desktop.capabilities' (D:\agent-demo\RxyCode\RxyCode1_1_0\packages\rxycode-runner\src\rxycode_runner\desktop\capabilities.py)
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w4\test_w4_c07_module.py:16: ImportError: cannot import name 'support_matrix' from 'rxycode_runner.desktop.capabilities' (D:\agent-demo\RxyCode\RxyCode1_1_0\packages\rxycode-runner\src\rxycode_runner\desktop\capabilities.py)
+=========================== short test summary info ===========================
+FAILED tests/web/w4/test_w4_c07_unit.py::test_w4_c07_contract - ImportError: ...
+FAILED tests/web/w4/test_w4_c07_unit.py::test_w4_c07_negative - ImportError: ...
+FAILED tests/web/w4/test_w4_c07_module.py::test_w4_c07_integration - ImportEr...
+3 failed in 0.31s

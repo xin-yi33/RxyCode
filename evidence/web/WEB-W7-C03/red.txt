@@ -1,0 +1,32 @@
+WEB-W7-C03 red evidence (TEST-first)
+====================================
+date: 2026-10-18T16:17:56.391273
+command: D:\\Anaconda3\\python.exe -m pytest tests/web/w7/test_w7_c03_unit.py tests/web/w7/test_w7_c03_module.py -q
+cwd: D:\\agent-demo\\RxyCode\\RxyCode1_1_0
+
+expected outcome: collection failure - evals/web/run.py, evals/web/report.py
+and evals/web/taskset.jsonl do not exist yet.
+
+exit code: 2
+
+--- output ---
+RXYCode test runtime: C:\Users\Administrator\AppData\Local\Temp\rxycode-tests-mlq18iot
+
+=================================== ERRORS ====================================
+_____________ ERROR collecting tests/web/w7/test_w7_c03_module.py _____________
+tests\web\w7\test_w7_c03_module.py:39: in <module>
+    web_run = _load_module("w7c03_web_run", RUN_PY)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\web\w7\test_w7_c03_module.py:35: in _load_module
+    spec.loader.exec_module(module)
+<frozen importlib._bootstrap_external>:1023: in exec_module
+    ???
+<frozen importlib._bootstrap_external>:1160: in get_code
+    ???
+<frozen importlib._bootstrap_external>:1218: in get_data
+    ???
+E   FileNotFoundError: [Errno 2] No such file or directory: 'D:\\agent-demo\\RxyCode\\RxyCode1_1_0\\evals\\web\\run.py'
+=========================== short test summary info ===========================
+ERROR tests/web/w7/test_w7_c03_module.py - FileNotFoundError: [Errno 2] No su...
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.45s

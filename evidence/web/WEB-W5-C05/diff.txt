@@ -1,0 +1,618 @@
+diff --git a/apps/web/src/features/git/PullRequestPanel.tsx b/apps/web/src/features/git/PullRequestPanel.tsx
+new file mode 100644
+index 00000000..5eb29549
+--- /dev/null
++++ b/apps/web/src/features/git/PullRequestPanel.tsx
+@@ -0,0 +1,23 @@
++export function PullRequestPanel({
++  url,
++  state,
++  error,
++}: {
++  url?: string
++  state?: string
++  error?: string
++}) {
++  if (error) {
++    return (
++      <section aria-label="pull-request">
++        <p>{error}</p>
++      </section>
++    )
++  }
++  return (
++    <section aria-label="pull-request">
++      <a href={url}>{url}</a>
++      <p>{state}</p>
++    </section>
++  )
++}
+diff --git a/packages/rxycode-runner/src/rxycode_runner/sandbox/git_workflow.py b/packages/rxycode-runner/src/rxycode_runner/sandbox/git_workflow.py
+new file mode 100644
+index 00000000..39f34a4c
+--- /dev/null
++++ b/packages/rxycode-runner/src/rxycode_runner/sandbox/git_workflow.py
+@@ -0,0 +1,158 @@
++"""Branch, commit, and push inside a sandbox. Protected main is not pushed."""
++
++from __future__ import annotations
++
++import subprocess
++import uuid
++
++from rxycode_runner.sandbox.gvisor import docker_executable
++
++_PROTECTED = {"main", "master"}
++
++
++class ProtectedBranch(PermissionError):
++    """main and master are not push targets."""
++
++    def __init__(self, branch: str) -> None:
++        self.branch = branch
++        super().__init__(f"protected branch refused: {branch}")
++
++
++class SandboxRepo:
++    def __init__(self, name: str, tenant_id: str) -> None:
++        self.name = name
++        self.tenant_id = tenant_id
++
++
++class GitWorkflow:
++    def open_sandbox(self, *, tenant_id: str) -> SandboxRepo:
++        name = "rxy-git-" + uuid.uuid4().hex[:12]
++        docker = docker_executable()
++        created = _run(
++            docker,
++            [
++                "create",
++                "--name",
++                name,
++                "--entrypoint",
++                "sleep",
++                "--user",
++                "65534:65534",
++                "--network",
++                "none",
++                "--cap-drop",
++                "ALL",
++                "--security-opt",
++                "no-new-privileges",
++                "--label",
++                f"rxy.tenant={tenant_id}",
++                "--workdir",
++                "/tmp",
++                "alpine/git",
++                "infinity",
++            ],
++        )
++        if created.returncode != 0:
++            raise RuntimeError((created.stderr or "git sandbox create failed").strip())
++        if _run(docker, ["start", name]).returncode != 0:
++            _run(docker, ["rm", "-f", name])
++            raise RuntimeError("git sandbox failed to start")
++        return SandboxRepo(name, tenant_id)
++
++    def seed(self, box: SandboxRepo, *, files: dict[str, str]) -> str:
++        _git(box, ["init", "-b", "main", "/tmp/ws"])
++        for path, content in files.items():
++            _write(box, f"/tmp/ws/{path}", content)
++        _git(box, ["-C", "/tmp/ws", "add", "."])
++        _git(
++            box,
++            [
++                "-C",
++                "/tmp/ws",
++                "-c",
++                "user.email=c05@example.test",
++                "-c",
++                "user.name=c05",
++                "commit",
++                "-m",
++                "init",
++            ],
++        )
++        _git(box, ["init", "--bare", "/tmp/remote.git"])
++        _git(box, ["-C", "/tmp/ws", "push", "/tmp/remote.git", "main"])
++        return self.rev(box, "main")
++
++    def commit_fix(
++        self,
++        box: SandboxRepo,
++        *,
++        branch: str,
++        path: str,
++        content: str,
++        message: str,
++    ) -> str:
++        if branch in _PROTECTED:
++            raise ProtectedBranch(branch)
++        _git(box, ["-C", "/tmp/ws", "checkout", "-b", branch])
++        _write(box, f"/tmp/ws/{path}", content)
++        _git(box, ["-C", "/tmp/ws", "add", path])
++        _git(
++            box,
++            [
++                "-C",
++                "/tmp/ws",
++                "-c",
++                "user.email=c05@example.test",
++                "-c",
++                "user.name=c05",
++                "commit",
++                "-m",
++                message,
++            ],
++        )
++        return self.rev(box, "HEAD")
++
++    def push(self, box: SandboxRepo, *, branch: str, journal: object) -> None:
++        if branch in _PROTECTED:
++            raise ProtectedBranch(branch)
++        record = getattr(journal, "record", None)
++        if callable(record):
++            record(action="git.push", branch=branch, remote="sandbox")
++        _git(box, ["-C", "/tmp/ws", "push", "/tmp/remote.git", branch])
++
++    def rev(self, box: SandboxRepo, ref: str) -> str:
++        done = _git(box, ["-C", "/tmp/ws", "rev-parse", ref])
++        return done.stdout.strip()
++
++    def close(self, box: SandboxRepo) -> None:
++        _run(docker_executable(), ["rm", "-f", box.name])
++
++
++def _write(box: SandboxRepo, path: str, content: str) -> None:
++    done = subprocess.run(
++        [docker_executable(), "exec", "-i", box.name, "sh", "-c", f"cat > {path}"],
++        input=content,
++        text=True,
++        capture_output=True,
++        timeout=30,
++        check=False,
++    )
++    if done.returncode != 0:
++        raise RuntimeError((done.stderr or "write failed").strip())
++
++
++def _git(box: SandboxRepo, args: list[str]) -> subprocess.CompletedProcess[str]:
++    done = _run(docker_executable(), ["exec", box.name, "git", *args])
++    if done.returncode != 0:
++        raise RuntimeError((done.stderr or done.stdout or "git failed").strip())
++    return done
++
++
++def _run(docker: str, args: list[str]) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(
++        [docker, *args],
++        capture_output=True,
++        text=True,
++        timeout=60,
++        check=False,
++    )
+diff --git a/packages/rxycode-server/src/rxycode_server/integrations/__init__.py b/packages/rxycode-server/src/rxycode_server/integrations/__init__.py
+new file mode 100644
+index 00000000..3d99744e
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/integrations/__init__.py
+@@ -0,0 +1 @@
++"""GitHub integration. Tokens stay on the request, not in the journal."""
+diff --git a/packages/rxycode-server/src/rxycode_server/integrations/github.py b/packages/rxycode-server/src/rxycode_server/integrations/github.py
+new file mode 100644
+index 00000000..39f656ff
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/integrations/github.py
+@@ -0,0 +1,119 @@
++"""GitHub pull requests. The token is an Authorization header and nothing else."""
++
++from __future__ import annotations
++
++import json
++from dataclasses import dataclass
++
++import httpx
++
++
++class GitHubRefused(PermissionError):
++    """The token cannot write the pull request."""
++
++    def __init__(self) -> None:
++        super().__init__("write permission refused")
++
++
++@dataclass(frozen=True)
++class PublishResult:
++    number: int | None
++    url: str
++    state: str
++    branch: str
++    status: str
++
++
++class ToolJournal:
++    def __init__(self) -> None:
++        self.rows: list[dict[str, str]] = []
++
++    def record(self, **fields: object) -> None:
++        self.rows.append({key: str(value) for key, value in fields.items()})
++
++    def text(self) -> str:
++        return json.dumps(self.rows)
++
++
++class GitHubClient:
++    def __init__(self, *, base_url: str, token: str, journal: ToolJournal) -> None:
++        self._base = base_url.rstrip("/")
++        self._token = token
++        self._journal = journal
++
++    def publish(
++        self,
++        *,
++        owner: str,
++        repo: str,
++        branch: str,
++        base: str,
++        title: str,
++        sha: str,
++        confirm: bool,
++    ) -> PublishResult:
++        if not confirm:
++            self._note("pull_request.hold", owner, repo, branch, sha, "recovery_required")
++            return PublishResult(None, "", "", branch, "recovery_required")
++        found = self.find(owner=owner, repo=repo, branch=branch)
++        if found is not None:
++            return PublishResult(found.number, found.url, found.state, found.branch, "existing")
++        self._note("pull_request.create", owner, repo, branch, sha, "opened")
++        response = self._request(
++            "POST",
++            f"/repos/{owner}/{repo}/pulls",
++            json={
++                "title": title,
++                "head": f"{owner}:{branch}",
++                "base": base,
++                "sha": sha,
++                "body": title,
++            },
++        )
++        if response.status_code == 403:
++            raise GitHubRefused()
++        if response.status_code >= 400:
++            raise GitHubRefused()
++        return self._result(response.json(), "opened")
++
++    def find(self, *, owner: str, repo: str, branch: str) -> PublishResult | None:
++        response = self._request(
++            "GET",
++            f"/repos/{owner}/{repo}/pulls",
++            params={"head": f"{owner}:{branch}", "state": "open"},
++        )
++        if response.status_code >= 400:
++            raise GitHubRefused()
++        rows = response.json()
++        if not rows:
++            return None
++        return self._result(rows[0], "open")
++
++    def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
++        headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/vnd.github+json"}
++        with httpx.Client(base_url=self._base, timeout=10, follow_redirects=False) as client:
++            return client.request(method, path, headers=headers, **kwargs)
++
++    def _note(self, action: str, owner: str, repo: str, branch: str, sha: str, status: str) -> None:
++        self._journal.record(
++            action=action,
++            repo=f"{owner}/{repo}",
++            branch=branch,
++            sha=sha,
++            status=status,
++        )
++
++    def _result(self, row: dict[str, object], status: str) -> PublishResult:
++        head = row.get("head", "")
++        if isinstance(head, dict):
++            branch = str(head.get("ref", ""))
++        else:
++            branch = str(head).split(":", 1)[-1]
++        number = row.get("number")
++        return PublishResult(
++            number=int(number) if number is not None else None,
++            url=str(row.get("html_url", "")),
++            state=str(row.get("state", "")),
++            branch=branch,
++            status=status,
++        )
+diff --git a/tests/web/w5/test_w5_c05_module.py b/tests/web/w5/test_w5_c05_module.py
+new file mode 100644
+index 00000000..73262016
+--- /dev/null
++++ b/tests/web/w5/test_w5_c05_module.py
+@@ -0,0 +1,58 @@
++"""WEB-W5-C05. Retrying the same branch reuses the pull request."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++REPO = Path(__file__).resolve().parents[3]
++for _entry in (
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++from tests.web.w5.test_w5_c05_unit import GitHubApi
++
++
++def test_w5_c05_integration() -> None:
++    """A second publish of the same branch returns the existing PR and does not POST again."""
++    from rxycode_runner.sandbox.git_workflow import GitWorkflow
++    from rxycode_server.integrations.github import GitHubClient, ToolJournal
++
++    secret = "ghp-" + "i" * 24
++    journal = ToolJournal()
++    flow = GitWorkflow()
++    box = flow.open_sandbox(tenant_id="tenant-a")
++    api = GitHubApi(write=True)
++    try:
++        flow.seed(box, files={"README.md": "base\n"})
++        sha = flow.commit_fix(
++            box,
++            branch="rxy/fix-retry",
++            path="README.md",
++            content="fixed\n",
++            message="fix retry",
++        )
++        flow.push(box, branch="rxy/fix-retry", journal=journal)
++        client = GitHubClient(base_url=api.url, token=secret, journal=journal)
++        kwargs = {
++            "owner": "rxycode",
++            "repo": "w5-sample",
++            "branch": "rxy/fix-retry",
++            "base": "main",
++            "title": "fix retry",
++            "sha": sha,
++            "confirm": True,
++        }
++        first = client.publish(**kwargs)
++        second = client.publish(**kwargs)
++        assert second.number == first.number
++        assert second.url == first.url
++        assert second.status == "existing"
++        assert api.posts == 1
++        assert secret not in journal.text()
++    finally:
++        api.close()
++        flow.close(box)
+diff --git a/tests/web/w5/test_w5_c05_unit.py b/tests/web/w5/test_w5_c05_unit.py
+new file mode 100644
+index 00000000..112d7d8e
+--- /dev/null
++++ b/tests/web/w5/test_w5_c05_unit.py
+@@ -0,0 +1,223 @@
++"""WEB-W5-C05. A work-branch commit becomes one PR. A read-only token cannot touch main."""
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++import sys
++import threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from pathlib import Path
++from urllib.parse import parse_qs, urlparse
++
++import pytest
++
++REPO = Path(__file__).resolve().parents[3]
++BUN = Path(r"D:\nodejs\node_modules\bun\bin\bun.exe")
++for _entry in (
++    REPO / "packages" / "rxycode-runner" / "src",
++    REPO / "packages" / "rxycode-server" / "src",
++):
++    if str(_entry) not in sys.path:
++        sys.path.insert(0, str(_entry))
++
++
++class GitHubApi:
++    """Minimal GitHub REST stand-in. The shipped client speaks this protocol."""
++
++    def __init__(self, *, write: bool) -> None:
++        self.write = write
++        self.pulls: list[dict[str, object]] = []
++        self.posts = 0
++        self.seen_auth: list[str] = []
++        server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
++        self._server = server
++        self.url = f"http://127.0.0.1:{server.server_address[1]}"
++        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
++        self._thread.start()
++
++    def close(self) -> None:
++        self._server.shutdown()
++
++    def _handler(self):
++        owner = self
++
++        class Handler(BaseHTTPRequestHandler):
++            def do_GET(self) -> None:
++                owner._get(self)
++
++            def do_POST(self) -> None:
++                owner._post(self)
++
++            def log_message(self, _format: str, *_args: object) -> None:
++                return
++
++        return Handler
++
++    def _get(self, handler: BaseHTTPRequestHandler) -> None:
++        self.seen_auth.append(handler.headers.get("Authorization", ""))
++        parsed = urlparse(handler.path)
++        query = parse_qs(parsed.query)
++        head = query.get("head", [""])[0]
++        found = [row for row in self.pulls if row["head"] == head]
++        body = json.dumps(found).encode()
++        handler.send_response(200)
++        handler.send_header("Content-Type", "application/json")
++        handler.end_headers()
++        handler.wfile.write(body)
++
++    def _post(self, handler: BaseHTTPRequestHandler) -> None:
++        self.posts += 1
++        self.seen_auth.append(handler.headers.get("Authorization", ""))
++        raw = handler.rfile.read(int(handler.headers.get("Content-Length", "0")))
++        if not self.write:
++            handler.send_response(403)
++            handler.send_header("Content-Type", "application/json")
++            handler.end_headers()
++            handler.wfile.write(b'{"message":"Resource not accessible by integration"}')
++            return
++        payload = json.loads(raw.decode())
++        number = len(self.pulls) + 1
++        row = {
++            "number": number,
++            "html_url": f"https://github.com/rxycode/w5-sample/pull/{number}",
++            "state": "open",
++            "head": payload["head"],
++            "base": payload["base"],
++            "title": payload["title"],
++            "sha": payload.get("sha", ""),
++        }
++        self.pulls.append(row)
++        handler.send_response(201)
++        handler.send_header("Content-Type", "application/json")
++        handler.end_headers()
++        handler.wfile.write(json.dumps(row).encode())
++
++
++def _render(url: str, state: str, error: str) -> str:
++    script = (
++        "import { createElement } from 'react';\n"
++        "import { renderToStaticMarkup } from 'react-dom/server';\n"
++        "import { PullRequestPanel } from './src/features/git/PullRequestPanel.tsx';\n"
++        "process.stdout.write(renderToStaticMarkup(createElement(PullRequestPanel, {\n"
++        "  url: process.env.PR_URL,\n"
++        "  state: process.env.PR_STATE,\n"
++        "  error: process.env.PR_ERROR,\n"
++        "})));\n"
++    )
++    done = subprocess.run(
++        [str(BUN), "-e", script],
++        cwd=REPO / "apps" / "web",
++        capture_output=True,
++        text=True,
++        timeout=30,
++        check=False,
++        env={**os.environ, "PR_URL": url, "PR_STATE": state, "PR_ERROR": error},
++    )
++    assert done.returncode == 0, done.stderr
++    return done.stdout
++
++
++def test_w5_c05_contract() -> None:
++    """An authorized fix is committed on a work branch and the same branch has a PR."""
++    from rxycode_runner.sandbox.git_workflow import GitWorkflow
++    from rxycode_server.integrations.github import GitHubClient, ToolJournal
++
++    secret = "ghp-" + "c" * 24
++    journal = ToolJournal()
++    flow = GitWorkflow()
++    box = flow.open_sandbox(tenant_id="tenant-a")
++    api = GitHubApi(write=True)
++    try:
++        main_sha = flow.seed(box, files={"README.md": "base\n"})
++        sha = flow.commit_fix(
++            box,
++            branch="rxy/fix-sample",
++            path="README.md",
++            content="fixed\n",
++            message="fix sample",
++        )
++        assert sha != main_sha
++        flow.push(box, branch="rxy/fix-sample", journal=journal)
++        assert flow.rev(box, "main") == main_sha
++        client = GitHubClient(base_url=api.url, token=secret, journal=journal)
++        opened = client.publish(
++            owner="rxycode",
++            repo="w5-sample",
++            branch="rxy/fix-sample",
++            base="main",
++            title="fix sample",
++            sha=sha,
++            confirm=True,
++        )
++        found = client.find(owner="rxycode", repo="w5-sample", branch="rxy/fix-sample")
++        assert found is not None
++        assert found.number == opened.number
++        assert found.url == opened.url
++        assert found.branch == "rxy/fix-sample"
++        assert api.posts == 1
++        viewed = _render(opened.url, opened.state, "")
++        assert opened.url in viewed
++        assert secret not in viewed
++        assert secret not in journal.text()
++        assert "rxy/fix-sample" in journal.text()
++    finally:
++        api.close()
++        flow.close(box)
++
++
++def test_w5_c05_negative() -> None:
++    """A token without write access is refused, and main is not pushed."""
++    from rxycode_runner.sandbox.git_workflow import GitWorkflow, ProtectedBranch
++    from rxycode_server.integrations.github import GitHubClient, GitHubRefused, ToolJournal
++
++    secret = "ghp-" + "n" * 24
++    journal = ToolJournal()
++    flow = GitWorkflow()
++    box = flow.open_sandbox(tenant_id="tenant-a")
++    api = GitHubApi(write=False)
++    try:
++        main_sha = flow.seed(box, files={"README.md": "base\n"})
++        sha = flow.commit_fix(
++            box,
++            branch="rxy/fix-denied",
++            path="README.md",
++            content="fixed\n",
++            message="fix denied",
++        )
++        with pytest.raises(ProtectedBranch):
++            flow.push(box, branch="main", journal=journal)
++        assert flow.rev(box, "main") == main_sha
++        client = GitHubClient(base_url=api.url, token=secret, journal=journal)
++        held = client.publish(
++            owner="rxycode",
++            repo="w5-sample",
++            branch="rxy/fix-denied",
++            base="main",
++            title="needs confirm",
++            sha=sha,
++            confirm=False,
++        )
++        assert held.status == "recovery_required"
++        assert api.posts == 0
++        with pytest.raises(GitHubRefused) as refused:
++            client.publish(
++                owner="rxycode",
++                repo="w5-sample",
++                branch="rxy/fix-denied",
++                base="main",
++                title="fix denied",
++                sha=sha,
++                confirm=True,
++            )
++        assert "refused" in str(refused.value).lower()
++        assert secret not in str(refused.value)
++        assert secret not in journal.text()
++        assert flow.rev(box, "main") == main_sha
++        panel = _render("", "", "write permission refused")
++        assert "write permission refused" in panel
++        assert secret not in panel
++    finally:
++        api.close()
++        flow.close(box)

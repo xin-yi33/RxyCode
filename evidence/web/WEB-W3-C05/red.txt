@@ -1,0 +1,10 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_unit.py:54: AssertionError: TerminalPane.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_unit.py:111: AssertionError: TerminalPane.tsx is missing
+D:\agent-demo\RxyCode\RxyCode1_1_0\tests\web\w3\test_w3_c05_module.py:23: AssertionError: TerminalPane.tsx is missing
+=========================== short test summary info ===========================
+FAILED tests/web/w3/test_w3_c05_unit.py::test_w3_c05_contract - AssertionError: TerminalPane.tsx is missing
+FAILED tests/web/w3/test_w3_c05_unit.py::test_w3_c05_negative - AssertionError: TerminalPane.tsx is missing
+FAILED tests/web/w3/test_w3_c05_module.py::test_w3_c05_integration - AssertionError: TerminalPane.tsx is missing
+3 failed in 0.86s

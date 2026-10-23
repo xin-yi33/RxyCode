@@ -49,9 +49,16 @@ function hostFromUrl(url?: string): string {
 }
 
 /** Status chip: nickname, plus host when the same nickname exists twice. */
-export function statusModelLabel(listed: ModelsListPayload, previousModel?: string): string {
+export function statusModelLabel(
+  listed: ModelsListPayload,
+  previousModel?: string,
+  sessionModelId?: string,
+): string {
   const activeId =
-    listed.active || listed.models?.find((item) => item.active)?.id || "";
+    sessionModelId ||
+    listed.active ||
+    listed.models?.find((item) => item.active)?.id ||
+    "";
   const item = listed.models?.find((entry) => entry.id === activeId);
   const nick = item?.nickname || item?.name || activeId || previousModel || "unknown";
   const raw = item?.nickname || item?.name || "";
@@ -131,11 +138,15 @@ export function applyTokenUsageToStatus(
 export function statusFromModelsList(
   listed: ModelsListPayload,
   previous?: StatusInfo | null,
+  sessionModelId?: string,
 ): StatusInfo {
   const activeId =
-    listed.active || listed.models?.find((item) => item.active)?.id || "";
+    sessionModelId ||
+    listed.active ||
+    listed.models?.find((item) => item.active)?.id ||
+    "";
   const item = listed.models?.find((entry) => entry.id === activeId);
-  const model = statusModelLabel(listed, previous?.model);
+  const model = statusModelLabel(listed, previous?.model, sessionModelId);
   const window = item?.context_window;
   const contextMaxK =
     typeof window === "number" && window > 0

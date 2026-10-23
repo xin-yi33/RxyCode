@@ -18,8 +18,19 @@ jsonschema>=4.20.0,<5
 tenacity>=8.0
 pybreaker>=1.0
 numpy>=1.26
+Pillow>=10.0,<13
 keyring>=25.0
 uvloop>=0.21.0; platform_system != 'Windows'
 # 虚拟浏览器只带 Python 包。废弃代码（2026-09-22）：把 chrome-headless-shell
 # 打进 NSIS / electron-builder。浏览器在用户缓存，第一次 navigate 再下载。
 playwright>=1.49.0
+sqlalchemy>=2,<2.1
+alembic>=1.17,<2
+psycopg[binary]>=3.2,<4
+redis>=5,<7
+langgraph-checkpoint-postgres>=3,<4
+boto3>=1.34,<2
+pywinpty>=2,<3; platform_system == 'Windows'
+# Security surface (UI-2026-10-22): TOTP enrolment + WebAuthn passkeys.
+pyotp>=2.9,<3
+webauthn>=2.0,<3

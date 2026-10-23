@@ -1,0 +1,716 @@
+diff --git a/packages/rxycode-server/src/rxycode_server/runs/__init__.py b/packages/rxycode-server/src/rxycode_server/runs/__init__.py
+new file mode 100644
+index 00000000..2311ca0f
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/runs/__init__.py
+@@ -0,0 +1 @@
++"""Durable run creation."""
+diff --git a/packages/rxycode-server/src/rxycode_server/runs/service.py b/packages/rxycode-server/src/rxycode_server/runs/service.py
+new file mode 100644
+index 00000000..78983821
+--- /dev/null
++++ b/packages/rxycode-server/src/rxycode_server/runs/service.py
+@@ -0,0 +1,135 @@
++"""Create a durable Run, its first event, and the outbox row in one transaction."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import uuid
++from dataclasses import dataclass
++from datetime import datetime, timezone
++
++from sqlalchemy import create_engine, select
++from sqlalchemy.exc import IntegrityError
++from sqlalchemy.orm import Session
++from sqlalchemy.pool import NullPool
++
++from rxycode_server.persistence.models import Outbox, Run, RunEvent
++
++
++class RunConflict(Exception):
++    """The idempotency key already belongs to a different payload."""
++
++
++class RunAlreadyActive(Exception):
++    """This session already has an active Run."""
++
++
++@dataclass(frozen=True)
++class RunAccepted:
++    http_status: int
++    run_id: str
++    status: str
++    events_url: str
++
++
++def _digest(message: str, target_id: str, permission_profile: str, request_id: str) -> str:
++    payload = json.dumps(
++        {
++            "message": message,
++            "permission_profile": permission_profile,
++            "request_id": request_id,
++            "target_id": target_id,
++        },
++        sort_keys=True,
++        separators=(",", ":"),
++    ).encode()
++    return hashlib.sha256(payload).hexdigest()
++
++
++def _accepted(run_id: str) -> RunAccepted:
++    return RunAccepted(
++        http_status=202,
++        run_id=run_id,
++        status="queued",
++        events_url=f"/api/v1/runs/{run_id}/events",
++    )
++
++
++def create_run(
++    database_url: str,
++    *,
++    tenant_id: str,
++    session_id: str,
++    message: str,
++    target_id: str,
++    permission_profile: str,
++    request_id: str,
++    claimed_tenant_id: str | None = None,
++) -> RunAccepted:
++    """Insert run + event + outbox. The caller's tenant wins over any body claim."""
++    del claimed_tenant_id
++    digest = _digest(message, target_id, permission_profile, request_id)
++    engine = create_engine(database_url, poolclass=NullPool)
++    try:
++        with Session(engine) as db:
++            existing = db.scalars(
++                select(Run).where(Run.tenant_id == tenant_id, Run.request_id == request_id)
++            ).one_or_none()
++            if existing is not None:
++                if existing.input_digest != digest:
++                    raise RunConflict(request_id)
++                return _accepted(existing.id)
++            run_id = uuid.uuid4().hex
++            event_id = uuid.uuid4().hex
++            try:
++                db.add(
++                    Run(
++                        id=run_id,
++                        tenant_id=tenant_id,
++                        session_id=session_id,
++                        status="pending",
++                        revision=0,
++                        lease_epoch=0,
++                        request_id=request_id,
++                        input_digest=digest,
++                        target_id=target_id,
++                    )
++                )
++                db.flush()
++                db.add(
++                    RunEvent(
++                        event_id=event_id,
++                        run_id=run_id,
++                        tenant_id=tenant_id,
++                        seq=1,
++                        type="run.created",
++                        payload={"request_id": request_id, "target_id": target_id},
++                        at=datetime.now(timezone.utc),
++                    )
++                )
++                db.flush()
++                db.add(
++                    Outbox(
++                        id=uuid.uuid4().hex,
++                        event_id=event_id,
++                        dispatch_status="pending",
++                        attempts=0,
++                    )
++                )
++                db.commit()
++            except IntegrityError as exc:
++                db.rollback()
++                detail = str(exc.orig)
++                if "uq_runs_one_active_per_session" in detail:
++                    raise RunAlreadyActive(session_id) from exc
++                if "uq_runs_tenant_request" in detail:
++                    winner = db.scalars(
++                        select(Run).where(Run.tenant_id == tenant_id, Run.request_id == request_id)
++                    ).one()
++                    if winner.input_digest != digest:
++                        raise RunConflict(request_id) from exc
++                    return _accepted(winner.id)
++                raise
++    finally:
++        engine.dispose()
++    return _accepted(run_id)
+diff --git a/packages/rxycode-worker/src/rxycode_worker/__init__.py b/packages/rxycode-worker/src/rxycode_worker/__init__.py
+new file mode 100644
+index 00000000..79029905
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/__init__.py
+@@ -0,0 +1 @@
++"""Worker lease and outbox dispatch."""
+diff --git a/packages/rxycode-worker/src/rxycode_worker/queue.py b/packages/rxycode-worker/src/rxycode_worker/queue.py
+new file mode 100644
+index 00000000..bae07d03
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/queue.py
+@@ -0,0 +1,51 @@
++"""Publish pending outbox rows to a Redis stream. A failed publish stays pending."""
++
++from __future__ import annotations
++
++from sqlalchemy import create_engine, text
++from sqlalchemy.pool import NullPool
++
++
++def dispatch_pending(database_url: str, client, *, stream: str = "rxycode:runs") -> int:
++    """Send each pending outbox row once. A transport error increments attempts only."""
++    engine = create_engine(database_url, poolclass=NullPool)
++    sent = 0
++    try:
++        with engine.begin() as conn:
++            rows = conn.execute(
++                text(
++                    """
++                    SELECT o.id, o.event_id, e.run_id, e.seq, e.type
++                    FROM outbox o
++                    JOIN run_events e ON e.event_id = o.event_id
++                    WHERE o.dispatch_status = 'pending'
++                    ORDER BY e.seq
++                    FOR UPDATE OF o
++                    """
++                )
++            ).all()
++            for row in rows:
++                try:
++                    client.xadd(
++                        stream,
++                        {
++                            "event_id": row.event_id,
++                            "run_id": row.run_id,
++                            "seq": str(row.seq),
++                            "type": row.type,
++                        },
++                    )
++                except Exception:
++                    conn.execute(
++                        text("UPDATE outbox SET attempts = attempts + 1 WHERE id = :id"),
++                        {"id": row.id},
++                    )
++                    continue
++                conn.execute(
++                    text("UPDATE outbox SET dispatch_status = 'sent' WHERE id = :id"),
++                    {"id": row.id},
++                )
++                sent += 1
++    finally:
++        engine.dispose()
++    return sent
+diff --git a/packages/rxycode-worker/src/rxycode_worker/supervisor.py b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+new file mode 100644
+index 00000000..7f048d6e
+--- /dev/null
++++ b/packages/rxycode-worker/src/rxycode_worker/supervisor.py
+@@ -0,0 +1,107 @@
++"""Claim a Run with a fenced lease. A stale epoch cannot commit a terminal status."""
++
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++
++from sqlalchemy import create_engine, text
++from sqlalchemy.pool import NullPool
++
++
++class LeaseRejected(Exception):
++    """The worker's lease epoch is no longer the one stored in the database."""
++
++
++def _engine(database_url: str):
++    return create_engine(database_url, poolclass=NullPool)
++
++
++def claim(database_url: str, run_id: str, worker_id: str, *, ttl_seconds: int = 30) -> int | None:
++    """Take the Run if it is free or its previous lease has expired."""
++    now = datetime.now(timezone.utc)
++    until = now + timedelta(seconds=ttl_seconds)
++    engine = _engine(database_url)
++    try:
++        with engine.begin() as conn:
++            row = conn.execute(
++                text(
++                    """
++                    UPDATE runs
++                    SET status = 'leased',
++                        lease_owner = :worker,
++                        lease_epoch = lease_epoch + 1,
++                        lease_until = :until,
++                        revision = revision + 1
++                    WHERE id = :run_id
++                      AND status IN ('pending', 'leased', 'running')
++                      AND (lease_owner IS NULL OR lease_until < :now)
++                    RETURNING lease_epoch
++                    """
++                ),
++                {"worker": worker_id, "until": until, "now": now, "run_id": run_id},
++            ).first()
++    finally:
++        engine.dispose()
++    if row is None:
++        return None
++    return int(row[0])
++
++
++def commit_terminal(
++    database_url: str,
++    run_id: str,
++    worker_id: str,
++    epoch: int,
++    status: str,
++) -> None:
++    """Write a terminal status only when this epoch still owns an unexpired lease."""
++    if status not in {"succeeded", "failed", "cancelled"}:
++        raise ValueError(f"terminal status required, got {status}")
++    now = datetime.now(timezone.utc)
++    engine = _engine(database_url)
++    try:
++        with engine.begin() as conn:
++            row = conn.execute(
++                text(
++                    """
++                    UPDATE runs
++                    SET status = :status,
++                        revision = revision + 1
++                    WHERE id = :run_id
++                      AND lease_owner = :worker
++                      AND lease_epoch = :epoch
++                      AND lease_until >= :now
++                    RETURNING id
++                    """
++                ),
++                {
++                    "status": status,
++                    "run_id": run_id,
++                    "worker": worker_id,
++                    "epoch": epoch,
++                    "now": now,
++                },
++            ).first()
++    finally:
++        engine.dispose()
++    if row is None:
++        raise LeaseRejected(run_id)
++
++
++def attempt_tool(journal, attempt_id: str, tool: str, args: dict, execute):
++    """Reserve the existing tool journal. A network failure leaves the write pending."""
++    binding = journal.binding(attempt_id)
++    call = binding.next_call(tool, args)
++    reservation = journal.reserve(attempt_id, call)
++    if reservation.action != "execute":
++        return {
++            "executed": False,
++            "action": reservation.action,
++            "run_status": "recovery_required",
++        }
++    try:
++        result = execute()
++    except OSError:
++        return {"executed": True, "action": "uncertain", "run_status": "recovery_required"}
++    journal.complete(attempt_id, call, result)
++    return {"executed": True, "action": "execute", "run_status": "running", "result": result}
+diff --git a/pyproject.toml b/pyproject.toml
+index f1d1c1e9..c0eebfa1 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -79,6 +79,8 @@ packages = [
+   "rxycode_server.alembic",
+   "rxycode_server.alembic.versions",
+   "rxycode_server.api",
++  "rxycode_server.runs",
++  "rxycode_worker",
+ ]
+ 
+ [tool.setuptools.package-dir]
+@@ -92,6 +94,8 @@ packages = [
+ "rxycode_server.alembic" = "packages/rxycode-server/alembic"
+ "rxycode_server.alembic.versions" = "packages/rxycode-server/alembic/versions"
+ "rxycode_server.api" = "packages/rxycode-server/src/rxycode_server/api"
++"rxycode_server.runs" = "packages/rxycode-server/src/rxycode_server/runs"
++"rxycode_worker" = "packages/rxycode-worker/src/rxycode_worker"
+ 
+ [tool.setuptools.dynamic]
+ dependencies = { file = ["requirements.txt"] }
+diff --git a/requirements.txt b/requirements.txt
+index 95a62afb..8a7ba08f 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -27,3 +27,4 @@ playwright>=1.49.0
+ sqlalchemy>=2,<2.1
+ alembic>=1.17,<2
+ psycopg[binary]>=3.2,<4
++redis>=5,<7
+diff --git a/tests/web/w2/test_w2_c03_module.py b/tests/web/w2/test_w2_c03_module.py
+new file mode 100644
+index 00000000..366ac426
+--- /dev/null
++++ b/tests/web/w2/test_w2_c03_module.py
+@@ -0,0 +1,160 @@
++"""WEB-W2-C03. Two workers race for one lease, and a failed publish does not fork the Run."""
++from __future__ import annotations
++
++import subprocess
++import sys
++import threading
++import time
++import uuid
++from pathlib import Path
++
++from sqlalchemy import create_engine, text
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++for _path in (_SERVER, _WORKER):
++    if str(_path) not in sys.path:
++        sys.path.insert(0, str(_path))
++
++from rxycode_server.persistence.migrate import upgrade_head
++from rxycode_server.persistence.models import Organization, Project, SessionRow, User
++from rxycode_server.runs.service import create_run
++from rxycode_worker.queue import dispatch_pending
++from rxycode_worker.supervisor import attempt_tool, claim
++
++_REDIS = "rxy-w2c03-redis"
++
++
++def _docker(*args: str) -> subprocess.CompletedProcess[str]:
++    return subprocess.run(["docker", *args], text=True, capture_output=True, check=False)
++
++
++def _redis_url() -> str:
++    _docker("rm", "-f", _REDIS)
++    started = _docker(
++        "run",
++        "-d",
++        "--name",
++        _REDIS,
++        "-p",
++        "127.0.0.1:56379:6379",
++        "redis:7",
++    )
++    assert started.returncode == 0, started.stderr
++    deadline = time.time() + 30
++    while time.time() < deadline:
++        ping = _docker("exec", _REDIS, "redis-cli", "ping")
++        if ping.stdout.strip() == "PONG":
++            return "redis://127.0.0.1:56379/0"
++        time.sleep(0.5)
++    raise RuntimeError("redis did not become ready")
++
++
++def _seed(url: str) -> str:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-mod", github_id="gh-mod", kind="github"))
++        db.add(Organization(id="org-mod", tenant_id="tenant-mod"))
++        db.add(Project(id="project-mod", tenant_id="tenant-mod", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-mod",
++                project_id="project-mod",
++                title="run",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    return session_id
++
++
++def test_w2_c03_integration(postgres_url: str, tmp_path: Path):
++    """One of two racing workers owns the lease, and a dropped publish stays one Run."""
++    redis_url = _redis_url()
++    session_id = _seed(postgres_url)
++    created = create_run(
++        postgres_url,
++        tenant_id="tenant-mod",
++        session_id=session_id,
++        message="race",
++        target_id="local:1",
++        permission_profile="workspace-write",
++        request_id="req-race",
++    )
++
++    class Boom:
++        def xadd(self, *_args, **_kwargs):
++            raise ConnectionError("network down")
++
++    assert dispatch_pending(postgres_url, Boom(), stream="rxycode:runs") == 0
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        pending, attempts, runs = conn.execute(
++            text(
++                "SELECT o.dispatch_status, o.attempts, "
++                "(SELECT count(*) FROM runs) FROM outbox o"
++            )
++        ).one()
++    engine.dispose()
++    assert pending == "pending"
++    assert attempts == 1
++    assert runs == 1
++
++    import redis
++
++    client = redis.Redis.from_url(redis_url, decode_responses=True)
++    assert dispatch_pending(postgres_url, client, stream="rxycode:runs") == 1
++    assert dispatch_pending(postgres_url, client, stream="rxycode:runs") == 0
++    entries = client.xrange("rxycode:runs")
++    assert len(entries) == 1
++    assert entries[0][1]["run_id"] == created.run_id
++
++    barrier = threading.Barrier(2)
++    found: list[int | None] = []
++
++    def race(worker_id: str) -> None:
++        barrier.wait()
++        found.append(claim(postgres_url, created.run_id, worker_id))
++
++    threads = [
++        threading.Thread(target=race, args=("worker-a",)),
++        threading.Thread(target=race, args=("worker-b",)),
++    ]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join()
++    epochs = [item for item in found if item is not None]
++    assert epochs == [1]
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        owner, epoch, status = conn.execute(
++            text("SELECT lease_owner, lease_epoch, status FROM runs WHERE id = :id"),
++            {"id": created.run_id},
++        ).one()
++    engine.dispose()
++    assert owner in {"worker-a", "worker-b"}
++    assert epoch == 1
++    assert status == "leased"
++
++    calls = {"count": 0}
++
++    def write_tool() -> str:
++        calls["count"] += 1
++        raise ConnectionError("tool network down")
++
++    from RxyCode.RxyCode1_1_0.execution.tool_journal import ToolExecutionJournal
++
++    journal = ToolExecutionJournal(tmp_path / "journal")
++    attempt_id = "att_" + "c3" * 16
++    first = attempt_tool(journal, attempt_id, "write", {"path": "a.txt"}, write_tool)
++    second = attempt_tool(journal, attempt_id, "write", {"path": "a.txt"}, write_tool)
++    assert first["run_status"] == "recovery_required"
++    assert second["action"] == "uncertain"
++    assert second["executed"] is False
++    assert calls["count"] == 1
+diff --git a/tests/web/w2/test_w2_c03_unit.py b/tests/web/w2/test_w2_c03_unit.py
+new file mode 100644
+index 00000000..8c8d6ddb
+--- /dev/null
++++ b/tests/web/w2/test_w2_c03_unit.py
+@@ -0,0 +1,188 @@
++"""WEB-W2-C03. One idempotency key is one Run, and a stale lease cannot finish it."""
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import textwrap
++import time
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import create_engine, text
++from sqlalchemy.orm import Session
++
++REPO = Path(__file__).resolve().parents[3]
++_SERVER = REPO / "packages" / "rxycode-server" / "src"
++_WORKER = REPO / "packages" / "rxycode-worker" / "src"
++for _path in (_SERVER, _WORKER):
++    if str(_path) not in sys.path:
++        sys.path.insert(0, str(_path))
++
++from rxycode_server.persistence.migrate import upgrade_head
++from rxycode_server.persistence.models import Organization, Project, SessionRow, User
++from rxycode_server.runs.service import RunAlreadyActive, RunConflict, create_run
++from rxycode_worker.supervisor import LeaseRejected, claim, commit_terminal
++
++
++def _seed(url: str) -> str:
++    upgrade_head(url)
++    engine = create_engine(url)
++    session_id = uuid.uuid4().hex
++    with Session(engine) as db:
++        db.add(User(id="user-c03", github_id="gh-c03", kind="github"))
++        db.add(Organization(id="org-c03", tenant_id="tenant-c03"))
++        db.add(Project(id="project-c03", tenant_id="tenant-c03", name="app", repo_config={}))
++        db.add(
++            SessionRow(
++                id=session_id,
++                tenant_id="tenant-c03",
++                project_id="project-c03",
++                title="run",
++            )
++        )
++        db.commit()
++    engine.dispose()
++    return session_id
++
++
++def _counts(url: str) -> tuple[int, int, int]:
++    engine = create_engine(url)
++    with engine.connect() as conn:
++        runs = conn.execute(text("SELECT count(*) FROM runs")).scalar()
++        events = conn.execute(text("SELECT count(*) FROM run_events")).scalar()
++        outbox = conn.execute(text("SELECT count(*) FROM outbox")).scalar()
++    engine.dispose()
++    return int(runs), int(events), int(outbox)
++
++
++def test_w2_c03_contract(postgres_url: str):
++    """The same payload returns the same Run. A second active payload does not."""
++    session_id = _seed(postgres_url)
++    kwargs = {
++        "tenant_id": "tenant-c03",
++        "session_id": session_id,
++        "message": "build the gate",
++        "target_id": "local:1",
++        "permission_profile": "workspace-write",
++        "request_id": "req-same",
++        "claimed_tenant_id": "attacker",
++    }
++    first = create_run(postgres_url, **kwargs)
++    second = create_run(postgres_url, **kwargs)
++    assert first.http_status == 202
++    assert second.http_status == 202
++    assert first.run_id == second.run_id
++    assert first.status == "queued"
++    assert first.events_url == f"/api/v1/runs/{first.run_id}/events"
++    assert _counts(postgres_url) == (1, 1, 1)
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        tenant_id, status = conn.execute(
++            text("SELECT tenant_id, status FROM runs WHERE id = :id"),
++            {"id": first.run_id},
++        ).one()
++    engine.dispose()
++    assert tenant_id == "tenant-c03"
++    assert status == "pending"
++    with pytest.raises(RunConflict):
++        create_run(postgres_url, **{**kwargs, "message": "different payload"})
++    assert _counts(postgres_url) == (1, 1, 1)
++    with pytest.raises(RunAlreadyActive):
++        create_run(
++            postgres_url,
++            tenant_id="tenant-c03",
++            session_id=session_id,
++            message="another",
++            target_id="local:1",
++            permission_profile="workspace-write",
++            request_id="req-other",
++        )
++    assert _counts(postgres_url) == (1, 1, 1)
++
++
++def test_w2_c03_negative(postgres_url: str, tmp_path: Path):
++    """A killed worker's old epoch cannot write the terminal status."""
++    session_id = _seed(postgres_url)
++    created = create_run(
++        postgres_url,
++        tenant_id="tenant-c03",
++        session_id=session_id,
++        message="hold",
++        target_id="local:1",
++        permission_profile="workspace-write",
++        request_id="req-lease",
++    )
++    marker = tmp_path / "epoch.txt"
++    claim_script = tmp_path / "claim_worker.py"
++    claim_script.write_text(
++        textwrap.dedent(
++            f"""
++            import sys, time
++            sys.path[:0] = {[str(_SERVER), str(_WORKER)]!r}
++            from rxycode_worker.supervisor import claim
++            epoch = claim({postgres_url!r}, {created.run_id!r}, "worker-a")
++            open({str(marker)!r}, "w", encoding="utf-8").write(str(epoch))
++            time.sleep(30)
++            """
++        ),
++        encoding="utf-8",
++    )
++    env = os.environ.copy()
++    env["PYTHONPATH"] = os.pathsep.join([str(_SERVER), str(_WORKER), str(REPO)])
++    worker = subprocess.Popen([sys.executable, str(claim_script)], cwd=tmp_path, env=env)
++    deadline = time.time() + 20
++    while time.time() < deadline and not marker.exists():
++        time.sleep(0.05)
++    assert marker.read_text(encoding="utf-8") == "1"
++    worker.kill()
++    worker.wait(timeout=10)
++    engine = create_engine(postgres_url)
++    with engine.begin() as conn:
++        conn.execute(
++            text("UPDATE runs SET lease_until = lease_until - interval '1 hour' WHERE id = :id"),
++            {"id": created.run_id},
++        )
++    engine.dispose()
++    script = tmp_path / "stale_worker.py"
++    script.write_text(
++        textwrap.dedent(
++            f"""
++            import sys
++            sys.path[:0] = { [str(_SERVER), str(_WORKER)]!r}
++            from rxycode_worker.supervisor import LeaseRejected, commit_terminal
++            try:
++                commit_terminal({postgres_url!r}, {created.run_id!r}, "worker-a", 1, "succeeded")
++            except LeaseRejected:
++                print("REJECTED")
++                raise SystemExit(0)
++            raise SystemExit(2)
++            """
++        ),
++        encoding="utf-8",
++    )
++    env = os.environ.copy()
++    env["PYTHONPATH"] = os.pathsep.join([str(_SERVER), str(_WORKER), str(REPO)])
++    run = subprocess.run(
++        [sys.executable, str(script)],
++        cwd=tmp_path,
++        text=True,
++        capture_output=True,
++        check=False,
++        env=env,
++    )
++    assert run.returncode == 0, run.stderr
++    assert "REJECTED" in run.stdout
++    engine = create_engine(postgres_url)
++    with engine.connect() as conn:
++        status, owner, current = conn.execute(
++            text("SELECT status, lease_owner, lease_epoch FROM runs WHERE id = :id"),
++            {"id": created.run_id},
++        ).one()
++    engine.dispose()
++    assert status == "leased"
++    assert owner == "worker-a"
++    assert current == 1
++    with pytest.raises(LeaseRejected):
++        commit_terminal(postgres_url, created.run_id, "worker-a", 1, "succeeded")

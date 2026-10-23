@@ -5,11 +5,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.memory._scope import memory_root
 
 
 def _user_dir() -> Path:
-    d = get_data_dir() / "memory" / "user"
+    d = memory_root() / "user"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

@@ -16,7 +16,12 @@ _MCP_CONFIG_LOCK = threading.RLock()
 # same conservative character set so the resulting config is always parseable
 # and auto-connect does not spawn garbage ``npx -y <CJK>`` processes.
 _MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_NPM_PACKAGE_RE = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+# 2026-10-12 允许 npm 版本标签（@version / @dist-tag）：npx -y 裸包名会在
+# 缓存过期后静默拉最新（供应链静默更新通道，见 CHANGELOG_v1.4.3）；pin 后
+# 版本即配置里可审的一部分。name@ 后只允许版本/dist-tag 字符（npm 合法集）。
+_NPM_PACKAGE_RE = re.compile(
+    r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*(?:@[a-zA-Z0-9][a-zA-Z0-9._-]*)?$"
+)
 
 
 def is_valid_mcp_server_name(name: str) -> bool:
@@ -225,15 +230,22 @@ async def install_mcp_from_npm_async(
         if result.get("error_type") == "timeout":
             return False, "npx check timed out (process tree terminated)"
         if not result["success"]:
-            return False, "npx not found. Please install Node.js first."
+            from ..utils.output_capture import append_capture_hints
+
+            return False, append_capture_hints(
+                "npx not found. Please install Node.js first.", result
+            )
         # The config write (YAML parse + fsync + replace) is short but sync;
         # keep it off the event loop (stop-waiting boundary, §4.3).
-        return await asyncio.to_thread(
+        added, message = await asyncio.to_thread(
             add_mcp_server,
             name=server_name,
             command="npx",
             args=["-y", package_name],
         )
+        from ..utils.output_capture import append_capture_hints
+
+        return added, append_capture_hints(message, result)
     except Exception as e:
         return False, f"Failed to install MCP: {e}"
 
@@ -284,14 +296,21 @@ async def install_mcp_from_pip_async(
         if result.get("error_type") == "timeout":
             return False, "pip install timed out (process tree terminated)"
         if not result["success"]:
-            return False, f"pip install failed: {result['stderr']}"
+            from ..utils.output_capture import append_capture_hints
+
+            return False, append_capture_hints(
+                f"pip install failed: {result['stderr']}", result
+            )
         module_name = package_name.replace("-", "_")
         # Keep the short sync config write off the event loop (§4.3).
-        return await asyncio.to_thread(
+        added, message = await asyncio.to_thread(
             add_mcp_server,
             name=server_name,
             command=sys.executable,
             args=["-m", module_name],
         )
+        from ..utils.output_capture import append_capture_hints
+
+        return added, append_capture_hints(message, result)
     except Exception as e:
         return False, f"Failed to install MCP: {e}"

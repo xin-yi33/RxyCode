@@ -1,0 +1,8 @@
+python -m pytest tests/test_cache/test_s1_s2_split.py tests/test_cache/test_stable_prefix.py tests/test_agents/test_isolation.py -q --tb=line
+
+..............s.s....................................                    [100%]
+SKIPPED [1] tests/test_cache/test_stable_prefix.py:142: no tools registered in global test registry
+SKIPPED [1] tests/test_cache/test_stable_prefix.py:158: no tools registered in global test registry
+51 passed, 2 skipped in 2.28s
+
+The two skips are the pre-existing missing tool registry. Team isolation tests in tests/test_agents/test_isolation.py are included in this run.
