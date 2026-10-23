@@ -324,3 +324,9 @@
 真实本地栈（FastAPI `mode=local` + vite 构建产物 + 单端口反代 + 真 Postgres）+ agent-browser 实测：本机口令登录、Composer 附件卡（选择→82B 就绪→绑定→发送）、`run.created` 载荷含完整附件清单（sha256/object_key/size）、BYOK_REQUIRED 诚实报错+去添加 API Key 链路、UI 建 DeepSeek 连接、拉取模型对无效 Key 返回真实 401（不装成功）、手动挂载 deepseek-chat+默认、排队→停止→已取消终态、`/me.web_capabilities` 与 `/models input_capabilities` 真实字段、会话时间线、移动视口布局+抽屉、控制台零错误。
 - **修复**：`main.py::serve()` 本地模式经 `from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway` 引用——把仓库目录名当包路径，离开 `D:\agent-demo\RxyCode\RxyCode1_1_0` 布局即 ImportError（本地模式公网绑定的拒绝逻辑等于裸崩）。改为内联 `_is_loopback_bind_host` 自检，非 loopback 抛带说明的 RuntimeError。
 - **生产迁移发现并修复**：`alembic/versions/012_files_batch.py` 附件部分唯一约束写成 `sa.UniqueConstraint(postgresql_where=…)`——SQLAlchemy 2.x 下 `postgresql_where` 只被 `Index` 接受，`upgrade head` 在生产 Postgres 上 `ArgumentError` 整体回滚（本地测试经 metadata 路径未覆盖 alembic 执行，故漏检）。改为 `op.create_index(unique=True, postgresql_where=…)`，与 models.py 既有写法一致；已在 test pg 上全量 001→012 验证。
+
+## 生产部署与真实验收（2026-10-23，tag web-fa366863）
+
+- 三镜像 `rxycode-{api,worker,web}:web-fa366863` 上线 rxyprod；alembic head 应用至 `012_files_batch`。
+- **infra**：`compose.prod.yaml` worker 块补 `RXYCODE_S3_*`（与 api 同源 `${RXYCODE_MINIO_ROOT_*}`）——此前 worker 无对象存储配置，`_stage_attachments` 落 FS 后端读不到 API 暂存字节，附件 run 必败（生产首个附件 run `fa1713ec` 实测 `attachment.import FileNotFoundError`）。修复后 MinIO 拉取+sha256 校验实测通过。
+- **真实 BYOK 验收**：DeepSeek 连接真 token 跑通——文件创建 run succeeded（80.9s）、附件导入+模型实读回标记、工作区产物登记+签名下载返回真实字节、cancel→cancelled 终态；`ATTACHMENT_SIZE_MISMATCH`/`ATTACHMENT_SESSION_MISMATCH` 负例如实。证据见 `docs/deploy/OPS-LOG.md` 末节。
