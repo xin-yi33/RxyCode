@@ -298,3 +298,7 @@
 
 - `byok/resolver.py` 移除平台额度旁路：`byok_enforced` 恒为真（`RXYCODE_BYOK_ENFORCE` 开关不再放行），`RXYCODE_PLATFORM_MODEL_USERS` allowlist 与 `_platform_snapshot` 删除——`model_ref=platform` 一律 `MODEL_NOT_FOUND`，未选模型一律 `BYOK_REQUIRED`。Web run 只允许用户自持 BYOK 凭据进快照。`PLATFORM_MODEL_REF` 常量保留（models API 仍在默认模型解析中引用）。
 - 与已收拢的 w9 测试互为同一定型两侧；本地 w9 36/36 复验通过。
+
+## CI 修复：w9 旧套件对齐 BYOK-only（2026-10-23）
+
+- `test_runs_api.py`/`test_session_files.py` 在平台旁路存在时从不配模型即可建 run；BYOK-only 定型后全部 `POST /tasks` 403 `BYOK_REQUIRED`（15 失败）。新增 `_seed_byok(client)`：建 deepseek 连接（canary key）+ 挂载 `deepseek-chat` + 设为默认模型，keyring 一次性生成到进程临时文件。凡期望 202/409/429 的提交方均 seed；仅 GET 或期望 404（project/session 校验先于 resolver）的 client 不 seed。本地两文件 15/15 过。

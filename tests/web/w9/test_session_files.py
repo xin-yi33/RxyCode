@@ -21,6 +21,7 @@ from tests.web.w9.test_auth import (  # noqa: E402
     _headers,
     _register,
 )
+from tests.web.w9.test_runs_api import _seed_byok  # noqa: E402
 
 
 def _client(postgres_url: str, email: str):
@@ -57,6 +58,7 @@ def test_w12_files_list_download_scope(
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     monkeypatch.setenv("RXYCODE_WORKSPACES_ROOT", str(tmp_path / "runs"))
     client, me = _client(postgres_url, "files@example.com")
+    _seed_byok(client)
     session_id = _new_session(client)
     ws = _workspace(tmp_path, me["organization"]["tenant_id"], session_id)
     (ws / "hello.txt").write_text("rxy-file-test", encoding="utf-8")
@@ -96,6 +98,7 @@ def test_w12_files_tenant_isolation(
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     monkeypatch.setenv("RXYCODE_WORKSPACES_ROOT", str(tmp_path / "runs"))
     client_a, me_a = _client(postgres_url, "files-a@example.com")
+    _seed_byok(client_a)
     session_id = _new_session(client_a)
     _workspace(tmp_path, me_a["organization"]["tenant_id"], session_id) / "x.txt"
 
@@ -108,6 +111,7 @@ def test_w12_files_no_root(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     monkeypatch.delenv("RXYCODE_WORKSPACES_ROOT", raising=False)
     client, _me = _client(postgres_url, "files-c@example.com")
+    _seed_byok(client)
     session_id = _new_session(client)
     response = client.get(f"/api/v1/sessions/{session_id}/files")
     assert response.status_code == 404

@@ -30,6 +30,53 @@ from rxycode_server.persistence.models import (  # noqa: E402
 
 ORIGIN = "https://w9.example"
 SECRET = "w9-web-secret-value-32bytes-long!!"
+CANARY = "sk-canary-cc0099dd11223344"
+
+
+def _ensure_keyring(tmp_path: Path | None = None) -> None:
+    """BYOK-only policy needs a loadable keyring before a model can resolve."""
+    import os
+    import tempfile
+
+    if os.environ.get("RXYCODE_BYOK_KEYRING_FILE"):
+        return
+    path = Path(tempfile.gettempdir()) / f"rxy-w9-{os.getpid()}-keyring.json"
+    if not path.exists():
+        from rxycode_server.byok.keyring import generate
+
+        generate(path)
+    os.environ["RXYCODE_BYOK_KEYRING_FILE"] = str(path)
+
+
+def _seed_byok(client: TestClient) -> str:
+    """Seed a connection + catalogued model + default for the client.
+
+    Web runs are BYOK-only: every submission must resolve an owned model.
+    The default model_ref covers posts that do not pass one explicitly.
+    """
+    _ensure_keyring()
+    headers = _headers(_csrf(client))
+    conn = client.post(
+        "/api/v1/model-connections",
+        json={"preset_id": "deepseek", "api_key": CANARY},
+        headers=headers,
+    )
+    assert conn.status_code == 201, conn.text
+    conn_id = conn.json()["connection"]["id"]
+    added = client.post(
+        f"/api/v1/model-connections/{conn_id}/models",
+        json={"model_ids": ["deepseek-chat"]},
+        headers=headers,
+    )
+    assert added.status_code in (200, 201), added.text
+    model_ref = added.json()["results"][0]["model_ref"]
+    default = client.post(
+        "/api/v1/models/default",
+        json={"model_ref": model_ref},
+        headers=headers,
+    )
+    assert default.status_code == 200, default.text
+    return model_ref
 
 
 def _app(postgres_url: str, **kwargs):
@@ -105,6 +152,7 @@ def _post_run(client: TestClient, session_id: str, message: str, request_id: str
 def test_w9_b2_task_creates_session_and_run(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, me = _client(postgres_url, "tasker@example.com")
+    _seed_byok(client)
     response = _post_task(client, "first line\nsecond line of the task")
     assert response.status_code == 202, response.text
     body = response.json()
@@ -137,6 +185,7 @@ def test_w9_b2_task_creates_session_and_run(postgres_url: str, monkeypatch: pyte
 def test_w9_b2_request_id_idempotency(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "idem@example.com")
+    _seed_byok(client)
     request_id = "req-" + uuid.uuid4().hex[:16]
     first = _post_task(client, "do the thing", request_id)
     assert first.status_code == 202
@@ -155,6 +204,7 @@ def test_w9_b2_request_id_idempotency(postgres_url: str, monkeypatch: pytest.Mon
 def test_w9_b2_session_runs_and_active_cap(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "multi@example.com")
+    _seed_byok(client)
     app2 = _app(postgres_url)
     other, _me2 = _client(postgres_url, "stranger@example.com", app=app2)
 
@@ -190,6 +240,7 @@ def test_w9_b2_session_runs_and_active_cap(postgres_url: str, monkeypatch: pytes
 def test_w9_b2_session_list_and_cursor(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "history@example.com")
+    _seed_byok(client)
     runs = []
     sessions = []
     for index in range(3):
@@ -240,6 +291,7 @@ def test_w9_b2_session_list_and_cursor(postgres_url: str, monkeypatch: pytest.Mo
 def test_w9_b2_validation_and_cross_tenant(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "rules@example.com")
+    _seed_byok(client)
     other, _me2 = _client(postgres_url, "peer@example.com")
     # message/request_id/profile validation
     bad_profile = _post_task(client, "x", permission_profile="sudo")
@@ -275,6 +327,7 @@ def test_w9_b2_post_returns_fast_without_worker(postgres_url: str, monkeypatch: 
     """Model/worker unreachable still yields a durable pending run inside 1s."""
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "quick@example.com")
+    _seed_byok(client)
     started = time.monotonic()
     response = _post_task(client, "returns before any worker exists")
     assert time.monotonic() - started < 1.0
@@ -285,6 +338,7 @@ def test_w9_b2_post_returns_fast_without_worker(postgres_url: str, monkeypatch: 
 def test_w9_b2_fifo_claim_order(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "fifo@example.com")
+    _seed_byok(client)
     first = _post_task(client, "early task")
     second = _post_task(client, "late task")
     assert first.status_code == 202 and second.status_code == 202
@@ -311,6 +365,7 @@ def test_w9_b4_concurrency_and_queue(postgres_url: str, monkeypatch: pytest.Monk
     monkeypatch.setenv("RXYCODE_QUEUE_MAX", "2")
     app = _app(postgres_url)
     client, _me = _client(postgres_url, "busy@example.com", app=app)
+    _seed_byok(client)
     first = _post_task(client, "run one")
     assert first.status_code == 202
     second = _post_task(client, "run two")
@@ -326,8 +381,10 @@ def test_w9_b4_queue_max_is_global(postgres_url: str, monkeypatch: pytest.Monkey
     monkeypatch.setenv("RXYCODE_QUEUE_MAX", "1")
     app = _app(postgres_url)
     client, _me = _client(postgres_url, "first@example.com", app=app)
+    _seed_byok(client)
     assert _post_task(client, "occupies the single queue slot").status_code == 202
     other, _me2 = _client(postgres_url, "second@example.com", app=app)
+    _seed_byok(other)
     refused = _post_task(other, "queue is full")
     assert refused.status_code == 429
     assert refused.json() == {"code": "QUOTA_EXCEEDED", "reason": "queue"}
@@ -340,6 +397,7 @@ def test_w9_b4_windowed_daily_tasks(postgres_url: str, monkeypatch: pytest.Monke
     monkeypatch.setenv("RXYCODE_QUOTA_CONCURRENCY", "10")
     app = _app(postgres_url)
     client, _me = _client(postgres_url, "daily@example.com", app=app)
+    _seed_byok(client)
     first = _post_task(client, "today's task")
     assert first.status_code == 202
     again = _post_task(client, "still the user's own key")
@@ -367,6 +425,7 @@ def test_w9_b4_defaults_without_env(postgres_url: str):
     app = _app(postgres_url)  # no quota env: nothing installed
     assert active_gate()._limits == DEFAULT_LIMITS
     client, _me = _client(postgres_url, "free@example.com", app=app)
+    _seed_byok(client)
     assert _post_task(client, "one").status_code == 202
 
 
@@ -374,6 +433,7 @@ def test_w9_cancel_pending_goes_terminal(postgres_url: str, monkeypatch: pytest.
     """One click cancels a queued run — no worker slot wait (W11)."""
     monkeypatch.setenv("RXYCODE_WEB_REGISTRATION", "open")
     client, _me = _client(postgres_url, "cancelq@example.com")
+    _seed_byok(client)
     run = _post_task(client, "queued task")
     assert run.status_code == 202, run.text
     run_id = run.json()["run_id"]
