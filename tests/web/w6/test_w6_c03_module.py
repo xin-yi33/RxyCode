@@ -146,8 +146,12 @@ def test_w6_c03_integration() -> None:
             url="https://example.com/",
             selector="a",
         )
-        if public["status"] != "ok" and "NETWORK" in str(public.get("reason", "")).upper():
-            # External reachability flake (ERR_NETWORK_CHANGED et al.) — retry once.
+        reason = str(public.get("reason", "")).upper()
+        if public["status"] != "ok" and (
+            "NETWORK" in reason or "TIMEOUT" in reason
+        ):
+            # External reachability/render flake (ERR_NETWORK_CHANGED, slow
+            # first paint on a loaded runner) — retry once, still assert.
             public = navigate_click(
                 session_id=str(agent["session_id"]),
                 url="https://example.com/",
