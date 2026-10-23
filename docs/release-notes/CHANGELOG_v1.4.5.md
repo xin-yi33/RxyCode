@@ -313,3 +313,8 @@
 
 - `test_w2_c04`：`rxy-w2c04-redis` 固定 `-p 127.0.0.1:56380:6379` 在 py3.12 上撞 iptables 绑定（address already in use）——与 chaos/w7_c02 同型，改 `0` 临时端口 + `docker port` 发现。
 - `test_w5_c06`：自建 `rxy-w5c06-pg` 的 `pg_isready` 在 initdb 恢复窗口内即返回 ready，但 postmaster 仍会中断客户端连接（`server closed the connection unexpectedly`）。ready 循环升级为真实 `select(1)` 探活，过不了的继续等到 60s 截止。
+
+## 真实网页走查（上云前验收，2026-10-23）
+
+真实本地栈（FastAPI `mode=local` + vite 构建产物 + 单端口反代 + 真 Postgres）+ agent-browser 实测：本机口令登录、Composer 附件卡（选择→82B 就绪→绑定→发送）、`run.created` 载荷含完整附件清单（sha256/object_key/size）、BYOK_REQUIRED 诚实报错+去添加 API Key 链路、UI 建 DeepSeek 连接、拉取模型对无效 Key 返回真实 401（不装成功）、手动挂载 deepseek-chat+默认、排队→停止→已取消终态、`/me.web_capabilities` 与 `/models input_capabilities` 真实字段、会话时间线、移动视口布局+抽屉、控制台零错误。
+- **修复**：`main.py::serve()` 本地模式经 `from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway` 引用——把仓库目录名当包路径，离开 `D:\agent-demo\RxyCode\RxyCode1_1_0` 布局即 ImportError（本地模式公网绑定的拒绝逻辑等于裸崩）。改为内联 `_is_loopback_bind_host` 自检，非 loopback 抛带说明的 RuntimeError。

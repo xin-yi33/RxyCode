@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import time
 from contextlib import asynccontextmanager
@@ -235,6 +236,16 @@ def _install_quota_gate_from_env() -> None:
     install_gate(QuotaGate(limits=limits, capacity=RunWorkers()))
 
 
+def _is_loopback_bind_host(host: str) -> bool:
+    normalized = host.strip().strip("[]")
+    if normalized.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 def serve(
     *,
     mode: str,
@@ -247,10 +258,10 @@ def serve(
 ) -> FastAPI:
     """Return the web app. Local mode refuses any non-loopback bind of this gateway."""
     del port
-    if mode == "local":
-        from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway
-
-        reject_as_public_web_gateway(host)
+    if mode == "local" and not _is_loopback_bind_host(host):
+        raise RuntimeError(
+            "local mode is a loopback fallback and cannot be exposed as a public web gateway"
+        )
     return create_app(
         database_url,
         mode=mode,
