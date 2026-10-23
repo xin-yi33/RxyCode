@@ -258,8 +258,43 @@
 - **修复**：新增 `utils/proxy_env.py`（纯标准库），把 `[<ipv6>]` 改写为等价的裸 IPv6，并在包导入时（`__init__.py` 的 `_sanitize_proxy_env()`，早于任何 provider 层）执行。幂等、不抛异常、干净环境为 no-op。
 - **验证**：同一脏环境下 `NO_PROXY` 由 `...,meter.arc-bench.com,[::1]` 变为 `...,meter.arc-bench.com,::1`，`AgentV2()` 正常构造。`tests/test_utils/test_proxy_env.py` 16 项通过。
 
+### 3. `/full` 简单任务耗时约 3 分钟后失败：effect 与 tools_hint 自相矛盾
+
+- **现象**：`/full 用 python 计算 123*456` 实测 **199 秒**、约 30 次工具调用、零成功，最终 `构建流程未完成`。表现为“卡死”，实为**无效重试循环**（CPU 仅 12.8%，一直在等模型往返）。
+- **根因 A（工具被自己的计划过滤掉）**：decomposer 产出子任务 `effect=read, tools_hint=['bash']`。`executor.execute_with_evidence` 对 `effect=read` 施加 `max_risk=RiskLevel.READ`（[`execution/executor.py`](../../execution/executor.py)），而 `bash` 是 WRITE 级，于是**计划要求 bash、过滤器又把它砍掉**。`TaskEffect` 的文档语义是“允许的最大副作用类”，这个组合本身就是矛盾声明。
+  - **修复**：新增 `reconcile_declared_effect()`——仅当 `effect=read` 且 `tools_hint` 含高于只读的工具时，把声明放宽为 `auto`。**只放宽声明，不放宽安全边界**：`auto` 仍走完整风险表，`write`/`danger` 原样返回，纯只读 hint 保留 `read` 快路径。
+- **根因 B（终止性拒绝被当成暂时失败）**：修好 A 后 bash 可被调用，但每次返回 `[rejected: no approval broker available for WRITE tool 'bash']`——headless/CI 无审批 UI，WRITE 工具必然被拒。原文案没有说明这是**终止性**的，模型于是在 ~200 秒内换 12 种写法重试（`python`/`python3`/`py`/`python.exe`/`timeit`/管道/`-m platform`），全部撞同一分支。
+  - **修复**：拒绝文案改为明确终止语义——“no approval UI is attached，重试或改写会以完全相同的方式失败，不要尝试其它拼写/解释器/包装工具”，并给出解除方式（TUI 交互批准，或在 `safety.auto_approve` 中加入该级别）。
+- **注意（安全面未变）**：`bash` 的风险按**命令语义**动态判定（`classify_tool_risk`），因此 `echo hi` 判 READ 放行、`python -c "..."` 判 WRITE 需批准。本轮只改“拒了怎么说”，未改任何放行/拦截条件。
+- **验证**：同一任务从 **199 秒降到 36.5 秒**，bash 尝试次数从约 12 次降到 4 次（每个子任务一次），不再有别名循环。`tests/test_execution/test_headless_approval_rejection.py` 6 项新增；approval/governance/write_path 相关回归 **234 passed**。
+- **遗留（未修）**：该任务最终仍以「最终回答未能通过校验」结束。子任务因审批缺失确实未完成，这是**如实失败**而非死循环；但在无审批 UI 的环境里，需要执行类任务缺少可用授权路径，属独立产品决策，未在本轮改动。
+
 
 ## CI 修复：w7_c02 redis 定端口竞争（2026-10-23）
 
 - 与 chaos suite 同型：`-p 127.0.0.1:56390:6379` 固定绑定在 py3.11 job 上撞残留/并发映射（`address already in use`，rc=125）。改临时端口 `-p 127.0.0.1:0:6379` + `docker port` 发现，`REDIS_URL` 由 `_redis_start` 回写真实 URL。py3.12 同用例已过，py3.11 侧属环境竞争非产品缺陷。
 - 另收拢并行侧的 w9 byok 测试对齐（committed BYOK-only 策略 vs 陈旧断言：`test_platform_allowlisted_uses_env`→`test_platform_allowlist_cannot_enable_env_gateway` 等）+ w9 conftest 补 `RXYCODE_PGURL` 外部库通道。
+
+## 2026-10-23 BYOK 模型选择跨 Composer 草稿保持
+
+- 成功发送后清正文与本次 request ID、保留显式模型；首页新任务接受为 session 时，仅向未显式选择模型的目标草稿继承本次选择。不会改写账号默认模型或放宽 BYOK 权限。
+- 修复选中有效模型后残留的旧 `BYOK_REQUIRED` 提示；真实模型权限错误仍保留。增加 Composer 模型生命周期回归，覆盖连续发送、首页到 session、目标会话显式模型不被覆盖、失败重试 request ID 与稳定手机布局。
+
+## 权限三档语义对齐：auto_edit 下 bash 可被“只读命令”绕过审核（2026-10-23）
+
+- **产品定义（本次对齐的权威口径）**：`confirm_all` = 读类工具免审、任何编辑与任何 `bash` 都要审批；`auto_edit` = 读类工具与文件编辑免审、**`bash` 一律审批**；`full_auto` = 全免审，只受硬黑名单约束。
+- **缺陷**：审批门槛按命令语义风险判定（`risk >= WRITE`），而 `classify_tool_risk` 把 `echo hi`、`ls`、`pwd`、`git status` 判为 READ。结果这些命令在 `auto_edit` 下**完全绕过审批直接执行**，与“只有 bash 要审批”的定义相反；而 `cat package.json`、`python -c ...` 反而要审批——判定依据是命令字面而非工具身份。属安全缺口，不是显示问题。
+- **修复**：[`execution/tool_orchestrator.py`](../../execution/tool_orchestrator.py) 审批门槛改为 `risk >= WRITE or shell_tool`，`shell_tool` 按规范化工具名判定；同时引入 `approval_level`，把 shell 的审批级别固定为 `write`，避免 `auto_approve: ["read"]` 这类为读工具准备的豁免顺带放行 shell。`auto_edit` 的文件编辑豁免显式排除 shell。
+- **配套**：[`core/governance.py`](../../core/governance.py) 的 `SensitiveActionPolicy` 读操作捷径（`risk is READ -> ALLOW`）不再适用于 shell，否则请求会在进入 gate 前就被放行。新增 `_is_shell_action()`。
+- **未改**：`full_auto` 行为保持全放行 + 黑名单硬拒；硬黑名单仍在审批之前执行，命中不回退到审批。
+- **验证**：`tests/test_execution/test_permission_tiers.py` 新增 23 项，逐档锁定三种模式的读/编辑/bash 行为，并覆盖 `auto_approve=["read"]` 不得豁免 shell、`["write"]` 可以；`tests/test_execution/test_headless_approval_rejection.py` 同步更新（原“只读 bash 免审”断言正是该缺口）。approval/governance/permission/safety/bash 相关回归 **619 passed**。
+- **本机配置修正**：`~/.rxycode/config.yaml` 原为 `permission_mode: confirm_all` + `auto_approve: ["danger"]`。该组合在本机放行了最危险的 `danger` 级，却让 `write` 级（含 `bash`）逐次审批——与 `confirm_all`“读类免审、编辑与 bash 一律审批”的定义直接冲突，是档位里的一处后门。已改为默认值 `auto_approve: []`（[`config/settings.py`](../../config/settings.py) 的默认值），现在没有任何级别可以绕过审批。改动前已备份为 `config.yaml.bak-autapprove-<时间戳>`。
+- **实测（真实 config，无审批 broker）**：`read`/`grep` 免审放行；`edit` 审批；`bash echo hi` 审批；`bash rm -rf /` 审批。
+- **遗留**：`bash rm -rf /` 落到“审批”而非“黑名单硬拒”，说明 `hard_denied_shell_reason` 的匹配规则未覆盖该写法。按定义黑名单应当**自动拒绝且不进入审批**，此缺口待查。
+
+
+
+## 策略定型：BYOK-only 产品面（2026-10-23）
+
+- `byok/resolver.py` 移除平台额度旁路：`byok_enforced` 恒为真（`RXYCODE_BYOK_ENFORCE` 开关不再放行），`RXYCODE_PLATFORM_MODEL_USERS` allowlist 与 `_platform_snapshot` 删除——`model_ref=platform` 一律 `MODEL_NOT_FOUND`，未选模型一律 `BYOK_REQUIRED`。Web run 只允许用户自持 BYOK 凭据进快照。`PLATFORM_MODEL_REF` 常量保留（models API 仍在默认模型解析中引用）。
+- 与已收拢的 w9 测试互为同一定型两侧；本地 w9 36/36 复验通过。

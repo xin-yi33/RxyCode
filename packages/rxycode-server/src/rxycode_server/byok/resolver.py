@@ -8,8 +8,6 @@ snapshot persisted on the run row and echoed (non-secret fields only) in
 
 from __future__ import annotations
 
-import os
-
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -18,30 +16,14 @@ from rxycode_server.persistence.models import ModelConnection, User, UserModel
 
 PLATFORM_MODEL_REF = "platform"
 
-_TRUE = {"1", "true", "yes", "on"}
-_FALSE = {"0", "false", "no", "off"}
-
-
 def byok_enforced(mode: str | None = None) -> bool:
-    """``RXYCODE_BYOK_ENFORCE`` wins; unset → on in cloud mode, off locally."""
-    raw = os.environ.get("RXYCODE_BYOK_ENFORCE", "").strip().lower()
-    if raw:
-        return raw in _TRUE
-    return mode == "cloud"
+    """Web runs always require a user-owned BYOK model.
 
-
-def platform_model_users() -> frozenset[str]:
-    """Immutable allowlist of user ids allowed to ride the platform key."""
-    return frozenset(
-        part.strip()
-        for part in os.environ.get("RXYCODE_PLATFORM_MODEL_USERS", "").split(",")
-        if part.strip()
-    )
-
-
-def platform_model_name() -> str:
-    """Display name for the deployed model — never the credential."""
-    return os.environ.get("RXYCODE_LLM_MODEL", "").strip() or "deployed"
+    ``mode`` and the legacy ``RXYCODE_BYOK_ENFORCE`` switch no longer grant
+    access to the platform credential (product policy change, 2026-10-22).
+    """
+    del mode
+    return True
 
 
 def keyring_available() -> bool:
@@ -50,18 +32,6 @@ def keyring_available() -> bool:
         return True
     except BYOKUnavailable:
         return False
-
-
-def _platform_snapshot() -> dict:
-    return {
-        "model_ref": PLATFORM_MODEL_REF,
-        "model_id": platform_model_name(),
-        "provider_id": "platform",
-        "provider_name": "平台额度",
-        "credential_source": "platform",
-        "connection_id": "",
-        "credential_version": 0,
-    }
 
 
 def _model_snapshot(model: UserModel, connection: ModelConnection) -> dict:
@@ -105,16 +75,12 @@ def resolve_run_model(
 ) -> dict | None:
     """Resolve the submitted/defaulted model_ref into a run snapshot.
 
-    Returns None only when enforcement is off and nothing was selected —
-    the legacy env-gateway path. Otherwise raises a stable-code
-    HTTPException or returns the snapshot dict.
+    Web runs require a user-owned BYOK model. The legacy platform ref and
+    environment-based policy switches are intentionally not accepted.
     """
     requested = str(model_ref or "").strip()
-    allowed = platform_model_users()
     if requested == PLATFORM_MODEL_REF:
-        if record.user_id not in allowed:
-            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
-        return _platform_snapshot()
+        raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
     if requested:
         return _resolve_owned_model(db, record, requested)
 
@@ -128,8 +94,4 @@ def resolve_run_model(
             and model.owner_user_id == record.user_id
         ):
             return _resolve_owned_model(db, record, default_ref)
-    if record.user_id in allowed:
-        return _platform_snapshot()
-    if byok_enforced(mode):
-        raise HTTPException(status_code=403, detail="BYOK_REQUIRED")
-    return None
+    raise HTTPException(status_code=403, detail="BYOK_REQUIRED")
