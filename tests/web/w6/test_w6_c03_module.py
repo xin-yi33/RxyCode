@@ -146,6 +146,13 @@ def test_w6_c03_integration() -> None:
             url="https://example.com/",
             selector="a",
         )
+        if public["status"] != "ok" and "NETWORK" in str(public.get("reason", "")).upper():
+            # External reachability flake (ERR_NETWORK_CHANGED et al.) — retry once.
+            public = navigate_click(
+                session_id=str(agent["session_id"]),
+                url="https://example.com/",
+                selector="a",
+            )
         assert public["status"] == "ok", public
         shot = snapshot(session_id=str(agent["session_id"]))
         assert shot["status"] == "ok"

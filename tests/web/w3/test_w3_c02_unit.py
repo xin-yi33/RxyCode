@@ -263,13 +263,35 @@ def _login(page, origin: str) -> None:
     page.goto(f"{origin}/login", wait_until="domcontentloaded")
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
-    page.get_by_role("button", name="使用本机口令登录").click()
+    # Wait on the POST response first — under xdist load the SPA can swallow a
+    # click before hydration, which shows up as a wait_for_url timeout with no
+    # signal. Seeing the response splits "post never fired/hung" from "nav lost".
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with page.expect_response(
+                lambda r: "/api/v1/auth/local/login" in r.url, timeout=60000
+            ) as login_resp:
+                page.get_by_role("button", name="使用本机口令登录").click()
+            status = login_resp.value.status
+        except Exception:
+            if attempts >= 2:
+                raise
+            continue
+        if status == 200:
+            break
+        if attempts >= 2:
+            raise AssertionError(f"local login returned {status}")
     # /login?next=/app contains the literal "/app" — match the path, not the
     # string, or a bounced redirect satisfies the wait and the next expect
     # fails with a misleading "no composer" message.
-    page.wait_for_url(
-        lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=60000
-    )
+    try:
+        page.wait_for_url(
+            lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=60000
+        )
+    except Exception as exc:  # noqa: BLE001 - surface where the SPA actually is
+        raise AssertionError(f"login ok but never reached /app; url={page.url}") from exc
     expect(page.get_by_label("消息")).to_be_visible(timeout=60000)
 
 
