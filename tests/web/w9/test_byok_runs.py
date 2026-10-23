@@ -11,8 +11,10 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session
 
@@ -27,7 +29,9 @@ from rxycode_server.persistence.models import (  # noqa: E402
     Run,
     RunEvent,
     SessionRow,
+    User,
 )
+from rxycode_server.byok.resolver import resolve_run_model  # noqa: E402
 from tests.web.w9.test_runs_api import (  # noqa: E402
     _client,
     _csrf,
@@ -79,6 +83,28 @@ def _task(client, request_id=None, **extra):
         **extra,
     }
     return client.post("/api/v1/tasks", json=body, headers=_headers(_csrf(client)))
+
+
+def test_resolver_requires_byok_despite_allowlist_switches(monkeypatch):
+    monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", "superuser")
+    monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
+
+    class _DB:
+        def get(self, model, _ref):
+            if model is User:
+                return SimpleNamespace(default_model_ref="platform")
+            return None
+
+    record = SimpleNamespace(user_id="superuser", tenant_id="tenant")
+    with pytest.raises(HTTPException) as error:
+        resolve_run_model(_DB(), record, None, mode="local")
+    assert error.value.status_code == 403
+    assert error.value.detail == "BYOK_REQUIRED"
+
+    with pytest.raises(HTTPException) as explicit:
+        resolve_run_model(_DB(), record, "platform", mode="local")
+    assert explicit.value.status_code == 404
+    assert explicit.value.detail == "MODEL_NOT_FOUND"
 
 
 def test_enforced_without_model_denies_and_orphans_nothing(
@@ -142,20 +168,29 @@ def test_cleared_key_is_model_unavailable(postgres_url, byok_env):
     assert resp.json()["code"] == "MODEL_UNAVAILABLE"
 
 
-def test_platform_ref_requires_allowlist(postgres_url, byok_env, monkeypatch):
+def test_platform_ref_is_rejected_even_for_allowlisted_user(
+    postgres_url, byok_env, monkeypatch
+):
     client, me = _user(postgres_url, "pleb@example.com")
     denied = _task(client, model_ref="platform")
     assert denied.status_code == 404
     assert denied.json()["code"] == "MODEL_NOT_FOUND"
-
     internal, internal_me = _user(postgres_url, "ops@example.com")
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", internal_me["user"]["id"])
-    ok = _task(internal, model_ref="platform")
-    assert ok.status_code == 202, ok.text
+    denied = _task(internal, model_ref="platform")
+    assert denied.status_code == 404
+    assert denied.json()["code"] == "MODEL_NOT_FOUND"
+
+
+def test_legacy_platform_default_does_not_resolve(postgres_url, byok_env):
+    client, me = _user(postgres_url, "old-platform-default@example.com")
     with Session(create_engine(postgres_url)) as db:
-        run = db.get(Run, ok.json()["run_id"])
-        assert run.credential_source == "platform"
-        assert run.model_ref == "platform"
+        user = db.get(User, me["user"]["id"])
+        user.default_model_ref = "platform"
+        db.commit()
+    denied = _task(client)
+    assert denied.status_code == 403
+    assert denied.json()["code"] == "BYOK_REQUIRED"
 
 
 def test_session_continuation_enforced(postgres_url, byok_env):
@@ -254,19 +289,21 @@ def test_run_dtos_echo_model_and_legacy_null(postgres_url, byok_env):
     assert client.get(f"/api/v1/runs/{bound.json()['run_id']}").json()["model"] is None
 
 
-def test_enforcement_off_legacy_no_snapshot(postgres_url, byok_env, monkeypatch):
-    """With RXYCODE_BYOK_ENFORCE=0 a no-model submission stays legacy."""
+def test_enforcement_off_still_requires_byok(postgres_url, byok_env, monkeypatch):
+    """The legacy switch cannot restore Web's platform environment gateway."""
     monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
     client, me = _user(postgres_url, "legacy@example.com")
     resp = _task(client)
-    assert resp.status_code == 202, resp.text
-    with Session(create_engine(postgres_url)) as db:
-        run = db.get(Run, resp.json()["run_id"])
-        assert run.model_ref is None
-        created = db.scalars(
-            select(RunEvent).where(
-                RunEvent.run_id == run.id, RunEvent.type == "run.created"
-            )
-        ).one()
-        assert created.payload.get("model") is None
-    assert client.get(f"/api/v1/runs/{run.id}").json()["model"] is None
+    assert resp.status_code == 403
+    assert resp.json()["code"] == "BYOK_REQUIRED"
+
+
+def test_platform_default_ref_is_rejected(postgres_url, byok_env):
+    client, _ = _user(postgres_url, "set-platform-default@example.com")
+    denied = client.post(
+        "/api/v1/models/default",
+        json={"model_ref": "platform"},
+        headers=_headers(_csrf(client)),
+    )
+    assert denied.status_code == 404
+    assert denied.json()["code"] == "MODEL_NOT_FOUND"

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ for _name in ("rxycode-server", "rxycode-worker", "rxycode-runner", "rxycode-pro
 
 from rxycode_server.persistence.models import (  # noqa: E402
     ModelConnection,
+    User,
     UserModel,
 )
 from tests.web.w9.test_runs_api import (  # noqa: E402
@@ -71,6 +74,41 @@ def _mm():
     from rxycode_server.api.models import _model_manager
 
     return _model_manager()
+
+
+def test_platform_catalogue_policy_unit(monkeypatch):
+    from rxycode_server.api import models as models_api
+
+    actor = SimpleNamespace(user_id="superuser", tenant_id="tenant")
+    user = SimpleNamespace(default_model_ref="platform")
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(mode="local")))
+
+    class _DB:
+        def get(self, _model, _key):
+            return user
+
+        def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [])
+
+    db = _DB()
+    monkeypatch.setattr(models_api, "current_record", lambda _request: actor)
+    monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", "superuser")
+    monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
+
+    access = models_api.model_access(request, db)
+    assert access["require_byok"] is True
+    assert access["platform_allowed"] is False
+    assert access["default_model_ref"] is None
+    listing = models_api.list_models(request, db)
+    assert listing == {"models": [], "default_model_ref": None}
+
+    monkeypatch.setattr(models_api, "require_write", lambda _request: None)
+    with pytest.raises(HTTPException) as error:
+        models_api.set_default_model(
+            models_api._DefaultIn(model_ref="platform"), request, db
+        )
+    assert error.value.status_code == 404
+    assert error.value.detail == "MODEL_NOT_FOUND"
 
 
 def test_create_preset_and_custom(postgres_url, byok_keyring, monkeypatch):
@@ -426,7 +464,23 @@ def test_access_endpoint_shape(postgres_url, byok_keyring, monkeypatch):
         "default_model_ref": None,
     }
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", me["user"]["id"])
-    assert client.get("/api/v1/models/access").json()["platform_allowed"] is True
-    # An allowlisted user also sees the synthetic platform model.
+    monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
+    access = client.get("/api/v1/models/access").json()
+    assert access["require_byok"] is True
+    assert access["platform_allowed"] is False
     models = client.get("/api/v1/models").json()["models"]
-    assert any(m["source"] == "platform" and m["model_ref"] == "platform" for m in models)
+    assert all(m["source"] == "byok" for m in models)
+
+
+def test_legacy_platform_default_is_hidden_on_catalogue_reads(
+    postgres_url, byok_keyring, monkeypatch
+):
+    client, me = _reg(postgres_url, "stale-default@example.com", monkeypatch)
+    with Session(create_engine(postgres_url)) as db:
+        user = db.get(User, me["user"]["id"])
+        user.default_model_ref = "platform"
+        db.commit()
+    assert client.get("/api/v1/models/access").json()["default_model_ref"] is None
+    result = client.get("/api/v1/models").json()
+    assert result["models"] == []
+    assert result["default_model_ref"] is None

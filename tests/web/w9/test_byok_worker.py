@@ -171,45 +171,52 @@ def test_resolve_gateway_cleared_revoked_deleted(postgres_url, byok_keyring):
         assert err.value.code == "MODEL_UNAVAILABLE"
 
 
-def test_platform_not_allowed(postgres_url, byok_keyring):
-    tenant_id, user_id = _seed_user(postgres_url, "d")
+def test_platform_not_allowed():
+    tenant_id, user_id = "tenant", "actor"
     snapshot = _snap("", source="platform")
     snapshot.update({"model_ref": "platform", "model_id": "deployed"})
     with pytest.raises(drain._CredentialRefused) as err:
         drain._resolve_run_gateway(
-            postgres_url, "run-3", _identity(tenant_id, user_id, snapshot), snapshot
+            "unused-database-url", "run-3", _identity(tenant_id, user_id, snapshot), snapshot
         )
     assert err.value.code == "PLATFORM_NOT_ALLOWED"
 
 
-def test_platform_allowlisted_uses_env(postgres_url, byok_keyring, monkeypatch):
-    tenant_id, user_id = _seed_user(postgres_url, "e")
+def test_platform_allowlist_cannot_enable_env_gateway(
+    monkeypatch,
+):
+    tenant_id, user_id = "tenant", "actor"
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", user_id)
     monkeypatch.setenv("RXYCODE_LLM_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("RXYCODE_API_KEY", "sk-canary-platform")
+    monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
+    monkeypatch.setattr(
+        "rxycode_worker.egress.model_gateway_from_env",
+        lambda: pytest.fail("platform gateway must not be read or called"),
+    )
     snapshot = _snap("", source="platform")
     snapshot.update({"model_ref": "platform", "model_id": "deployed"})
-    gateway = drain._resolve_run_gateway(
-        postgres_url, "run-4", _identity(tenant_id, user_id, snapshot), snapshot
-    )
-    assert gateway.host == "llm.example"
-    assert gateway.headers["authorization"] == "Bearer sk-canary-platform"
-    assert gateway.vet is False
-
-
-def test_missing_snapshot_enforced_and_legacy(postgres_url, byok_keyring, monkeypatch):
-    tenant_id, user_id = _seed_user(postgres_url, "f")
-    ident = _identity(tenant_id, user_id, None)
     with pytest.raises(drain._CredentialRefused) as err:
-        drain._resolve_run_gateway(postgres_url, "run-5", ident, None)
-    assert err.value.code == "BYOK_REQUIRED"
-    # Enforcement off -> legacy env gateway.
+        drain._resolve_run_gateway(
+            "unused-database-url", "run-4", _identity(tenant_id, user_id, snapshot), snapshot
+        )
+    assert err.value.code == "PLATFORM_NOT_ALLOWED"
+
+
+def test_missing_snapshot_requires_byok_even_when_enforcement_off(
+    monkeypatch,
+):
     monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
     monkeypatch.setenv("RXYCODE_LLM_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("RXYCODE_API_KEY", "sk-canary-env")
-    gateway = drain._resolve_run_gateway(postgres_url, "run-6", ident, None)
-    assert gateway is not None and gateway.host == "llm.example"
-    assert gateway.vet is False
+    monkeypatch.setattr(
+        "rxycode_worker.egress.model_gateway_from_env",
+        lambda: pytest.fail("platform gateway must not be read or called"),
+    )
+    ident = _identity("tenant", "actor", None)
+    with pytest.raises(drain._CredentialRefused) as err:
+        drain._resolve_run_gateway("unused-database-url", "run-5", ident, None)
+    assert err.value.code == "BYOK_REQUIRED"
 
 
 def test_run_identity_reads_snapshot(postgres_url, byok_keyring):

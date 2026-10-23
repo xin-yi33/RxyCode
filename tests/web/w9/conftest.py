@@ -71,6 +71,10 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 @pytest.fixture(scope="session")
 def _postgres_server() -> str:
+    # RXYCODE_PGURL：外部 postgres（本地无 Docker 时用）；CI 不设此 env。
+    external = os.environ.get("RXYCODE_PGURL", "").strip()
+    if external:
+        return _worker_url(external)
     ready = _docker("exec", _CONTAINER, "pg_isready", "-U", "postgres", "-d", "rxycode")
     if ready.returncode == 0:
         return _worker_url(_URL)
