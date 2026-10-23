@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -18,13 +19,22 @@ from tests.support.pgurl import ensure_container, worker_url
 
 _PG_BASE = "postgresql+psycopg://postgres@127.0.0.1:55432/rxycode"
 ensure_container("rxy-w2c01-pg", 55432)
-DATABASE = worker_url(_PG_BASE)
+_BASE = worker_url(_PG_BASE)
 SECRET = "local-web-secret-value-32bytes!!"
 
-# Every xdist worker gets a fresh database — nothing else migrates it, and the
-# release journey below writes oauth_states/users directly.
-from rxycode_server.persistence.migrate import upgrade_head
+# A dedicated database — NOT the shared worker db: sibling tests on this
+# worker run ``DROP SCHEMA`` in their postgres_url fixture and would wipe the
+# migrated oauth_states/users this release journey needs.
+from sqlalchemy import create_engine, text  # noqa: E402
 
+from rxycode_server.persistence.migrate import upgrade_head  # noqa: E402
+
+_dbname = f"w6c06_{uuid.uuid4().hex[:12]}"
+_engine = create_engine(_BASE, isolation_level="AUTOCOMMIT")
+with _engine.connect() as _conn:
+    _conn.execute(text(f'CREATE DATABASE "{_dbname}"'))
+_engine.dispose()
+DATABASE = _BASE.rpartition("/")[0] + f"/{_dbname}"
 upgrade_head(DATABASE)
 
 
