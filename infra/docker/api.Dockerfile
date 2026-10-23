@@ -29,7 +29,10 @@ ENV RXYCODE_BUILD_COMMIT=${RXYCODE_BUILD_COMMIT} \
     PYTHONPATH=/opt/pkg:/repo:/repo/packages/rxycode-server/src:/repo/packages/rxycode-worker/src:/repo/packages/rxycode-runner/src:/repo/packages/rxycode-protocol/src
 
 COPY infra/docker/requirements-web.txt /tmp/requirements-web.txt
-RUN python -m pip install --quiet --no-cache-dir -r /tmp/requirements-web.txt \
+# Optional mirror for slow networks: --build-arg PIP_INDEX_URL=https://…/simple
+ARG PIP_INDEX_URL=""
+RUN python -m pip install --quiet --no-cache-dir \
+    ${PIP_INDEX_URL:+-i "$PIP_INDEX_URL"} -r /tmp/requirements-web.txt \
     && rm /tmp/requirements-web.txt
 
 # --- release payload at /repo ------------------------------------------------

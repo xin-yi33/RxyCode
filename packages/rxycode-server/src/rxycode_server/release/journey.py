@@ -332,12 +332,15 @@ def _minio() -> dict[str, str]:
     docker = _docker_bin()
     name = "rxy-w6c06-minio"
     subprocess.run([docker, "rm", "-f", name], capture_output=True, text=True, check=False)
+    # Ephemeral host port + pinned image — fixed ports raced parallel
+    # containers on shared CI runners and the floating `minio/minio` tag
+    # made image pulls a second flake source.
     started = subprocess.run(
         [
-            docker, "run", "-d", "--name", name, "-p", "127.0.0.1:59010:9000",
+            docker, "run", "-d", "--name", name, "-p", "127.0.0.1:0:9000",
             "-e", f"MINIO_ROOT_USER={_ACCESS}",
             "-e", f"MINIO_ROOT_PASSWORD={_SECRET_KEY}",
-            "minio/minio", "server", "/data",
+            "bitnamilegacy/minio:2025.7.23",
         ],
         capture_output=True,
         text=True,
@@ -345,7 +348,13 @@ def _minio() -> dict[str, str]:
     )
     if started.returncode != 0:
         raise RuntimeError(started.stderr or started.stdout or "minio did not start")
-    endpoint = "http://127.0.0.1:59010"
+    bound = subprocess.run(
+        [docker, "port", name, "9000/tcp"], capture_output=True, text=True, check=False
+    )
+    port = bound.stdout.strip().rsplit(":", 1)[-1]
+    if bound.returncode != 0 or not port.isdigit():
+        raise RuntimeError(bound.stderr or bound.stdout or "minio port lookup failed")
+    endpoint = f"http://127.0.0.1:{port}"
     deadline = time.time() + 40
     while time.time() < deadline:
         if _healthy(endpoint):

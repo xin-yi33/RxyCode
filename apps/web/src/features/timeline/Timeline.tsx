@@ -11,6 +11,7 @@ import {
 } from "../runs/status"
 import type { RunView } from "../runs/eventReducer"
 import { ThinkingBlock } from "./ThinkingBlock"
+import { TasksBlock } from "./TasksBlock"
 import { ToolRow } from "./ToolRow"
 
 const chipClass: Record<string, string> = {
@@ -143,7 +144,17 @@ export function Timeline({
             case "thinking":
               return (
                 <li key={key}>
-                  <ThinkingBlock steps={item.steps} active={streaming} />
+                  <ThinkingBlock
+                    steps={item.steps}
+                    active={streaming}
+                    text={item.text}
+                  />
+                </li>
+              )
+            case "tasks":
+              return (
+                <li key={key}>
+                  <TasksBlock items={item.items} />
                 </li>
               )
             case "tool":

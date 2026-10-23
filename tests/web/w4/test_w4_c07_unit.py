@@ -47,7 +47,10 @@ def test_w4_c07_contract(tmp_path: Path) -> None:
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=120)
     python = _venv_python(venv)
     installed = subprocess.run(
-        [str(python), "-m", "pip", "install", "--disable-pip-version-check", str(RUNNER)],
+        [
+            str(python), "-m", "pip", "install",
+            "--disable-pip-version-check", "--no-cache-dir", str(RUNNER),
+        ],
         capture_output=True,
         text=True,
         timeout=180,

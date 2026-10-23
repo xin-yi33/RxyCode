@@ -63,7 +63,21 @@ def ensure_container(container: str, port: int) -> None:
     while time.time() < deadline:
         probe = docker("exec", container, "pg_isready", "-U", "postgres", "-d", "rxycode")
         if probe.returncode == 0:
-            return
+            # pg_isready clears while the postmaster can still die in its
+            # init window (observed on loaded CI runners: isready passed,
+            # then the connection was refused seconds later). Require a
+            # REAL connection before declaring ready.
+            try:
+                engine = create_engine(
+                    f"postgresql+psycopg://postgres@127.0.0.1:{port}/rxycode",
+                    pool_pre_ping=True,
+                )
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                engine.dispose()
+                return
+            except Exception:
+                pass
         time.sleep(1)
     logs = docker("logs", container)
     raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")

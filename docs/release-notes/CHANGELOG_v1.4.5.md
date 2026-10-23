@@ -307,9 +307,60 @@
 
 - 刷新已存在会话时，从最新一条历史 run 恢复模型；若该引用无效，要求用户重选，不回退到较早 run。无显式有效模型且 catalog 尚未返回时，新任务与已有会话均阻止发送；已有会话在历史加载/失败期间也阻止发送并显示恢复、重试或手选状态。访客仍走原登录提示；有效显式选择不必等待历史。
 - 发送成功清正文但保留模型；新 session 仅向未显式选模型的草稿继承本次有效选择；切换会话隔离草稿，登出清理草稿。未新增模型默认存储、接口或自动挑选策略，BYOK 权限不变，界面只显示模型名称。
-- 验证：Node 4/4、候选真实页面 Playwright 10/10、主仓原 pytest 2/2、`npm test`（tsc）与 `npm run build` 通过。产品版本仍为 1.4.5。已通过静态 assets 优先、index 最后原子替换上线；未重启业务容器。Cloudflare 普通 HTML 响应会注入现有 Web Analytics beacon，原始完整 index bytes 另以全文件 Range 核验；详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。真实 provider 两轮验收仍待主审完成。
+- 验证：Node 4/4、候选真实页面 Playwright 10/10、主仓原 pytest 2/2、`npm test`（tsc）与 `npm run build` 通过。未修改产品版本号。已通过静态 assets 优先、index 最后原子替换上线；未重启业务容器。Cloudflare 普通 HTML 响应会注入现有 Web Analytics beacon，原始完整 index bytes 另以全文件 Range 核验；详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。截至该部署记录时真实 provider 两轮验收仍待主审完成，后续结果见下方补记。
+
+### 线上真实 provider 验收补记（2026-10-23）
+
+- 上述待验收项已由主审完成：会话 `28093b300301433497d66789cf9f808a` 刷新后不重选模型，Enter 连续创建两轮成功 Run（`aa43aa3a71ba43dcaea72b218c26eb1c`、`8615057e01f0478c855964d738f470a7`）；两轮均为 `deepseek-flash` / `credential_source=byok`，GET 均 HTTP 200、`status=succeeded`，POST 均提交 `model_ref=m_8f193a80f3a84948b7ff3e9974160c5f`。正常退出/重登后该会话模型仍自动恢复，未误报 Key 缺失。
+- 线上浏览器 fetch 的批准 JS/CSS 字节与 hash/长度匹配；容器、StartedAt 及 `.env`、keyring、Caddy、base compose 指纹未变。未修改产品版本号。实际 provider 验收仅覆盖这一个可用模型；本地模拟多模型不代表线上多模型切换。390×844 为 Chromium 视口，不是 vivo 真机。
 
 ## CI 修复：w2_c04 定端口竞争 + w5_c06 pg 启动窗口（2026-10-23）
 
 - `test_w2_c04`：`rxy-w2c04-redis` 固定 `-p 127.0.0.1:56380:6379` 在 py3.12 上撞 iptables 绑定（address already in use）——与 chaos/w7_c02 同型，改 `0` 临时端口 + `docker port` 发现。
 - `test_w5_c06`：自建 `rxy-w5c06-pg` 的 `pg_isready` 在 initdb 恢复窗口内即返回 ready，但 postmaster 仍会中断客户端连接（`server closed the connection unexpectedly`）。ready 循环升级为真实 `select(1)` 探活，过不了的继续等到 60s 截止。
+
+## 真实网页走查（上云前验收，2026-10-23）
+
+真实本地栈（FastAPI `mode=local` + vite 构建产物 + 单端口反代 + 真 Postgres）+ agent-browser 实测：本机口令登录、Composer 附件卡（选择→82B 就绪→绑定→发送）、`run.created` 载荷含完整附件清单（sha256/object_key/size）、BYOK_REQUIRED 诚实报错+去添加 API Key 链路、UI 建 DeepSeek 连接、拉取模型对无效 Key 返回真实 401（不装成功）、手动挂载 deepseek-chat+默认、排队→停止→已取消终态、`/me.web_capabilities` 与 `/models input_capabilities` 真实字段、会话时间线、移动视口布局+抽屉、控制台零错误。
+- **修复**：`main.py::serve()` 本地模式经 `from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway` 引用——把仓库目录名当包路径，离开 `D:\agent-demo\RxyCode\RxyCode1_1_0` 布局即 ImportError（本地模式公网绑定的拒绝逻辑等于裸崩）。改为内联 `_is_loopback_bind_host` 自检，非 loopback 抛带说明的 RuntimeError。
+- **生产迁移发现并修复**：`alembic/versions/012_files_batch.py` 附件部分唯一约束写成 `sa.UniqueConstraint(postgresql_where=…)`——SQLAlchemy 2.x 下 `postgresql_where` 只被 `Index` 接受，`upgrade head` 在生产 Postgres 上 `ArgumentError` 整体回滚（本地测试经 metadata 路径未覆盖 alembic 执行，故漏检）。改为 `op.create_index(unique=True, postgresql_where=…)`，与 models.py 既有写法一致；已在 test pg 上全量 001→012 验证。
+
+## 生产部署与真实验收（2026-10-23，tag web-fa366863）
+
+- 三镜像 `rxycode-{api,worker,web}:web-fa366863` 上线 rxyprod；alembic head 应用至 `012_files_batch`。
+- **infra**：`compose.prod.yaml` worker 块补 `RXYCODE_S3_*`（与 api 同源 `${RXYCODE_MINIO_ROOT_*}`）——此前 worker 无对象存储配置，`_stage_attachments` 落 FS 后端读不到 API 暂存字节，附件 run 必败（生产首个附件 run `fa1713ec` 实测 `attachment.import FileNotFoundError`）。修复后 MinIO 拉取+sha256 校验实测通过。
+- **真实 BYOK 验收**：DeepSeek 连接真 token 跑通——文件创建 run succeeded（80.9s）、附件导入+模型实读回标记、工作区产物登记+签名下载返回真实字节、cancel→cancelled 终态；`ATTACHMENT_SIZE_MISMATCH`/`ATTACHMENT_SESSION_MISMATCH` 负例如实。证据见 `docs/deploy/OPS-LOG.md` 末节。
+
+## 时间线 UX：可展开思考块 + 任务清单（2026-10-23）
+
+- **思考块（Thought）**：`「处理过程（N 步）」`只计步不展示的旧块改为可展开的思考项——`assistant.delta channel=reasoning` 的思维链文本累积进 `thinking.text`（上限 60KB 保留尾部），标题行 chevron 点击展开原文；运行中且为流尾时显示「正在思考…」微光。语义与 OpenTUI `streamReducer` 对齐：`intermediate`（子代理）丢弃、`THOUGHT_PLACEHOLDERS` 占位文案（"思考中..."等 liveness）不进文本、`snapshot=true` 为累计快照→替换而非追加、新思考片在工具/正文事件后另起一块。契约说明：思维链文本本就在 run_events 事件流中（`ReasoningSnapshot` 恒发，`write_reasoning` 的 INVARIANT 注释），此前前端只渲染步数是**展示层选择**而非安全边界——本次按产品需求显性展示，非推理模型（如 deepseek-flash）无 CoT 时块内可能只有 liveness 过滤后的空态（此时块不渲染，等同 TUI 行为）。
+- **任务清单（Tasks）**：`plan.updated`/`todo.updated` 事件合并进唯一 `tasks` 时间线块——`todo.updated` 按 `todo_id` 覆盖状态（pending/in_progress/completed/cancelled 图标），`plan.updated`（design 计划步骤）同块合并（id 前缀 `plan-N` 不冲突）。标题显示 `（done/total）` 进度，默认展开可收起。
+- 测试：`tests/web/w3/test_w3_c03_unit.py` 契约更新（思维链进入 text 断言 + placeholder/snapshot 语义用例 + tasks 归并用例），本地 5/5；本地真实栈 Playwright 实测：思考块默认收起→展开见原文（"快排/分治"推理文本）、任务清单 3 项状态图标 + （3/3）计数、console 零错误。
+
+## 延迟优化：overlay seed 共享缓存 + worker 预热（2026-10-23）
+
+- **诊断**：run 启动窗口内 `sandbox_probed` 前主要耗时是 overlay "seed" 下层的**每次 run 全量 copytree**——`/usr` 实测容器内 9.4s + rmtree 1.1s（/usr ~662MB, /var 6.7MB, /etc 768KB）。探针本身有 `state_root` 级缓存（`overlay_dests`），但 seed 目录建在 per-claim `ovl_root` 内、用完即删 → 每个 run 都重拷。
+- **修复**（`rxycode_worker/drain.py`）：seed 下层改为 `state_root/.ovl-seeds/<hostname>/<tag>-seed-<fp>` 共享缓存——内核 overlay 只读 lower，跨 claim 共享安全；发布走 copy-to-staging + `os.rename` 原子切换，并发 claim 竞态安全（rename 输家丢弃复制品用胜者），崩溃不残留半成品 seed。缓存键 = 容器 hostname + **内容指纹**（源根目录顶层条目 mtime/size 的 sha256）——Docker 每次容器启动重写 `/etc/hosts`、`/etc/resolv.conf`，同 hostname 重启不会产生陈旧 /etc lower；/usr 变化随新镜像 → 新容器 → 新 hostname 自然失效。不同指纹的旧 seed 保留不删（仍可能被存活 overlay 挂载引用）。
+- **预热**：`run_forever` 启动时先跑 `overlay_dests`（bwrap 真实探针）+ `_shared_seed`，首个用户 run 不再在 spawn 窗口付 ~10s 拷贝；预热在 drain 循环前、不阻塞已有 run。探针安全语义不变（负 verdict 仍 TTL 缓存、失败不放宽挂载）。
+- 本地 w8 套件 179/179（5 个 Windows 环境 skip：bwrap/AF_UNIX 不可用）、w9 非 e2e 122/122、w7_c05 28/28；`RXYCODE_PGURL` 外部 pg 通道补齐 w7/w8 conftest（与 w9/w11 同模式）。效果待生产实测对比（见部署记录）。
+
+## 测试基建：`RXYCODE_PGURL` 外部 pg 通道补齐 w7/w8（2026-10-23）
+
+- `tests/web/w7/conftest.py`、`tests/web/w8/conftest.py` 的 `_postgres_server` 此前硬编码 docker 容器，本地无 Docker Desktop 时整波 fixture error；接入 `tests.support.pgurl.external_url()`（w9/w11 已有通道），CI 未设该变量行为不变。
+
+## 生产实测：overlay 探针的隐性拷贝 + 二次修复（2026-10-23）
+
+- **上线后实测发现**：首个真实 run 的 `run.phase` 时序显示 `sandbox_probed` 仍占 ~8.5s（claim→prompt 派发 ~14.1s）。根因不是 seed 复用缺失——生产 worker 容器**根本没有 userns overlay 能力**（`overlay_dests` 全负），但探针对每个候选仍会先 copytree 后探测：/etc direct 失败 → copytree 768KB → seed 探测失败 → /var 6.7MB 同路 → /usr **662MB copytree 后探测仍败**，三候选全废、结果 `{}` 落负缓存。更糟的是负 verdict 有 TTL——TTL 过期后重探又会再拷一遍 660MB，随机 run 周期性付 5.7s+。
+- **修复**（`rxycode_runner/sandbox/userns.py`，`b6bb98dd`）：
+  - `_overlay_preflight`：一条最小 `bwrap --unshare-user /bin/true` 预检（~50ms）——userns 整体不可用时直接落负缓存返回 `{}`，候选循环根本不进入，660MB 拷贝归零；
+  - 候选顺序调整为 /etc→/var→/usr（从小到大），且**首个候选 direct+seed 双败即 break**——/etc seed 是干净纯目录，它都挂不上说明内核 overlay-in-userns 已死，更大 dest 无机会；
+  - 负 verdict TTL 语义不变（修复后重探代价 ~50ms，自愈窗口保留）。
+- **部署链路修复**：VM dockerd 无法直连 docker.io/pypi.org——三 Dockerfile 增加 `PIP_INDEX_URL`/`NPM_REGISTRY` build-arg（`dfb6f356`），拉取走 tuna/npmmirror；`docker.m.daocloud.io` 作 registry mirror 补 base image；mihomo 7890 代理留给 apt/npm 兜底。**构建磁盘治理**：VM 磁盘 99% 满导致 npm ci ENOSPC——prune 后重建（api 649MB / worker 654MB / web 72MB）。
+- **线上 UI 实测**（真实 BYOK run，`docs/deploy/OPS-LOG.md` 补记）：`rxycode-web:web-dfb6f356` 上 21 个思考块渲染、可展开显示真实推理文本（"Let me start by listing the todo…"）、「任务清单 (3/3)」三项 check 齐全、工具行 完成/失败 状态正确、工作区产物块正常、console 零错误。非推理模型（deepseek-flash）发出的 reasoning delta 也正常入块——该模型走 OpenCode Go 时按 LiteLLM 通道回传 thought 文本。
+
+## 二次部署：探针修复上线 + 延迟实测确认（2026-10-23）
+
+- `rxycode-worker:web-52e6c7a8` 上线（api/web 保持 `web-dfb6f356`）；三 worker 健康，数据卷未动。
+- **生产实测延迟**：`sandbox_probed` 块内耗时 8.5s → **33ms**（-99.6%），claim→prompt 派发 14.1s → **3.9s**（-72%）。剩余 ~3.4s 为 child python 启动+imports+agent 组装，非本次范围。
+- CI `52e6c7a8` 全绿（Windows ConPTY boot timeout 系 runner 负载 flake，重跑即过）；web-ci 绿。
+- 线上 UI 复验：思考块/任务清单/工具行/产物块均按需求渲染，console 零错误。

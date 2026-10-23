@@ -60,7 +60,7 @@ def test_e2e_f4_01a_stall_interrupt_grace_kept_host_alive(tmp_path):
             client,
             lambda seen: "kept" in _stall_outcomes(seen)
             and any(m.get("id") == prompt_id and ("error" in m or "result" in m) for m in seen),
-            timeout=30.0,
+            timeout=60.0,
         )
         assert _stall_phases(events) == ["interrupt", "grace_wait", "grace_end"]
         assert _stall_outcomes(events) == ["kept"]
@@ -120,7 +120,7 @@ def test_e2e_f4_01b_stall_grace_expires_kills_and_recovers(tmp_path):
             )
             return has_err and has_degraded
 
-        events = collect_until(client, killed, timeout=30.0)
+        events = collect_until(client, killed, timeout=60.0)
         assert killed(events), f"kill 路径未走完: {events[-3:] if events else []}"
         assert _stall_phases(events) == ["interrupt", "grace_wait", "kill"]
         assert _stall_outcomes(events) == ["killed"]

@@ -1,24 +1,72 @@
-import { IconSpinner } from "../../components/icons"
+import { useState } from "react"
 
-// 「处理过程」进度块：只展示推理步数与进行中状态 —— 模型思维链文本
-// 永不进入 props（eventReducer 只按事件计步），本组件没有任何可展开的
-// 原文区域。安全契约：用户可见的是进度，不是 CoT。
-export function ThinkingBlock({ steps, active }: { steps: number; active: boolean }) {
+import { IconChevronDown, IconSpinner } from "../../components/icons"
+
+// 「思考过程」块：标题行（chevron + 步数 + 进行中状态）+ 可展开的思维链
+// 原文。文本来自 assistant.delta channel=reasoning 的累积，默认收起，
+// 点击标题展开查看完整推理；运行中默认收起但不打断滚动。
+export function ThinkingBlock({
+  steps,
+  active,
+  text,
+}: {
+  steps: number
+  active: boolean
+  text: string
+}) {
+  const [open, setOpen] = useState(false)
+  const expandable = text.length > 0
+  const header = (
+    <>
+      {active ? (
+        <>
+          <IconSpinner size={11} className="rxy-pulse" />
+          <span>正在思考…</span>
+        </>
+      ) : (
+        <span>思考过程</span>
+      )}
+      {steps > 1 ? <span className="text-muted-ink">（{steps} 步）</span> : null}
+      {expandable ? (
+        <IconChevronDown
+          size={12}
+          className={
+            "ml-auto shrink-0 transition-transform " + (open ? "rotate-180" : "")
+          }
+        />
+      ) : null}
+    </>
+  )
   return (
     <div
       data-thinking
       data-thinking-status={active ? "active" : "complete"}
-      className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted"
+      className="rounded-lg border border-border bg-card text-xs text-muted"
     >
-      {active ? (
-        <>
-          <IconSpinner size={11} className="rxy-pulse" />
-          <span>正在处理…</span>
-        </>
+      {expandable ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left"
+        >
+          {header}
+        </button>
       ) : (
-        <span>处理过程</span>
+        <div className="flex w-full items-center gap-2 px-3 py-2 text-left">
+          {header}
+        </div>
       )}
-      {steps > 1 ? <span className="text-muted-ink">（{steps} 步）</span> : null}
+      {open && text ? (
+        <pre
+          className={
+            "max-h-96 overflow-y-auto whitespace-pre-wrap break-all " +
+            "border-t border-border px-3 py-2 font-mono text-muted-ink"
+          }
+        >
+          {text}
+        </pre>
+      ) : null}
     </div>
   )
 }

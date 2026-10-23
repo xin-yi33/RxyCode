@@ -51,9 +51,9 @@ def reduce_events(events: list[dict], initial_status: str = "", watermark: int =
     return json.loads(proc.stdout)
 
 
-def test_w3_c03_thinking_never_leaks_chain_of_thought() -> None:
-    """v1.4.5 安全契约：思维链文本永不进时间线 —— thinking 项只记步数，
-    activity 只放行已知安全的 CLI 状态行。"""
+def test_w3_c03_thinking_accumulates_chain_of_thought() -> None:
+    """思维链按事件计步并累积进 thinking.text —— 前端折叠展示原文；
+    activity 只放行已知安全的 CLI 状态行，子代理中间态仍不进时间线。"""
     done = reduce_events(
         [
             {
@@ -111,15 +111,70 @@ def test_w3_c03_thinking_never_leaks_chain_of_thought() -> None:
         ]
     )
     thoughts = [item for item in done["view"]["timeline"] if item["kind"] == "thinking"]
-    # 原始思维链文本绝不出现：没有 text 字段，只有合并后的步数。
-    assert thoughts == [{"kind": "thinking", "seq": 4, "steps": 2}]
+    # 思维链原文累积进 text：相邻 reasoning delta 合并为一块。
+    assert thoughts == [
+        {"kind": "thinking", "seq": 4, "steps": 2, "text": "先看文件再改测试"}
+    ]
     timeline_json = json.dumps(done["view"]["timeline"], ensure_ascii=False)
-    assert "先看文件" not in timeline_json
-    assert "再改测试" not in timeline_json
+    assert "先看文件" in timeline_json
+    assert "再改测试" in timeline_json
     assert "子代理的内部输出" not in timeline_json
     # activity 只保留状态行文案；非状态行的中间态被通用标签替代。
     assert done["view"]["activity"] == "处理中…"
     assert done["answer"] == ""
+
+
+def test_w3_c03_thinking_filters_placeholders_and_snapshots() -> None:
+    """liveness 占位文案不是思维内容（与 OpenTUI THOUGHT_PLACEHOLDERS
+    同表）；snapshot 是累计快照 → 替换而非追加。"""
+    done = reduce_events(
+        [
+            {
+                "seq": 1,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "思考中...",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": False,
+                },
+            },
+            {
+                "seq": 2,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "先分析",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": False,
+                },
+            },
+            {
+                "seq": 3,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "先分析再动手",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": True,
+                },
+            },
+            {
+                "seq": 4,
+                "type": "assistant.delta",
+                "payload": {
+                    "text": "尾巴",
+                    "intermediate": False,
+                    "channel": "reasoning",
+                    "snapshot": False,
+                },
+            },
+        ]
+    )
+    thoughts = [item for item in done["view"]["timeline"] if item["kind"] == "thinking"]
+    assert thoughts == [
+        {"kind": "thinking", "seq": 2, "steps": 3, "text": "先分析再动手尾巴"}
+    ]
 
 
 def test_w3_c03_contract() -> None:
@@ -204,3 +259,37 @@ def test_w3_c03_negative() -> None:
     ]
     assert reduce_events(history)["runStatus"] == "running"
     assert reduce_events(history, "waiting_approval", 2)["runStatus"] == "waiting_approval"
+
+
+def test_w3_c03_tasks_merge_plan_and_todo_updates() -> None:
+    """plan.updated/todo.updated 合并进唯一 tasks 块，按 id 覆盖状态。"""
+    done = reduce_events(
+        [
+            {
+                "seq": 1,
+                "type": "plan.updated",
+                "payload": {"plan_id": "plan-0", "title": "读取需求", "status": "pending"},
+            },
+            {
+                "seq": 2,
+                "type": "todo.updated",
+                "payload": {"todo_id": "t1", "title": "写实现", "status": "in_progress"},
+            },
+            {
+                "seq": 3,
+                "type": "todo.updated",
+                "payload": {"todo_id": "t1", "title": "写实现", "status": "completed"},
+            },
+            {
+                "seq": 4,
+                "type": "plan.updated",
+                "payload": {"plan_id": "plan-0", "title": "读取需求", "status": "completed"},
+            },
+        ]
+    )
+    blocks = [item for item in done["view"]["timeline"] if item["kind"] == "tasks"]
+    assert len(blocks) == 1
+    assert blocks[0]["items"] == [
+        {"id": "plan-0", "title": "读取需求", "status": "completed"},
+        {"id": "t1", "title": "写实现", "status": "completed"},
+    ]

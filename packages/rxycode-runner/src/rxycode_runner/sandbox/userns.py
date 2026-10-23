@@ -99,8 +99,34 @@ def _probe_negative_live(failed_at: float) -> bool:
 
 #: System roots that MAY get a task-private persistent overlay (when the
 #: kernel permits userns overlayfs): apt/dpkg/pip installs then land on a
-#: per-task layer — never on the host's own tree.
-_OVERLAY_CANDIDATES = ("/usr", "/var", "/etc")
+#: per-task layer — never on the host's own tree. Smallest first: a failed
+#: seeded /etc probe means overlay-in-userns is dead, so /usr's ~660MB
+#: retry copy is skipped on environments that cannot overlay at all.
+_OVERLAY_CANDIDATES = ("/etc", "/var", "/usr")
+
+
+def _overlay_preflight(bwrap: str) -> bool:
+    """Cheap userns-capability check before any candidate is probed.
+
+    One minimal confined spawn — no overlay, no copies. When the kernel
+    forbids ``--unshare-user`` outright (container runtimes without the
+    userns/sysctl bits), every per-candidate probe would fail anyway —
+    the seeded retry would still copy ~660MB of /usr for nothing, and a
+    TTL-expired negative verdict re-pays that on later runs. 50ms here
+    beats multi-second waste per re-probe window.
+    """
+    try:
+        done = subprocess.run(
+            [
+                bwrap, "--unshare-user", "--uid", "0", "--gid", "0",
+                "--unshare-pid", "--ro-bind", "/", "/", "--die-with-parent",
+                "--", "/bin/true",
+            ],
+            capture_output=True, check=False, timeout=10,
+        )
+    except Exception:
+        return False
+    return done.returncode == 0
 
 
 def _overlay_probe_argv(
@@ -161,6 +187,11 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
             return {}
     ok: dict[str, str] = {}
     bwrap = shutil.which("bwrap")
+    if bwrap and not _overlay_preflight(bwrap):
+        # userns is unavailable outright — every probe would fail AND each
+        # seeded retry would copy up to ~660MB of /usr for nothing.
+        _cache_overlay_verdict(key, {})
+        return {}
     if bwrap:
         probe_root = Path(state_root) / ".overlay-probe"
         try:
@@ -200,6 +231,12 @@ def overlay_dests(state_root: Path, *, force: bool = False) -> dict[str, str]:
                     )
                     if done.returncode == 0:
                         ok[dest] = "seed"
+                    elif dest == _OVERLAY_CANDIDATES[0]:
+                        # The smallest candidate failed as a CLEAN copy
+                        # too — userns overlayfs is dead here, so larger
+                        # dests cannot succeed either. Bail before paying
+                        # /var + /usr (~660MB) copytree for nothing.
+                        break
                 except Exception:
                     pass
                 finally:

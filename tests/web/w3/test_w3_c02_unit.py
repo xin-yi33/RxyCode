@@ -256,6 +256,8 @@ class _Stack:
 
 def _login(page, origin: str) -> None:
     """Local-secret login via the W9 /login page's 本机口令 section."""
+    # CI runners under xdist load can exceed playwright's 30s nav default.
+    page.set_default_navigation_timeout(60000)
     page.goto(f"{origin}/login", wait_until="domcontentloaded")
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
