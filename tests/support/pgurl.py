@@ -43,7 +43,11 @@ def ensure_container(container: str, port: int) -> None:
     exists = docker("inspect", container)
     if exists.returncode == 0:
         started = docker("start", container)
-        assert started.returncode == 0, started.stderr
+        # "container is already running" is fine — the readiness probe below
+        # is the actual gate. A name-conflict means a sibling xdist worker
+        # created the container between inspect and run; same outcome.
+        if started.returncode != 0 and "already" not in started.stderr.lower():
+            assert started.returncode == 0, started.stderr
     else:
         started = docker(
             "run",
@@ -58,7 +62,8 @@ def ensure_container(container: str, port: int) -> None:
             f"127.0.0.1:{port}:5432",
             "postgres:16",
         )
-        assert started.returncode == 0, started.stderr
+        if started.returncode != 0 and "already in use" not in started.stderr.lower():
+            assert started.returncode == 0, started.stderr
     deadline = time.time() + 60
     while time.time() < deadline:
         probe = docker("exec", container, "pg_isready", "-U", "postgres", "-d", "rxycode")
