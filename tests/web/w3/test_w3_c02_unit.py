@@ -286,12 +286,24 @@ def _login(page, origin: str) -> None:
     # /login?next=/app contains the literal "/app" — match the path, not the
     # string, or a bounced redirect satisfies the wait and the next expect
     # fails with a misleading "no composer" message.
-    try:
+    def _at_app() -> None:
         page.wait_for_url(
             lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=60000
         )
-    except Exception as exc:  # noqa: BLE001 - surface where the SPA actually is
-        raise AssertionError(f"login ok but never reached /app; url={page.url}") from exc
+
+    try:
+        _at_app()
+    except Exception:
+        # SPA navigates only after GET /me resolves; under xdist load that call
+        # can stall while the session itself is already valid. A reload hits
+        # `me.isSuccess -> <Navigate>` — the same path a user's F5 would take.
+        page.reload(wait_until="domcontentloaded")
+        try:
+            _at_app()
+        except Exception as exc:  # noqa: BLE001 - surface where the SPA is
+            raise AssertionError(
+                f"login ok but never reached /app; url={page.url}"
+            ) from exc
     expect(page.get_by_label("消息")).to_be_visible(timeout=60000)
 
 
