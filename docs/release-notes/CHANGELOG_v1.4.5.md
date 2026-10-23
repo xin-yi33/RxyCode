@@ -347,3 +347,13 @@
 ## 测试基建：`RXYCODE_PGURL` 外部 pg 通道补齐 w7/w8（2026-10-23）
 
 - `tests/web/w7/conftest.py`、`tests/web/w8/conftest.py` 的 `_postgres_server` 此前硬编码 docker 容器，本地无 Docker Desktop 时整波 fixture error；接入 `tests.support.pgurl.external_url()`（w9/w11 已有通道），CI 未设该变量行为不变。
+
+## 生产实测：overlay 探针的隐性拷贝 + 二次修复（2026-10-23）
+
+- **上线后实测发现**：首个真实 run 的 `run.phase` 时序显示 `sandbox_probed` 仍占 ~8.5s（claim→prompt 派发 ~14.1s）。根因不是 seed 复用缺失——生产 worker 容器**根本没有 userns overlay 能力**（`overlay_dests` 全负），但探针对每个候选仍会先 copytree 后探测：/etc direct 失败 → copytree 768KB → seed 探测失败 → /var 6.7MB 同路 → /usr **662MB copytree 后探测仍败**，三候选全废、结果 `{}` 落负缓存。更糟的是负 verdict 有 TTL——TTL 过期后重探又会再拷一遍 660MB，随机 run 周期性付 5.7s+。
+- **修复**（`rxycode_runner/sandbox/userns.py`，`b6bb98dd`）：
+  - `_overlay_preflight`：一条最小 `bwrap --unshare-user /bin/true` 预检（~50ms）——userns 整体不可用时直接落负缓存返回 `{}`，候选循环根本不进入，660MB 拷贝归零；
+  - 候选顺序调整为 /etc→/var→/usr（从小到大），且**首个候选 direct+seed 双败即 break**——/etc seed 是干净纯目录，它都挂不上说明内核 overlay-in-userns 已死，更大 dest 无机会；
+  - 负 verdict TTL 语义不变（修复后重探代价 ~50ms，自愈窗口保留）。
+- **部署链路修复**：VM dockerd 无法直连 docker.io/pypi.org——三 Dockerfile 增加 `PIP_INDEX_URL`/`NPM_REGISTRY` build-arg（`dfb6f356`），拉取走 tuna/npmmirror；`docker.m.daocloud.io` 作 registry mirror 补 base image；mihomo 7890 代理留给 apt/npm 兜底。**构建磁盘治理**：VM 磁盘 99% 满导致 npm ci ENOSPC——prune 后重建（api 649MB / worker 654MB / web 72MB）。
+- **线上 UI 实测**（真实 BYOK run，`docs/deploy/OPS-LOG.md` 补记）：`rxycode-web:web-dfb6f356` 上 21 个思考块渲染、可展开显示真实推理文本（"Let me start by listing the todo…"）、「任务清单 (3/3)」三项 check 齐全、工具行 完成/失败 状态正确、工作区产物块正常、console 零错误。非推理模型（deepseek-flash）发出的 reasoning delta 也正常入块——该模型走 OpenCode Go 时按 LiteLLM 通道回传 thought 文本。
