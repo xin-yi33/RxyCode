@@ -2,25 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
 
-import importlib as _importlib
-
-# Resolve sibling packages under either the nested source layout
-# (RxyCode.RxyCode1_1_0.*) or the flat deployment layout (top-level packages).
-_BASE = f"{__package__.rsplit('.', 1)[0]}." if __package__ and "." in __package__ else ""
-_settings = _importlib.import_module(f"{_BASE}config.settings")
-_long_term = _importlib.import_module(f"{_BASE}memory.long_term")
-_atomic_file = _importlib.import_module(f"{_BASE}utils.atomic_file")
-get_data_dir = _settings.get_data_dir
-get_dated_data_dir = _settings.get_dated_data_dir
-get_output_dir = _settings.get_output_dir
-validate_session_id = _long_term.validate_session_id
-atomic_write_text = _atomic_file.atomic_write_text
+from ..config.settings import get_data_dir, get_dated_data_dir, get_output_dir
+from ..memory.long_term import validate_session_id
+from ..utils.atomic_file import atomic_write_text
 
 
 _ACTIVE_SESSION_ID: ContextVar[str] = ContextVar(
@@ -282,7 +273,14 @@ def set_working_directory(path: str | Path, *, persist: bool = True) -> Path:
 
 
 def clear_session_runtime(session_id: str) -> int:
-    """Clear one session's persisted execution and project context."""
+    """Clear one session's persisted execution and project context.
+
+    Also drops this session's managed shells (see ``core/persistent_shell``):
+    a cleared session must not keep an environment holding the old variables,
+    venv or cwd.  Shell teardown is asynchronous, so it is scheduled on the
+    running loop when there is one; otherwise the shell is marked closed and
+    reaped on next use.
+    """
     resolved = validate_session_id(session_id)
     state_paths = set((get_data_dir() / "sessions").glob(f"*/runtime/{resolved}.json"))
     state_paths.add(_legacy_state_path(resolved))
@@ -296,7 +294,42 @@ def clear_session_runtime(session_id: str) -> int:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+    _release_session_shells(resolved)
     return int(bool(existing) and all(not path.exists() for path in existing))
+
+
+def _release_session_shells(session_id: str) -> None:
+    """Drop the managed shells owned by one session.  Never raises.
+
+    Audit P2-01: scheduling the teardown asynchronously was not enough -- a
+    command issued right after the reset could still acquire the old shell
+    before the task ran.  The registry is therefore invalidated SYNCHRONOUSLY
+    first (so the next ``acquire_shell`` cannot see it), and only the process
+    reaping is scheduled.
+    """
+    try:
+        from .persistent_shell import close_shells, invalidate_session_sync
+    except Exception:  # pragma: no cover - import cycle guard
+        return
+    try:
+        doomed = invalidate_session_sync(session_id)
+    except Exception:
+        return
+    if not doomed:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop here: reap eagerly on a private loop.
+        try:
+            asyncio.run(close_shells(doomed))
+        except Exception:
+            pass
+        return
+    try:
+        loop.create_task(close_shells(doomed))
+    except Exception:
+        pass
 
 
 __all__ = [

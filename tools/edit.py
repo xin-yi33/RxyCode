@@ -120,9 +120,12 @@ def edit_file(
                     f"keep at most {cap} covering the named behaviors. File not edited.]"
                 )
         atomic_write_text(p, content)
-        from .write import post_write_report
-
-        return f"[edited {filePath}]" + post_write_report(p, content)
+        # Diagnostics run on the ASYNC path only (``edit_file_async``), which is
+        # the path the agent uses.  Calling the coroutine here produced an
+        # un-awaited coroutine and no report at all -- the "declared diagnostics
+        # never wired" regression.  The synchronous function stays a pure
+        # writer for callers that cannot await.
+        return f"[edited {filePath}]"
     except Exception as e:
         return f"[error editing file: {e}]"
 
@@ -138,10 +141,53 @@ async def edit_file_async(
     diff: str | None = None,
 ) -> str:
     await asyncio.sleep(0)
-    return edit_file(
+    result = edit_file(
         filePath, oldString, newString, replaceAll,
         operation=operation, content=content, diff=diff,
     )
+    return await _attach_diagnostics(result, filePath)
+
+
+#: Success prefixes of the three write operations.  replace returns
+#: ``[edited ...]``, write returns ``[wrote ...]`` and patch returns
+#: ``Patch applied ...``.  Matching only the first one silently skipped
+#: diagnostics for the other two (audit P2, round 4: 0/0/1 calls).
+_SUCCESS_PREFIXES = ("[edited", "[wrote", "Patch applied")
+
+
+def _operation_for_result(result: str) -> str:
+    """Map a success message to the operation name used in the report."""
+    if result.startswith("[wrote"):
+        return "write"
+    if result.startswith("Patch applied"):
+        return "patch"
+    return "edit"
+
+
+async def _attach_diagnostics(result: str, filePath: str) -> str:
+    """Append the post-write report after a successful write.
+
+    All three operations (replace/write/patch) end in one committed file, so
+    they share ONE diagnostics entry point (``post_write_report``) with the
+    standalone write/patch functions.  That is what keeps the "check the saved
+    version exactly once" contract true across every write path.
+
+    A failed edit/missing checker never turns into a write failure: only a
+    successful result is extended.
+    """
+    if not isinstance(result, str) or not result.startswith(_SUCCESS_PREFIXES):
+        return result
+    try:
+        from .write import post_write_report
+
+        p = resolve_session_path(filePath)
+        saved = p.read_text(encoding="utf-8", errors="replace")
+        block = await post_write_report(
+            p, saved, operation=_operation_for_result(result)
+        )
+        return result + block
+    except Exception as exc:  # diagnostics must never fail the edit
+        return result + f"\n[syntax check: unavailable — {type(exc).__name__}]"
 
 
 edit_tool = StructuredTool.from_function(

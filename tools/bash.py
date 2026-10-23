@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from ..config.settings import load_config
 from ..core.session_runtime import current_session_id
-from ..utils.output_capture import write_text_artifact
 from ..utils.shell import shell_executor
+
+_logger = logging.getLogger(__name__)
 from .launch_intent import classify_shell_launch
 from .open_file import open_file, open_file_async
 from .secret_text import redact_secrets
@@ -54,9 +59,6 @@ class BashInput(BaseModel):
 #: is middle-truncated (head + tail kept) so a noisy command cannot blow up
 #: the context window.
 MAX_OUTPUT_CHARS = 30000
-#: 只按行数截断：超过 200 行时，上下文留首尾各 50 行，全文在 spill 文件里。
-INLINE_LINE_LIMIT = 200
-EDGE_LINES = 50
 
 #: Hint appended when truncation happens (Tier1 style, see
 #: memory/compressor.py:170-194 _middle_truncate).
@@ -112,67 +114,6 @@ def _is_duplicate_capture(result: dict, paths: list[str]) -> bool:
     seen.add(fingerprint)
     artifacts[fingerprint] = current_paths
     return False
-
-
-def _output_line_count(text: str, result: dict) -> int:
-    line_count = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
-    if line_count > 0:
-        return line_count
-    if not text:
-        return 0
-    return text.count("\n") + (0 if text.endswith("\n") else 1)
-
-
-def _output_is_long(text: str, result: dict) -> bool:
-    return _output_line_count(text, result) > INLINE_LINE_LIMIT
-
-
-def _edge_sections(text: str, result: dict) -> tuple[str, str, int]:
-    head_lines = list(result.get("stdout_head_lines") or [])
-    if not head_lines:
-        head_lines = list(result.get("stderr_head_lines") or [])
-    if result.get("stderr") and result.get("stderr_tail_lines"):
-        tail_lines = list(result.get("stderr_tail_lines") or [])
-    else:
-        tail_lines = list(result.get("stdout_tail_lines") or [])
-    total = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
-    if head_lines or tail_lines:
-        if result.get("stdout_redaction_hold") or result.get("stderr_redaction_hold"):
-            tail_lines = []
-        return (
-            _redact_preview("\n".join(head_lines[:EDGE_LINES])),
-            _redact_preview("\n".join(tail_lines[-EDGE_LINES:])),
-            total,
-        )
-    lines = text.splitlines()
-    head = "\n".join(lines[:EDGE_LINES])
-    tail = "\n".join(lines[-EDGE_LINES:]) if len(lines) > EDGE_LINES else ""
-    return head, tail, len(lines)
-
-
-def _shape_long_output(text: str, result: dict, paths: list[str]) -> tuple[str, list[str]]:
-    """Keep the first and last 50 lines in context and point at the full file."""
-    if not text or not _output_is_long(text, result):
-        return text, paths
-    if result.get("capture_error"):
-        return _truncate_output(text), []
-    saved = list(paths)
-    truncated = bool(result.get("stdout_truncated") or result.get("stderr_truncated"))
-    if not saved and not truncated:
-        try:
-            saved = [str(write_text_artifact(text))]
-        except OSError:
-            return _truncate_output(text), paths
-    if not saved:
-        return _truncate_output(text), paths
-    head, tail, total = _edge_sections(text, result)
-    shown = (EDGE_LINES if head else 0) + (EDGE_LINES if tail and tail != head else 0)
-    omitted = max(0, total - shown)
-    parts = [head, f"... [省略 {omitted} 行，完整输出已保存至 {saved[0]}] ..."]
-    if tail and tail != head:
-        parts.append(tail)
-    parts.append("如需完整输出，请使用 read 工具读取该文件")
-    return "\n".join(part for part in parts if part), saved
 
 
 def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
@@ -269,20 +210,8 @@ async def _maybe_launch_async(command: str, workdir: str = "") -> str | None:
     return await loop.run_in_executor(None, _detach_gui, command, workdir)
 
 
-def _refuse_blacklisted(command: str) -> str | None:
-    from RxyCode.RxyCode1_1_0.core.safety.policy import hard_denied_shell_reason
-
-    reason = hard_denied_shell_reason(command)
-    if not reason:
-        return None
-    return f"[blocked: dangerous command rejected] {reason}。这条命令未执行。"
-
-
 def run_bash(command: str, description: str = "", workdir: str = "", timeout: int = 1800) -> str:
     # 废弃代码（2026-09-20）：timeout: int = 60 / 120 不再作为 run_bash 默认值。
-    refused = _refuse_blacklisted(command)
-    if refused is not None:
-        return refused
     launched = _maybe_launch(command, workdir)
     if launched is not None:
         return launched
@@ -297,15 +226,233 @@ async def run_bash_async(
     workdir: str = "",
     timeout: int = 1800,  # 废弃代码（2026-09-20）：旧默认 timeout: int = 60 / 120
 ) -> str:
-    """Cancellable Bash implementation used by the async agent path."""
-    refused = _refuse_blacklisted(command)
-    if refused is not None:
-        return refused
+    """Cancellable Bash implementation used by the async agent path.
+
+    Runs in the session's managed persistent shell when that is available, so
+    ``export``/``cd``/venv/function state survives between tool rounds.  Falls
+    back to one-shot ``shell_executor`` execution when the managed shell
+    cannot be used (startup failure, sandbox/docker policy, or a closed
+    session), and reports honestly when shell state was lost.
+    """
     launched = await _maybe_launch_async(command, workdir)
     if launched is not None:
         return launched
+
+    if _managed_shell_eligible(command):
+        managed = await _run_managed(command, workdir, timeout)
+        if managed is not None:
+            return managed
+
     result = await shell_executor.execute_async(command, workdir, timeout)
     return _format_result(result, command)
+
+
+def _managed_sandbox_wrapper():
+    """Return a callable that applies ShellExecutor's sandbox to a shell spawn.
+
+    Audit P1-01: the first version returned only ``wrapped.argv``, silently
+    dropping the Windows Job (memory/process caps + kill-on-close), the
+    resource policy and the backend's temp-file cleanup.  The persistent shell
+    must carry the WHOLE plan so it is constrained exactly like a one-shot
+    command.
+    """
+    from ..utils.shell import shell_executor
+
+    def wrap(argv: list[str], cwd: str | None):
+        from ..core.persistent_shell import ShellSandboxPlan
+
+        workdir = cwd or ""
+        try:
+            policy = shell_executor._execution_policy(workdir)
+        except Exception:
+            policy = None
+        pair = shell_executor._wrap_os_sandbox(list(argv), Path(cwd) if cwd else None)
+        if pair is None:
+            return ShellSandboxPlan(argv=list(argv), policy=policy)
+        sandbox_policy, wrapped = pair
+        return ShellSandboxPlan(
+            argv=list(wrapped.argv),
+            wrapped=wrapped,
+            policy=policy or sandbox_policy,
+            cleanup=tuple(getattr(wrapped, "cleanup", ()) or ()),
+            backend=str(getattr(wrapped, "backend", "none")),
+            downgraded=bool(getattr(wrapped, "downgraded", False)),
+            detail=str(getattr(wrapped, "detail", "") or ""),
+        )
+
+    return wrap
+
+
+def _managed_shell_eligible(command: str) -> bool:
+    """Whether this command may run in the managed persistent shell.
+
+    Docker sandbox execution and GUI-launch intents stay on the existing
+    one-shot path: the former replaces the process environment entirely and
+    the latter is handled above.
+    """
+    # Explicit opt-out, used by tests that assert the one-shot path instead.
+    if os.environ.get("RXYCODE_MANAGED_SHELL", "").strip().lower() in {"0", "off", "false"}:
+        return False
+    try:
+        config = load_config() or {}
+    except Exception:
+        return True
+    execution = config.get("execution") or {}
+    sandbox_mode = str(execution.get("sandbox_mode", "workspace") or "workspace")
+    if sandbox_mode == "docker":
+        # A container per command is the isolation boundary; a long-lived
+        # host shell would silently escape it.
+        return False
+    return True
+
+
+async def _run_managed(command: str, workdir: str, timeout: int) -> str | None:
+    """Execute in the managed shell.  Returns None to fall back."""
+    from ..core import persistent_shell as ps
+    from ..core.session_runtime import (
+        current_working_directory,
+        current_session_id,
+        set_working_directory,
+    )
+
+    identity = ps.state_identity(session_id=current_session_id())
+    runtime_cwd = str(current_working_directory())
+    try:
+        shell = await ps.acquire_shell(
+            identity=identity,
+            cwd=runtime_cwd,
+            sandbox_command=_managed_sandbox_wrapper(),
+        )
+    except ps.ShellStartupError:
+        return None
+
+    # Two-way cwd sync: the dedicated `cd` tool updates session_runtime, so a
+    # running shell must be MOVED to that directory before this command runs.
+    # Without this the shell kept its own directory and then overwrote the
+    # runtime value with its own on the way out (audit finding P2).
+    # ``workdir`` is per-call and handled by the wrapper, so it is skipped here.
+    #
+    # Audit P1-05: cancellation during this sync used to fall through to
+    # ``return None``, which the caller treated as "managed path unavailable"
+    # and re-ran the user's command through the one-shot path -- the cancelled
+    # command still executed.  A cancel must clean up and propagate, never
+    # degrade into a retry.
+    if not workdir and shell.started and shell.confirmed_cwd:
+        if os.path.normcase(shell.confirmed_cwd) != os.path.normcase(runtime_cwd):
+            if sys.platform == "win32":
+                sync_cmd = (
+                    "Set-Location -LiteralPath '"
+                    + runtime_cwd.replace("'", "''")
+                    + "'"
+                )
+            else:
+                sync_cmd = "cd '" + runtime_cwd.replace("'", "'\\''") + "'"
+            try:
+                sync = await shell.run(sync_cmd, timeout=15)
+                if sync.exit_code not in (0, None):
+                    _logger.debug(
+                        "cwd sync to %s failed: %s", runtime_cwd, sync.exit_code
+                    )
+            except asyncio.CancelledError:
+                await ps.release_shell(identity)
+                raise
+            except ps.ShellLostError:
+                await ps.release_shell(identity)
+                return None
+
+    # One bounded capture for the whole command (audit P2-04/P2-05): the shell
+    # streams stdout straight into it, and the wrapper's error text plus the
+    # shell's own stderr go into it as the stderr stream so the model actually
+    # sees them.
+    try:
+        from ..utils.shell import BoundedOutputCapture
+
+        capture = BoundedOutputCapture()
+    except Exception:
+        capture = None
+
+    try:
+        outcome = await shell.run(
+            command,
+            timeout=float(timeout) if timeout else ps.DEFAULT_COMMAND_TIMEOUT,
+            workdir=workdir,
+            capture=capture,
+        )
+    except ps.ShellStartupError as exc:
+        # Audit P2-12: the declared fallback was never wired -- a startup
+        # failure escaped as an exception.  Fall back only for a non-security
+        # failure; a sandbox refusal must NOT be downgraded into an unsandboxed
+        # one-shot run.
+        if getattr(exc, "sandbox_refused", False):
+            return (
+                "[error executing bash: the sandbox refused to start the "
+                f"managed shell ({exc}). The command was NOT run.]"
+            )
+        await ps.release_shell(identity)
+        return None
+    except ps.ShellLostError as exc:
+        # Either the shell died or a command overran its cap.  Both leave the
+        # environment undefined: destroy it and say so instead of replaying.
+        await ps.release_shell(identity)
+        return (
+            "[error executing bash: managed shell environment was lost "
+            f"({exc}). Shell state (variables, functions, venv, cwd) is no "
+            "longer available; the next command starts a fresh shell.]"
+        )
+    except asyncio.CancelledError:
+        # A cancelled command leaves the shell's state undefined.
+        await ps.release_shell(identity)
+        raise
+
+    # Commit the shell's CONFIRMED directory so `cd` inside bash and the
+    # dedicated cd tool agree on one value.
+    cwd_after = outcome.cwd_after
+    if cwd_after and Path(cwd_after).is_dir():
+        try:
+            set_working_directory(cwd_after)
+        except (ValueError, OSError):
+            pass
+
+    # Route the wrapper's error text and the shell's own stderr into the same
+    # capture, so they reach the model instead of being dropped (audit P2-05).
+    if capture is not None:
+        try:
+            shell_stderr = shell.take_stderr()
+            err_text = "\n".join(
+                part for part in (outcome.stderr_errors, shell_stderr) if part
+            )
+            if err_text:
+                capture.feed("stderr", err_text.encode("utf-8", errors="replace"))
+            capture.end_stream("stdout")
+            capture.end_stream("stderr")
+        except Exception:
+            pass
+
+    if capture is not None:
+        try:
+            result: dict = {
+                "success": outcome.success,
+                "exit_code": outcome.exit_code,
+            }
+            result.update(capture.finish())
+        except Exception:
+            result = _managed_fallback_result(outcome)
+    else:
+        result = _managed_fallback_result(outcome)
+
+    if outcome.error:
+        result["stderr"] = (str(result.get("stderr") or "") + "\n" + outcome.error).strip()
+    return _format_result(result, command)
+
+
+def _managed_fallback_result(outcome) -> dict:
+    """Build the result dict when the shared capture is unavailable."""
+    return {
+        "success": outcome.success,
+        "exit_code": outcome.exit_code,
+        "stdout": outcome.stdout,
+        "stderr": outcome.stderr_errors or "",
+    }
 
 
 def _looks_like_env_probe(command: str) -> bool:
@@ -335,9 +482,7 @@ def _format_result(result: dict, command: str = "") -> str:
     if _is_duplicate_capture(result, paths):
         return DUPLICATE_SPILL
 
-    body, paths = _shape_long_output(_redact_preview(output), result, paths)
-    if len(body) > MAX_OUTPUT_CHARS and "完整输出已保存至" not in body:
-        body = _truncate_output(body)
+    body = _truncate_output(_redact_preview(output))
     if result.get("capture_error"):
         capture_error = str(result["capture_error"])
         marker = (

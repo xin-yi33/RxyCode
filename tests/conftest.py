@@ -140,15 +140,6 @@ if not getattr(sys, "_rxycode_test_checkout_ready", False):
         pass
     if callable(_unify):
         _unify()
-    # The editable finder purge above also removes the flat first-party
-    # packages (rxycode_runner, rxycode_server, rxycode_worker, ...), which
-    # live under packages/*/src rather than the checkout root.  Re-expose
-    # them on sys.path so lazy imports like ``rxycode_runner.local.supervisor``
-    # resolve to THIS checkout exactly as the editable install would.
-    for _src in sorted((_checkout_root / "packages").glob("*/src")):
-        _src_str = str(_src)
-        if _src_str not in sys.path:
-            sys.path.insert(0, _src_str)
     sys._rxycode_test_checkout_ready = True  # type: ignore[attr-defined]
 
 import pytest
@@ -326,6 +317,13 @@ def pytest_unconfigure(config):
 
 def pytest_sessionfinish(session, exitstatus):
     """Preserve the isolated runtime when failures need postmortem evidence."""
+    # Managed shells own real OS processes.  Reap any that a test forgot, so a
+    # long suite cannot exhaust threads/processes ("can't start new thread"
+    # appeared after thousands of tests when one file leaked shells).
+    try:
+        asyncio.run(_release_managed_shells())
+    except Exception:
+        pass
     session.config._rxycode_test_failed = exitstatus != 0
     if exitstatus != 0 or os.environ.get("RXYCODE_KEEP_TEST_ARTIFACTS"):
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")
@@ -333,6 +331,17 @@ def pytest_sessionfinish(session, exitstatus):
             reporter.write_line(
                 f"RXYCode test runtime: {session.config._rxycode_test_root}"
             )
+
+
+async def _release_managed_shells() -> None:
+    try:
+        from RxyCode.RxyCode1_1_0.core import persistent_shell as ps
+    except Exception:
+        return
+    try:
+        await ps.release_all()
+    except Exception:
+        pass
 
 
 def pytest_collection_modifyitems(items):

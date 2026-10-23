@@ -80,7 +80,7 @@ class TestRunBash:
 
 
 class TestBashOutputTruncation:
-    """超过 200 行时，上下文只留首尾，全文在 spill 文件。"""
+    """Output longer than 30000 chars is middle-truncated, keeping head+tail."""
 
     def _run_with_output(self, text):
         from unittest.mock import patch, MagicMock
@@ -107,44 +107,29 @@ class TestBashOutputTruncation:
         out = self._run_with_output("hello")
         assert out == "hello"
 
-    def test_long_single_line_is_not_cut_by_line_rule(self):
+    def test_long_output_truncated_with_hint(self):
         big = "A" * 40000
         out = self._run_with_output(big)
-        assert "省略" not in out
-        assert "Full output saved to:" in out
+        assert len(out) < 32000
+        assert "输出已截断" in out
 
-    def test_byte_spill_keeps_head_and_tail_without_line_cut(self):
+    def test_truncation_keeps_head_and_tail(self):
         head = "H" * 15000
         tail = "T" * 15000
         big = head + ("M" * 20000) + tail
         out = self._run_with_output(big)
         preview, spill_path_text = out.rsplit("\nFull output saved to: ", 1)
         assert preview.startswith("H" * 100)
-        assert "T" * 100 in preview
-        assert "省略" not in preview
+        assert preview.rstrip().endswith("T" * 100)
         spill_path = Path(spill_path_text.strip())
         assert spill_path.is_absolute()
         assert spill_path.read_text(encoding="utf-8") == big
 
-    def test_exactly_200_lines_stay_inline(self):
-        big = "\n".join(f"line-{index:04d}" for index in range(200))
+    def test_exactly_30000_not_truncated(self):
+        big = "B" * 30000
         out = self._run_with_output(big)
-        assert "省略" not in out
-        assert "line-0000" in out
-        assert "line-0199" in out
-
-    def test_over_200_lines_keeps_50_each_end(self):
-        lines = [f"line-{index:04d}" for index in range(260)]
-        big = "\n".join(lines)
-        out = self._run_with_output(big)
-        assert "line-0000" in out
-        assert "line-0049" in out
-        assert "line-0259" in out
-        assert "line-0120" not in out
-        assert "省略 160 行" in out
-        assert "请使用 read 工具读取该文件" in out
-        saved = out.rsplit("Full output saved to: ", 1)[1].strip()
-        assert Path(saved).read_text(encoding="utf-8") == big
+        assert "输出已截断" not in out
+        assert len(out) == 30000
 
 
 class TestBashTool:
@@ -165,13 +150,16 @@ class TestBashTool:
     async def test_tool_ainvoke_uses_cancellable_shell_path(self):
         from RxyCode.RxyCode1_1_0.tools import bash as bash_mod
 
+        # This asserts the one-shot cancellable path specifically.  The managed
+        # persistent shell became the default on 2026-10-23, so opt out here.
         fake = {"stdout": "async-ok", "stderr": "", "success": True, "exit_code": 0}
-        with patch.object(
-            bash_mod.shell_executor,
-            "execute_async",
-            new=AsyncMock(return_value=fake),
-        ) as execute_async:
-            result = await bash_mod.bash_tool.ainvoke({"command": "echo ignored"})
+        with patch.dict("os.environ", {"RXYCODE_MANAGED_SHELL": "0"}):
+            with patch.object(
+                bash_mod.shell_executor,
+                "execute_async",
+                new=AsyncMock(return_value=fake),
+            ) as execute_async:
+                result = await bash_mod.bash_tool.ainvoke({"command": "echo ignored"})
 
         assert result == "async-ok"
         execute_async.assert_awaited_once_with("echo ignored", "", 1800)

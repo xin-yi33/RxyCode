@@ -43,92 +43,99 @@ def run_patch(filePath: str, diff: str) -> str:
     additions = max(0, len(new_lines) - len(orig_lines))
     removals = max(0, len(orig_lines) - len(new_lines))
 
-    from .write import post_write_report
-
-    return (
-        f"Patch applied to {file_path}. +{additions} -{removals} lines."
-        + post_write_report(file_path, patched)
-    )
+    return f"Patch applied to {file_path}. +{additions} -{removals} lines."
 
 
 async def run_patch_async(filePath: str, diff: str) -> str:
     await asyncio.sleep(0)
-    return run_patch(filePath, diff)
+    result = run_patch(filePath, diff)
+    if not result.startswith("Patch applied"):
+        return result
+    # The patch is on disk; check the content that was actually saved through
+    # the same entry point write/edit use.
+    from .write import post_write_report
+
+    p = resolve_session_path(filePath)
+    try:
+        content = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return result + f"\n[syntax check: unavailable — {type(exc).__name__}]"
+    try:
+        return result + await post_write_report(p, content, operation="patch")
+    except Exception as exc:  # diagnostics must never fail the patch
+        return result + f"\n[syntax check: unavailable — {type(exc).__name__}]"
 
 
 def _apply_diff(original: str, diff: str) -> str:
-    """Apply a unified diff only when every hunk matches the original file."""
-    if not diff.strip():
-        return original
+    """Apply a simple unified diff."""
     lines = diff.splitlines()
-    result: list[str] = []
+    result = []
     orig_lines = original.splitlines()
     orig_idx = 0
-    final_newline = original.endswith(("\n", "\r"))
-    newline = "\r\n" if "\r\n" in original else "\n"
-    hunks = 0
+    strip_final_newline = False
+
     i = 0
     while i < len(lines):
         line = lines[i]
-        if line.startswith(("--- ", "+++ ", "diff ", "index ")):
+
+        # Skip diff metadata lines (--- / +++ / diff)
+        if line.startswith("---") or line.startswith("+++") or line.startswith("diff "):
             i += 1
             continue
-        match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
-        if match is None:
-            raise ValueError("expected a unified diff @@ hunk header")
-        old_count = int(match.group(2) or 1)
-        new_count = int(match.group(4) or 1)
-        old_start = int(match.group(1))
-        start = old_start if old_count == 0 else old_start - 1
-        if start < orig_idx or start > len(orig_lines):
-            raise ValueError("overlapping or out-of-range patch hunk")
-        result.extend(orig_lines[orig_idx:start])
-        orig_idx = start
-        new_start = int(match.group(3))
-        if new_start != len(result) + (1 if new_count else 0):
-            raise ValueError("patch new-line position does not match preceding hunks")
-        old_used = new_used = 0
-        previous_kind = ""
-        hunks += 1
-        i += 1
-        while i < len(lines) and not lines[i].startswith("@@"):
-            body = lines[i]
-            if body.startswith("\\ No newline"):
-                if previous_kind in {"+", " "}:
-                    final_newline = False
-                i += 1
-                continue
-            if body.startswith(("diff ", "index ")) or (
-                (old_used, new_used) == (old_count, new_count)
-                and body.startswith(("--- ", "+++ "))
-            ):
-                raise ValueError("one file per edit patch operation")
-            if not body or body[0] not in " +-":
-                raise ValueError("invalid patch hunk line")
-            kind, text = body[0], body[1:]
-            if kind in " -":
-                if orig_idx >= len(orig_lines) or orig_lines[orig_idx] != text:
-                    raise ValueError(f"patch context/removal does not match line {orig_idx + 1}")
-                orig_idx += 1
-                old_used += 1
-            if kind in " +":
-                result.append(text)
-                new_used += 1
-            previous_kind = kind
+
+        # Handle "No newline at end of file" marker
+        if line.startswith("\\ No newline"):
+            strip_final_newline = True
             i += 1
-        if (old_used, new_used) != (old_count, new_count):
-            raise ValueError("patch hunk line counts do not match its header")
-    if not hunks:
-        raise ValueError("patch contains no hunks")
-    result.extend(orig_lines[orig_idx:])
-    output = newline.join(result)
-    if final_newline and result:
-        output += newline
+            continue
+
+        # Parse hunk header
+        if line.startswith("@@"):
+            match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if match:
+                start = int(match.group(1)) - 1
+                # Copy lines before hunk
+                while orig_idx < start and orig_idx < len(orig_lines):
+                    result.append(orig_lines[orig_idx])
+                    orig_idx += 1
+            i += 1
+            continue
+
+        # Context line
+        if line.startswith(" "):
+            if orig_idx < len(orig_lines):
+                result.append(orig_lines[orig_idx])
+                orig_idx += 1
+            i += 1
+            continue
+
+        # Remove line
+        if line.startswith("-"):
+            if orig_idx < len(orig_lines):
+                orig_idx += 1
+            i += 1
+            continue
+
+        # Add line
+        if line.startswith("+"):
+            result.append(line[1:])
+            i += 1
+            continue
+
+        # Skip unknown lines
+        i += 1
+
+    # Copy remaining lines
+    while orig_idx < len(orig_lines):
+        result.append(orig_lines[orig_idx])
+        orig_idx += 1
+
+    output = "\n".join(result)
+    if strip_final_newline and output.endswith("\n"):
+        output = output[:-1]
     return output
 
 
-# 兼容入口（2026-10-13）：不再注册独立 patch schema。模型使用 edit 的
-# patch operation；run_patch/_apply_diff 是共享补丁实现，并非废弃死代码。
 patch_tool = StructuredTool(
     name="patch",
     description="Apply a unified diff patch to a file. Use standard unified diff format with @@ hunk headers.",

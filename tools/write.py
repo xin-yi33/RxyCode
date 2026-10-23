@@ -1,9 +1,5 @@
 import ast
 import asyncio
-import json
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -26,7 +22,16 @@ class WriteInput(BaseModel):
 
 
 def _verify_syntax(path: Path, content: str) -> str:
-    """Verify file syntax, return error message or empty string (meaning OK)."""
+    """Legacy synchronous syntax probe.
+
+    兼容入口：调用方 tests/test_tools/test_write.py（以及任何直接调用者）；
+    转发目标 core.post_write_diagnostics（真实检查器）；保留原因：同步签名
+    被既有测试与脚本直接使用，改为 async 会破坏调用方。新代码请用
+    ``post_write_report``。
+
+    JS/TS/JSX 不再做括号计数——那种近似检查会把真实语法错误判成 OK。
+    这里只保留 Python 的真实 compile 检查，其余交由诊断层如实报告。
+    """
     suffix = path.suffix.lower()
 
     if suffix == '.py':
@@ -36,125 +41,18 @@ def _verify_syntax(path: Path, content: str) -> str:
         except SyntaxError as e:
             return f"SYNTAX_ERROR: line {e.lineno}: {e.msg}"
 
-    if suffix in ('.js', '.jsx', '.ts', '.tsx'):
-        # Simple bracket matching check
-        opens = content.count('{') + content.count('(') + content.count('[')
-        closes = content.count('}') + content.count(')') + content.count(']')
-        if opens != closes:
-            return f"BRACKET_MISMATCH: opens={opens}, closes={closes}"
-        return "OK"
+    # 废弃代码（2026-10-23）：括号计数冒充 JS/TS 语法检查，漏报真实错误
+    # （`const a = ;` 判 OK）。替代入口：core.post_write_diagnostics
+    # 的 eslint / tsc / node --check；引用核查依据：本轮 C 组验收中
+    # bad.js 被旧实现判 OK。保留签名，返回空串表示“未检查”。
+    # if suffix in ('.js', '.jsx', '.ts', '.tsx'):
+    #     opens = content.count('{') + content.count('(') + content.count('[')
+    #     closes = content.count('}') + content.count(')') + content.count(']')
+    #     if opens != closes:
+    #         return f"BRACKET_MISMATCH: opens={opens}, closes={closes}"
+    #     return "OK"
 
     return ""
-
-
-def _lint_python(path: Path) -> str:
-    """Pyflakes 与语法级规则。未定义名字这类问题 compile 看不出来。"""
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable, "-m", "ruff", "check",
-                "--select", "F,E9",
-                "--output-format", "json",
-                "--no-cache",
-                str(path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        return "[lint] ruff 超时，仅完成语法检查"
-    except OSError as exc:
-        return f"[lint] 未能运行 ruff（{exc}），仅完成语法检查"
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
-    if "No module named ruff" in stderr:
-        return "[lint] 未能运行 ruff，仅完成语法检查"
-    if not stdout:
-        if proc.returncode == 0:
-            return "[lint] 没有问题"
-        return "[lint] ruff 未能完成，仅完成语法检查"
-    try:
-        payload = json.loads(stdout)
-    except json.JSONDecodeError:
-        return "[lint] ruff 输出无法解析，仅完成语法检查"
-    items = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
-    if not items:
-        return "[lint] 没有问题"
-    rendered: list[str] = []
-    for item in items[:20]:
-        loc = item.get("location") if isinstance(item.get("location"), dict) else {}
-        row = loc.get("row")
-        col = loc.get("column")
-        code = str(item.get("code") or "").strip()
-        message = str(item.get("message") or "").strip()
-        where = f"第{row}行" if row else "未知行"
-        if col:
-            where += f"第{col}列"
-        rendered.append(f"- {where}：{code} {message}".rstrip())
-    extra = f"\n- …还有 {len(items) - 20} 条" if len(items) > 20 else ""
-    return "[lint]\n" + "\n".join(rendered) + extra
-
-
-def _lint_javascript(path: Path) -> str:
-    node = shutil.which("node")
-    if not node:
-        return "[lint] 没有 node，仅完成括号检查"
-    try:
-        proc = subprocess.run(
-            [node, "--check", str(path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        return "[lint] node --check 超时，仅完成括号检查"
-    except OSError as exc:
-        return f"[lint] 未能运行 node（{exc}），仅完成括号检查"
-    if proc.returncode == 0:
-        return "[lint] 没有语法问题"
-    text = proc.stderr or proc.stdout or ""
-    line_no = ""
-    for raw in text.splitlines():
-        if raw.startswith(str(path)) and ":" in raw:
-            tail = raw.rsplit(":", 1)[-1].strip()
-            if tail.isdigit():
-                line_no = tail
-                break
-    message = ""
-    for raw in text.splitlines():
-        if raw.startswith("SyntaxError:"):
-            message = raw.split(":", 1)[1].strip()
-            break
-    if not message:
-        message = "语法错误"
-    where = f"第{line_no}行：" if line_no else ""
-    return f"[lint]\n- {where}SyntaxError {message}"
-
-
-def post_write_report(path: Path, content: str | None = None) -> str:
-    """写入之后的检查。语法和静态问题附在同一次工具结果里。"""
-    suffix = path.suffix.lower()
-    if suffix not in {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}:
-        return ""
-    if content is None:
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            return f"\n[lint] 无法读取已写入文件: {exc}"
-    lines: list[str] = []
-    syntax = _verify_syntax(path, content)
-    if syntax:
-        lines.append(f"[syntax check: {syntax}]")
-    if suffix == ".py":
-        lines.append(_lint_python(path))
-    elif suffix in {".js", ".jsx", ".mjs", ".cjs"}:
-        lines.append(_lint_javascript(path))
-    else:
-        lines.append("[lint] 没有适用于 TypeScript 的检查器，仅完成括号检查")
-    return "\n" + "\n".join(lines)
 
 
 def _count_test_functions(content: str) -> int | None:
@@ -213,28 +111,62 @@ def write_file(filePath: str, content: str) -> str:
         atomic_write_text(p, content)
 
         result_msg = f"[wrote {len(content)} bytes to {p}]"
-        result_msg += post_write_report(p, content)
+
+        # Syntax verification for common code files
+        if p.suffix in ('.py', '.js', '.ts', '.jsx', '.tsx'):
+            syntax_result = _verify_syntax(p, content)
+            if syntax_result:
+                result_msg += f"\n[syntax check: {syntax_result}]"
+
         return result_msg
     except Exception as e:
         return f"[error writing file: {e}]"
 
 
+async def post_write_report(
+    path: Path,
+    content: str,
+    *,
+    operation: str = "write",
+) -> str:
+    """Check a file that was just saved and render the model-facing block.
+
+    This is THE single diagnostics entry point: ``write``, ``edit`` and
+    ``patch`` all call it after a successful save, so a file is never checked
+    twice and never skipped by one path but not another.
+
+    The write already happened before this runs.  A syntax error here does
+    NOT turn the write into a failure, and a missing checker does not either.
+    """
+    from ..core.post_write_diagnostics import diagnose
+
+    report = await diagnose(path, content, operation=operation, written=True)
+    return report.render()
+
+
 async def write_file_async(filePath: str, content: str) -> str:
     # Yield once so a pending cancellation wins before the atomic commit.
     await asyncio.sleep(0)
-    return write_file(filePath, content)
+    result = write_file(filePath, content)
+    if result.startswith("[error"):
+        return result
+    # Write succeeded: attach the real diagnostic block (replacing the legacy
+    # synchronous probe so the file is not checked twice).
+    path = resolve_write_path(filePath)
+    try:
+        block = await post_write_report(path, content, operation="write")
+    except Exception as exc:  # diagnostics must never fail the write
+        block = f"\n[syntax check: unavailable — {type(exc).__name__}]"
+    legacy = result.find("\n[syntax check:")
+    if legacy != -1:
+        result = result[:legacy]
+    return result + block
 
 
-# 兼容入口（2026-10-13）：不再注册独立 write schema。模型使用 edit 的
-# write operation；write_file 仍是它调用的完整写入实现，旧导入保留。
 write_tool = StructuredTool.from_function(
     func=write_file,
     coroutine=write_file_async,
     name="write",
-    description=(
-        "Write content to a file. Creates parent directories if needed. "
-        "Overwrites existing files. Python and JavaScript results include "
-        "syntax and linter findings for the next turn."
-    ),
+    description="Write content to a file. Creates parent directories if needed. Overwrites existing files.",
     args_schema=WriteInput,
 )

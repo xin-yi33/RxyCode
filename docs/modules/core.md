@@ -90,6 +90,83 @@ See `docs/modules/agents.md` for the expert-team module index.
 
 Session restoration searches the current date, earlier dated records, and the legacy `runtime_sessions/` directory.
 
+### Managed persistent shell (`core/persistent_shell.py`, 2026-10-23)
+
+Keeps one long-lived shell per trusted session identity for the agent's
+interactive `bash` tool, so environment variables, shell functions, venv
+activation and cwd survive across tool rounds (previously every call was a
+fresh process).
+
+- `ManagedShell` owns one subprocess; `acquire_shell()` / `release_shell()` /
+  `release_all()` form the registry keyed by `state_identity()` (session id,
+  optionally suffixed by an isolation token for parallel sub-agent work).
+- Commands are serialized on one shell via a per-shell lock; different
+  identities run in parallel and never share cwd or variables.
+- Completion uses a per-command random sentinel (`__RXY_BEGIN_<token>__` /
+  `__RXY_END_<token>__`) with the true exit code and the shell's confirmed
+  `CWD` on the trailer. This is a control channel, not a security boundary —
+  the sandbox/policy gate still decides what may run.
+- `workdir` is scoped to one call by cd-in/cd-back, deliberately NOT a
+  subshell (a subshell would isolate variables too).
+- Timeout/cancel/crash destroy the shell and report that state was lost;
+  commands are never replayed.
+- State lives in memory only (env may hold credentials); nothing is serialized.
+- Spawning adopts the **whole** sandbox plan (`ShellSandboxPlan`): the Windows
+  Job is created before spawn and bound while the root is suspended
+  (`CREATE_SUSPENDED`), the memory/process policy is installed once for the
+  shell's lifetime, and the backend's per-spawn temp files (`cleanup`) are
+  removed on close, on startup failure and on cancellation.
+- The Windows Job handle is owned by the shell from the moment it exists; every
+  constructor exit path closes it, so a cancelled spawn cannot leak a handle.
+  Closing the job after the tree is killed is what reaps descendants that
+  outlived the root.
+- Sub-agent shells are reclaimed on **normal completion** (`ChildRuntime.release()`),
+  not only on cancellation/shutdown.
+
+### Post-write diagnostics (`core/post_write_diagnostics.py`, 2026-10-23)
+
+Single checker used by `write`, `edit` and `patch` through
+`tools/write.py::post_write_report()`.
+
+- Reports the write and the check as separate facts (`written` vs `status`):
+  a syntax error does not un-write the file, and a missing checker does not
+  fake a write failure.
+- Statuses: `pass` / `problems` / `unavailable` / `timeout` / `cancelled` /
+  `stale` / `not_checked`; only `pass` counts as a pass.
+- Python: real `compile()` (never executes the file) + project Ruff.
+  JS: `node --check`. TS/TSX: project `tsc --noEmit` with the jsx mode
+  matching the extension. JSX is excluded from `node --check` because JSX is
+  not valid JS and would produce a bogus error. No dependency is installed on
+  demand.
+- Reports bind to a content fingerprint (sha256 prefix, not mtime);
+  `mark_stale()` downgrades a report whose file version has since changed.
+- Per-write work stays fast (syntax + file-level lint); project-wide type
+  checks, tests and builds remain with the existing Build completion gate.
+- All three write operations (`replace`/`write`/`patch`) reach the same entry
+  point, and the report names the operation that produced the file.
+- Machine protocols are parsed from the checker's **complete artifact**, not
+  the bounded preview the controlled execution entry returns for the model.
+- Checkers that execute project configuration need explicit trust
+  (`project_config_execution_allowed()`): an ESLint flat config is JavaScript
+  and tsconfig compiler plugins load modules. Without
+  `diagnostics.run_project_config_checkers: true`, a full-auto mode, or
+  `auto_approve: ["danger"]`, only that checker is skipped (safe checks such
+  as `tsc` without plugins, `node --check` and Python `compile()` still run);
+  the report is `not_checked`, never `pass`.
+  - The mode is the **effective request mode**
+    (`execution.tool_orchestrator.current_permission_mode()`: request-level
+    override first, then global config) — a prompt narrowed to `auto_edit`
+    must not inherit a global `full_auto` trust.
+  - The ESLint config is resolved the way ESLint resolves it
+    (`find_executable_eslint_config()` walks up), so a nested package cannot
+    execute the parent directory's config unnoticed. Data-only configs
+    (`.eslintrc.json`) are not executable.
+  - `tsconfig.json` is parsed as JSONC and its `extends` chain is merged;
+    `composite` decides whether `--incremental false` may be added (TS6379),
+    and `plugins` is read from the effective config. An unreadable config is
+    treated as "may load code" (skip tsc without trust) and as composite
+    (never add the illegal flag).
+
 ### Core Code: agent_v2.py
 
 **Classes:**
@@ -391,7 +468,15 @@ The subagent system is a separate package under `core/`:
 - `permissions.py` — `PermissionPolicy` allow/ask/deny evaluation with system hard-reject.
 - `budget.py` — `BudgetGuard` (steps/tokens/time/concurrency).
 - `workspace.py` — `WorkspaceValidator` + `LeaseManager` (read_only / leased_write /
-  isolated_worktree).
+  isolated_worktree). A `read_only` child may only run commands that
+  `is_read_only_command()` can PROVE read-only: single-quoted text is literal,
+  double-quoted text keeps its interpolating `$(`/`${`/backtick constructs
+  visible (they execute in bash and PowerShell), any unquoted executable
+  construct is refused, every `&&`/`||`/`;`/`|` segment must match the
+  whitelist, **and the arguments must not write or execute** (`git diff
+  --output=…`, `find -exec/-delete`, `env <cmd>`, `git -c` are refused). When
+  read-only cannot be proven the command is refused and the dedicated read
+  tools remain the supported path (round-5 audit).
 - `events.py` — `ChildSessionEvent` + `EventStore` (monotonic seq, idempotency, replay).
 - `registry_provider.py` — process-wide manager singleton (`init_manager`/`get_manager`).
 

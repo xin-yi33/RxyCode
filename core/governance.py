@@ -34,6 +34,19 @@ from .safety.policy import (
 # Provider/model-scoped token buckets
 # ---------------------------------------------------------------------------
 
+def _is_shell_action(action: str) -> bool:
+    """True for shell tools, whose commands are code whatever they look like.
+
+    ``classify_tool_risk`` rates a *command* by semantics, so ``echo hi`` and
+    ``git status`` classify READ.  That is right for risk display, but a shell
+    is still arbitrary code, so the read-only auto-allow shortcut must not
+    apply to it -- otherwise auto_edit's "bash always asks" rule is bypassed
+    by phrasing the command read-only.
+    """
+    from .safety.policy import canonical_tool_name
+
+    return canonical_tool_name(str(action or "")) == "bash"
+
 
 class RateLimitKey(BaseModel):
     """Canonical provider/model key used to isolate rate-limit state."""
@@ -615,7 +628,7 @@ class SensitiveActionPolicy:
         if risk >= RiskLevel.WRITE and is_dry_run(config):
             return decision(PolicyOutcome.DRY_RUN, "dry_run", "dry_run")
 
-        if risk is RiskLevel.READ:
+        if risk is RiskLevel.READ and not _is_shell_action(action):
             return decision(PolicyOutcome.ALLOW, "read_only", "auto")
 
         if approval_source == "explicit_command":

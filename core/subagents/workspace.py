@@ -16,6 +16,7 @@ Stable error codes:
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,15 +104,210 @@ class LeaseExpiredError(WorkspaceError):
 # Read-only whitelist for bash commands
 _READ_ONLY_COMMANDS: tuple[str, ...] = (
     "ls", "cat", "head", "tail", "grep", "rg", "find", "wc",
-    "python -m pytest --collect-only", "git status", "git diff", "git log",
+    "git status", "git diff", "git log",
     "git show", "pwd", "echo", "whoami", "env",
 )
 
 
+#: Options that make an otherwise read-only tool WRITE a file or EXECUTE a
+#: program.  Audit P1 (round 5): the whitelist only looked at the command
+#: prefix, so ``git diff --no-index --output=stolen.txt a b`` was "read-only"
+#: while it wrote a real file.  A prefix check is not enough -- the arguments
+#: must be checked too.
+_EXECUTING_OPTIONS = frozenset(
+    {
+        "--output",
+        "--output-file",
+        "--out",
+        "--out-file",
+        "--save",
+        "--write",
+        "--in-place",
+        "--log-file",
+        "--result-file",
+        "--to-file",
+        "--patch-file",
+        "--ext-diff",
+        "--textconv",
+        "--open-files-in-pager",
+        "--pre",
+    }
+)
+
+#: ``find`` predicates that run a program or write a file (``find`` itself is
+#: read-only, its predicates are not).
+_FIND_EXECUTING_FLAGS = frozenset(
+    {
+        "-exec",
+        "-execdir",
+        "-delete",
+        "-fprint",
+        "-fprint0",
+        "-fprintf",
+        "-fls",
+        "-ok",
+        "-okdir",
+    }
+)
+
+
+def _arguments_execute_or_write(tokens: list[str]) -> bool:
+    """True when the ARGUMENTS of a whitelisted command can write or execute.
+
+    ``tokens`` is the masked segment split on whitespace; the first token is the
+    command itself.  Conservative by design: an option we cannot prove harmless
+    that is known to write/execute is refused.
+    """
+    if not tokens:
+        return True
+    head = tokens[0].lower()
+    # ``env cmd ...`` runs an arbitrary program; bare ``env`` only prints.
+    if head == "env" and len(tokens) > 1:
+        return True
+    for token in tokens[1:]:
+        option = token.lower()
+        # ``--output=path`` and ``--output path`` are both writes.
+        name = option.split("=", 1)[0]
+        if name in _EXECUTING_OPTIONS:
+            return True
+        if head == "find" and name in _FIND_EXECUTING_FLAGS:
+            return True
+        if head == "git":
+            # ``git -c key=value`` / ``--config-env`` can point a hook or a diff
+            # driver at an arbitrary program.  ``-c`` is always its own token
+            # (``--color`` is a different option, so no prefix matching).
+            if option == "-c" or name == "--config-env":
+                return True
+    return False
+
+
+def _mask_quoted(text: str) -> str:
+    """Mask quoted DATA while keeping anything a shell would EXECUTE.
+
+    Both bash and PowerShell treat single quotes as fully literal, so their
+    contents can be masked wholesale.  Double quotes are NOT literal: ``$(...)``
+    and backticks still run a command inside them (``echo "$(rm -rf x)"``).
+    Masking the whole double-quoted span (the previous behaviour) therefore let
+    an executable expression through as "quoted data".  Here only the
+    interpolating constructs survive masking, and the caller's
+    ``_EXECUTABLE_CONSTRUCTS`` check then refuses the command.
+
+    Masking (rather than deleting) keeps token boundaries intact so the
+    whitelist prefix check still sees ``grep -E ...``.
+    """
+    out: list[str] = []
+    quote = ""
+    i = 0
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if quote == "'":
+            # bash/PowerShell single quotes: nothing is interpolated.
+            if char == "'":
+                quote = ""
+                out.append("Q")
+            i += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                i += 2
+                continue
+            if char == '"':
+                quote = ""
+                out.append("Q")
+                i += 1
+                continue
+            if char == "`":
+                # Command substitution (bash) / escape that can build one.
+                out.append(char)
+                i += 1
+                continue
+            if char == "$" and i + 1 < length and text[i + 1] in "({":
+                # Sub-expression / braced expansion: keep it visible so the
+                # constructs check refuses the command.
+                out.append(char)
+                out.append(text[i + 1])
+                i += 2
+                continue
+            # Literal data inside double quotes (`[0-9]`, spaces, ...).
+            i += 1
+            continue
+        if char == "\\":
+            i += 2
+            continue
+        if char == "'":
+            quote = "'"
+            i += 1
+            continue
+        if char == '"':
+            quote = '"'
+            i += 1
+            continue
+        out.append(char)
+        i += 1
+    if quote:
+        # Unterminated quote: do not claim read-only.
+        out.append("(")
+    return "".join(out)
+
+
+#: Unquoted constructs that EXECUTE code in at least one supported shell.
+#:
+#: PowerShell is the reason this exists: ``echo ([IO.File]::WriteAllText(...))``
+#: starts with an allowed prefix but runs arbitrary .NET code, and
+#: ``echo (Remove-Item x)`` deletes a file.  A prefix/segment check cannot see
+#: inside ``(...)``/``[...]``, so those are rejected outright rather than
+#: parsed (audit P1-04 follow-up: cannot prove read-only -> refuse).
+_EXECUTABLE_CONSTRUCTS = (
+    "(", ")", "[", "]", "{", "}",
+    "$", "`", "::", "@", ">", "<",
+)
+
+
 def is_read_only_command(command: str) -> bool:
-    """Check whether a bash command is whitelisted as read-only."""
+    """Check whether a bash command is whitelisted as read-only.
+
+    The whole command must be read-only, not just its first word.  A bare
+    ``startswith`` check let ``echo hi && rm -rf data`` through, because the
+    command "starts with echo".  A later round showed that even segment checks
+    are insufficient while *expressions* are allowed, because
+    ``echo ([IO.File]::WriteAllText(...))`` is a single whitelisted-looking
+    segment that executes arbitrary code.
+
+    Rules, checked in order:
+      * quoted spans are masked -- single quotes are literal, double quotes
+        keep their interpolating ``$(``/backtick constructs visible
+      * any unquoted executable construct (``( ) [ ] { } $ ` :: @ > <``) is
+        refused -- if read-only cannot be *proven*, it is not read-only
+      * every ``&&``/``||``/``;``/``&``/``|``/newline segment must match the
+        whitelist as a whole-token prefix
+      * the arguments of each segment must not write a file or run a program
+        (``git diff --output=...``, ``find -delete``, ``env cmd`` ...)
+    """
     cmd = command.strip()
-    return any(cmd.startswith(prefix) for prefix in _READ_ONLY_COMMANDS)
+    if not cmd:
+        return False
+    # ``2>``/``2>&1`` stderr-only redirection is a legitimate probe.
+    normalized = re.sub(r"\d?>&\d|\d?>\s*/dev/null", " ", cmd)
+    masked = _mask_quoted(normalized)
+    if any(token in masked for token in _EXECUTABLE_CONSTRUCTS):
+        return False
+    # Newlines are command separators too: "echo hi\nrm -rf x" is two commands.
+    segments = [
+        segment.strip() for segment in re.split(r"&&|\|\||[;&|\n\r]", masked)
+    ]
+    segments = [segment for segment in segments if segment]
+    if not segments:
+        return False
+    for segment in segments:
+        if not any(
+            segment == prefix or segment.startswith(prefix + " ")
+            for prefix in _READ_ONLY_COMMANDS
+        ):
+            return False
+        if _arguments_execute_or_write(segment.split()):
+            return False
+    return True
 
 
 class WorkspaceValidator:

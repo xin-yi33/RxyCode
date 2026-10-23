@@ -13,24 +13,22 @@ Tools follow the LangChain StructuredTool pattern. Each tool has:
 
 Every LLM request's `tools` array is **two tiers**:
 
-- **Frozen core** — the built-ins plus `tool_search`, sorted by name and
-  byte-stable across turns so the provider prefix cache keeps hitting
-  (FX6 unchanged). `tool_search` is registered at agent start by
-  `_ensure_tool_search_tool`.
-- **Deferred** — `metadata["source"] in {"mcp", "plugin"}`, plus the rare
-  installers `download_skill`, `download_mcp`, and `team_install`. These
-  never appear in the request schema. A GitHub-scale MCP connection does
-  not add tens of thousands of schema tokens per round.
+- **Frozen core** — the built-ins (and `tool_search` itself once registered),
+  sorted by name and byte-stable across turns so the provider prefix cache
+  keeps hitting (FX6 unchanged).
+- **Deferred** — everything tagged `metadata["source"] in {"mcp", "plugin"}`
+  (e.g. ~90 GitHub-MCP tools), which **never appears in the request schema**.
+  A GitHub-scale MCP connection no longer adds tens of thousands of schema
+  tokens per round.
 
 Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
 
-1. Model calls `tool_search(query)`. The tool is already on the frozen core,
-   including when no MCP server is connected.
-2. The catalog is one flat keyword list. Each MCP tool is named
-   `mcp_{server}_{tool}`; search does not walk server, then group, then tool.
-   Hits return **full schemas inline in the tool result** (appended to the
-   trajectory; the cache prefix stays put). A tool already exposed in the
-   same message context returns `ALREADY AVAILABLE`.
+1. Model calls `tool_search(query)` — a real, always-on meta tool registered
+   by `_refresh_mcp_tools` the first time a deferred tool lands.
+2. Its result returns the top matches' **full schemas inline in the tool
+   result message** (which appends to trajectory — cache prefix untouched).
+   Same session dedup: a tool already exposed returns only an "ALREADY
+   AVAILABLE" reminder, not the schema again.
 3. To invoke a discovered tool the model emits the free-form envelope
    `<tool_call>{"name": "mcp_x", "arguments": {...}}</tool_call>` — parsed by
    `parse_deferred_tool_json_calls` into the standard dispatch dicts and
@@ -38,26 +36,20 @@ Discovery (`core/tool_search.py`, AI-Agents-in-Depth 图 4-4 pattern):
    second invoke channel). Unknown names and bad JSON become explicit
    malformed-call feedback, never silent no-ops.
 
-Invariants (current as of 2026-10-13, after `0cedb02e`):
-- `tool_search` is resident from agent start. `_refresh_mcp_tools` may call
-  `_ensure_tool_search_tool` again; that call is idempotent and is not the
-  registration trigger. Subset policies force-include it. `risk=read` is a
-  floor, so the tool is READ in `core/safety/policy.py` and in
-  `PLAN_READONLY_TOOL_NAMES`.
-- `_get_core_tools()` changes only when the frozen core changes. Adding or
-  removing an MCP server does not change the request schema.
+Invariants (K例复审修订 2026-10-13):
+- `tool_search` is a **resident** from session start (empty catalog answered
+  gracefully), not "when the first MCP arrives"; subset policies force-include
+  it; `risk=read` is a floor only, so the tool is classified READ in
+  `core/safety/policy.py` AND in `PLAN_READONLY_TOOL_NAMES`.
+- `_get_core_tools()` output varies only when the frozen core changes;
+  adding/removing an MCP server no longer mutates the request schema after
+  the first registration of `tool_search`.
 - Prewarm binds through the same `_get_core_tools()` (`core/prewarm.py`
   `core_tools_for`), so the hello-turn prefix equals the work-turn prefix.
-- A full discovery carries `DISCOVERY_PIN_MARKER` and stays at its position
-  through ordinary compaction. `tool_search` owns its own dedupe and size
-  cap. The generic tool-output dedupe and the 2000-character truncation do
-  not rewrite that message.
-- Fast exposure is `(session_id, message-context id, schema sha256)`.
-  Append-only chat keeps the id. Clearing history, switching session,
-  approving a plan, or loading another chat rotates it. A partial rewind
-  revokes only discoveries that left the prefix. Graph tasks use a
-  ContextVar and drop that key when the task ends. A schema change
-  re-exposes the tool.
+- Discovery result messages carry `DISCOVERY_PIN_MARKER`; ordinary compaction
+  (`microcompact_messages`) leaves them at their position. Exposure tracking
+  is bound to `(session_id, schema sha256)` — new session or schema change
+  re-exposes; it never returns stale "ALREADY AVAILABLE" from a prior session.
 - `defercall_N` ids increase monotonically for the session; mixed
   native+envelope replies get every envelope rejected with an explicit
   ToolMessage (never silently dropped); an unterminated envelope is an
@@ -75,7 +67,7 @@ Invariants (current as of 2026-10-13, after `0cedb02e`):
 | 工具 | 层 | 理由 |
 |---|---|---|
 | read/view/ls/grep/glob | 常驻 | 每个编码轮次的观察面（read 与 view 语义重叠但参数/行区间行为不同，合并会断既有调用） |
-| write/edit/patch | 常驻 | 代码改写主力；语义不同（write 全量、edit 点改、patch 标准 diff），不合并 |
+| edit（operation=replace\|write\|patch） | 常驻 | 代码改写主力。模型面只有**一个**文件变更工具；三种语义作为 `operation` 参数保留（write 全量、replace 点改、patch 标准 diff），`write`/`patch` 退为内部实现 |
 | bash | 常驻 | Shell 出入口，几乎所有构建/测试/探查路径 |
 | websearch/webfetch | 常驻 | 联网搜索/抓取高频且为只读 |
 | task(todo)/task_manage/todo_write | 常驻 | 状态带与长程任务源；两个入口已统一单一 in_progress 校验（K3-9） |
@@ -93,8 +85,9 @@ Invariants (current as of 2026-10-13, after `0cedb02e`):
 | registry.py | ToolRegistry - per-agent injectable catalog (F2). `default_registry` is the process default; a Coordinator member gets a scoped copy, not the process table. `registry` is a compat alias |
 | bash.py | BashTool - execute shell commands with timeout and output capture. Default **hard cap 1800s**. Runtime probes CPU/IO at **180/300/600s** and reports to the user and the model; busy search/traversal is not killed; idle-CPU/IO jobs yield at that checkpoint so the model decides. Git argv still uses 60s. |
 | read.py | ReadTool - read file contents with line range support |
-| write.py | WriteTool - write/create files with directory auto-creation |
-| edit.py | EditTool - surgical text replacements in files |
+| write.py | WriteTool - 内部全量写入实现 + `post_write_report()` 诊断入口；**不再**作为模型工具注册（模型面走 `edit --operation=write`） |
+| edit.py | EditTool - 唯一模型面文件变更工具（`operation=replace\|write\|patch`），同步 `edit_file` 为纯写入，异步路径挂写后诊断 |
+| patch.py | PatchTool - 内部统一 diff 实现；**不再**作为模型工具注册（模型面走 `edit --operation=patch`） |
 | grep_tool.py | GrepTool - search files by regex pattern |
 | glob_tool.py | GlobTool - find files by glob pattern |
 | git_tool.py | GitTool - git operations (status, diff, commit, etc.) |
@@ -262,6 +255,22 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
 - Captures stdout/stderr separately
 - Handles Windows PowerShell vs cmd detection
 - Supports working directory changes
+- **Managed persistent shell (2026-10-23)**: agent `bash` calls default to
+  `core/persistent_shell.py` instead of a fresh process per call, so
+  environment variables, shell functions, venv activation and the current
+  directory survive between tool rounds. The shell is created lazily on the
+  first command, keyed by the trusted session identity, serializes commands on
+  one shell while different identities run in parallel, and commits only the
+  directory the shell itself confirms back to `session_runtime`. `workdir` is
+  single-shot (cd in, run, cd back — never a subshell, so variables survive).
+  Completion uses a random per-command sentinel, so output that merely looks
+  like a marker cannot settle a command early, and a non-zero exit is always
+  reported. Timeout/cancel/crash destroy the shell and say state was lost;
+  nothing is replayed. Disabled for `sandbox_mode=docker` (a container per
+  command is the isolation boundary) and by `RXYCODE_MANAGED_SHELL=0`. The
+  one-shot path (`execute_async`/`execute_argv_async`) remains in use for GUI
+  launches, docker, and all internal callers (git, formatter, workflow,
+  diagnostics).
 - Uses the bounded `ShellExecutor` previews and raw stdout/stderr artifacts;
   bash formats the previews without reading the complete artifact back into
   memory. Artifact paths retain the `Full output saved to:` prefix, duplicate
@@ -276,6 +285,16 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
   stream contains a secret-redaction marker, its raw tail is conservatively
   omitted before tool-orchestrator redaction; the exact bytes remain in the
   local artifact.
+- Every call still goes through the unchanged gate: argument validation, risk
+  classification, approval, journal, output limits and sandbox. The persistent
+  shell reuses the *environment*, never a prior authorization.
+- **Spawn lifecycle (2026-10-24)**: the persistent shell adopts the whole
+  `ShellSandboxPlan` (Job + policy + backend temp files). The Windows Job is
+  created before spawn and bound while the root is suspended; the handle is
+  owned from the moment it exists, so a cancelled spawn closes it instead of
+  leaking it. The sandbox's per-spawn temp files are deleted on close, on
+  startup failure and on cancellation. Sub-agent shells are reclaimed on
+  normal completion (`ChildRuntime.release()`), not only on shutdown.
 
 ### ReadTool (read.py)
 - Reads file contents with optional line range (offset/limit)
@@ -290,11 +309,65 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
 - Creates/overwrites files with auto-directory creation
 - Validates file path and content
 - Returns success/failure with file path
+- **Not a model-facing tool since 2026-10-23**: the model calls
+  `edit(operation="write")`; this module stays the implementation plus the
+  `post_write_report()` entry point. Keeping one registered file-change tool
+  is what removed the "three tools, three different diagnostic behaviours"
+  class of bug.
+- **Post-write diagnostics (2026-10-23)**: after a successful save it calls
+  `post_write_report()` → `core/post_write_diagnostics.py`. The report keeps
+  "the file was written" and "the check result" as separate facts, carries the
+  content fingerprint that was actually checked, and only counts `pass` as a
+  pass. Python uses real `compile()` (never executing the file) plus project
+  Ruff; JS uses `node --check`; TS/TSX use project `tsc --noEmit` with the
+  jsx mode matching the extension. Missing checkers report `unavailable`, and
+  bracket counting is no longer used as a syntax signal.
+- **Checker output is parsed from the complete artifact** (2026-10-24): the
+  controlled execution entry returns a bounded preview plus an artifact path.
+  Parsing the preview silently truncated machine output (a real Ruff run's
+  180 findings exceeded the preview and parsed as "invalid JSON" → the whole
+  check was reported `unavailable`). Only the model-facing summary is
+  compressed now.
+- **Executable project config needs explicit trust** (2026-10-24): an ESLint
+  flat config is JavaScript and tsconfig compiler plugins load modules, so
+  "check this file" would otherwise run arbitrary project code without
+  approval. Without `diagnostics.run_project_config_checkers: true`, a
+  full-auto permission mode, or `auto_approve: ["danger"]`, the
+  config-executing checker is skipped **alone**: safe checks (`tsc` without
+  plugins, `node --check`, Python `compile()`) still run, and only when no safe
+  checker exists is the report `not_checked` with the trust reason. A tsconfig
+  that declares compiler plugins has no safe substitute, so that file reports
+  `not_checked`.
+- **The trust gate uses the request's effective mode** (round-5 audit): the
+  permission mode comes from
+  `execution.tool_orchestrator.current_permission_mode()` — the request-level
+  override wins over global config, so a prompt narrowed to `auto_edit` cannot
+  inherit a global `full_auto` trust.
+- **ESLint config is resolved upward** (round-5 audit):
+  `find_executable_eslint_config()` walks parent directories because ESLint
+  does; a nested package without its own config would otherwise execute the
+  parent's `eslint.config.js` unnoticed.
+- **tsconfig is read as JSONC with `extends`** (round-5 audit): comments and
+  trailing commas no longer break parsing, and `composite`/`plugins` come from
+  the merged effective config (`--incremental false` is omitted for composite
+  projects — TS6379).
 
 ### EditTool (edit.py)
-- Surgical text replacement using old_text/new_text pattern
-- Validates that old_text exists in file before replacing
-- Supports multiple replacements in one call
+- **The single model-facing file-change tool** (2026-10-23): one schema with
+  `operation=replace|write|patch`, `replaceAll` for replace. The sync
+  `edit_file()` is a pure writer; the async path attaches diagnostics.
+- Reports similar lines when `oldString` is not found
+- **Post-write diagnostics (2026-10-23/24)**: every committed operation reports
+  through the same `post_write_report()` entry point the write tool uses, and
+  the report names the operation (`edit`/`write`/`patch`). Earlier the success
+  check matched only the `[edited` prefix, so `operation=write` and
+  `operation=patch` were committed but never diagnosed.
+
+### PatchTool (patch.py)
+- Applies a unified diff to one file, then reports through the same
+  `post_write_report()` diagnostics entry point as write/edit.
+- Not registered as a separate model tool; reached through
+  `edit(operation="patch")`.
 
 ### FileDownloadTool (file_download.py)
 - Downloads files from public HTTP/HTTPS URLs

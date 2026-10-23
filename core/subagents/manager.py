@@ -819,6 +819,14 @@ class ChildSessionManager:
                 error=ErrorRecord(code="internal_error", message=str(exc)),
             )
         finally:
+            # Audit P2 (round 4): the child is terminal once this call returns,
+            # so its managed shell must be reclaimed on the SUCCESS path too --
+            # shutdown() only ran when execution raised.  release() is
+            # idempotent and cheap when nothing was spawned.
+            try:
+                child_rt.release()
+            except Exception:
+                pass
             self._lease_manager.release_all_for_session(session.session_id)
 
     def _status_from_result(self, status: ChildStatus) -> ChildStatus:

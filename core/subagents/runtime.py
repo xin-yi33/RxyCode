@@ -20,18 +20,10 @@ Hard constraints:
 
 from __future__ import annotations
 
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
-
-# Set only for the asyncio task that is running one child. Concurrent
-# children each keep their own value, so their streams do not mix.
-_CHILD_STREAM: ContextVar[tuple[str, Callable[[str, dict], None]] | None] = ContextVar(
-    "rxy_child_stream",
-    default=None,
-)
 
 from protocol.subagents import (
     AgentDefinition,
@@ -39,19 +31,12 @@ from protocol.subagents import (
     ErrorRecord,
     PermissionSpec,
     TaskResult,
-    TriggerKind,
     UsageRecord,
     WorkspaceMode,
     WorkspaceScope,
 )
 
 from .permissions import DecisionKind, PermissionPolicy
-from .prompt import (
-    FROM_MAIN_AGENT,
-    FROM_USER,
-    build_subagent_system_prompt,
-    label_block,
-)
 from ..safety.policy import canonical_tool_name
 
 try:
@@ -62,53 +47,6 @@ except ImportError:
     from ..utils.streaming import token_stats
 from .sessions import ChildSession
 from .workspace import LeaseManager, WorkspaceValidator
-
-
-def claim_child_stream_text(text: str) -> bool:
-    """Route one model delta to this task's child. False means the parent TUI owns it."""
-    current = _CHILD_STREAM.get()
-    if current is None or not str(text or ""):
-        return False
-    session_id, sink = current
-    try:
-        sink("child_session/partial_result", {
-            "session_id": session_id,
-            "text": str(text),
-        })
-    except Exception:
-        return True
-    return True
-
-
-def claim_child_stream_progress(text: str) -> bool:
-    """Route one progress line to this task's child instead of the parent session."""
-    current = _CHILD_STREAM.get()
-    if current is None or not str(text or "").strip():
-        return False
-    session_id, sink = current
-    try:
-        sink("child_session/progress", {
-            "session_id": session_id,
-            "text": str(text)[:400],
-        })
-    except Exception:
-        return True
-    return True
-
-
-def claim_child_tool_event(kind: str, payload: dict) -> bool:
-    """Route one tool lifecycle event to this task's child. False keeps the parent event."""
-    current = _CHILD_STREAM.get()
-    if current is None:
-        return False
-    session_id, sink = current
-    body = dict(payload)
-    body["session_id"] = session_id
-    try:
-        sink(kind, body)
-    except Exception:
-        return True
-    return True
 
 
 # ============================================================================
@@ -385,48 +323,10 @@ class ChildRuntime:
         self._active_agent: Any = None
         self._persistent_agent: Any = None
         self._share_primary_prefix: bool = False
-        self._inbox: list[str] = []
-        self.output_schema: str | None = None
-        self.stream_events: bool = False
-        self._event_sink: Callable[[str, dict], None] | None = None
 
     def set_agent_factory(self, factory: Callable[[str | None], Any]) -> None:
         """Inject a child-local AgentV2 factory (tests/bootstrap only)."""
         self._agent_factory = factory
-
-    def bind_events(
-        self,
-        sink: Callable[[str, dict], None] | None,
-        *,
-        stream: bool,
-    ) -> None:
-        self._event_sink = sink
-        self.stream_events = bool(stream)
-
-    def _emit_child(self, name: str, payload: dict) -> None:
-        if not self.stream_events or not callable(self._event_sink):
-            return
-        try:
-            self._event_sink(name, payload)
-        except Exception:
-            return
-
-    def post_message(self, text: str, *, source: str) -> None:
-        """Queue a labeled note for the child's next model call."""
-        labeled = label_block(source, text)
-        if labeled:
-            self._inbox.append(labeled)
-
-    def post_labeled(self, text: str) -> None:
-        """Queue a note that already carries its source label."""
-        body = str(text or "").strip()
-        if body:
-            self._inbox.append(body)
-
-    def drain_inbox(self) -> list[str]:
-        pending = list(self._inbox)
-        self._inbox.clear()
-        return pending
 
     def cancel(self) -> bool:
         """Propagate parent cancellation into token and active AgentV2."""
@@ -457,14 +357,6 @@ class ChildRuntime:
         # 工具（用户现场：final_answer 被拦后又出现 ls）。这里直接放行。
         if name == "final_answer":
             self.audit.permission_decision(name, "allow", "builtin:exit-signal")
-            return True
-        if name in {
-            "spawn_subagent",
-            "cancel_subagent",
-            "send_message_to_subagent",
-            "list_agents",
-        }:
-            self.audit.permission_decision(name, "allow", "builtin:collab")
             return True
         value = ""
         args = args or {}
@@ -497,10 +389,6 @@ class ChildRuntime:
         return True
 
     # -- read-only accessors --------------------------------------------------
-
-    @property
-    def session(self) -> ChildSession:
-        return self._runtime.session
 
     @property
     def session_id(self) -> str:
@@ -571,14 +459,21 @@ class ChildRuntime:
                     if not self.check_tool(name, args):
                         return f"[blocked: child permission denied {name}]"
                     self.audit.tool_call(name, str(args)[:500])
-                    # Tool begin/end are emitted by the TUI the orchestrator
-                    # already calls. Emitting them here as well would duplicate
-                    # the child event. The TUI routes them onto this task's sink.
-                    raw = await original_execute(name, args, **kwargs)
-                    return str(raw)
+                    return await original_execute(name, args, **kwargs)
                 agent._execute_tool = guarded_execute
 
+            # Audit P2-10a (round 4): the directory to inherit must be resolved
+            # BEFORE bind_session(), because current_working_directory() is keyed
+            # on the ACTIVE session.  Binding the child first makes it answer for
+            # the brand-new child session (persisted nowhere -> process cwd), so
+            # the parent's cwd was silently dropped.
+            inherited_cwd = self._inherited_working_directory()
             binding = bind_session(self.session_id)
+            # Audit P2-10: the child bound its session id but never its working
+            # directory, so an inherited/explicit start directory was ignored
+            # and the child ran in whatever cwd the process happened to have.
+            # Bind the approved start directory for this child's own lifetime.
+            self._bind_child_working_directory(inherited_cwd)
             # 2026-09-23（P0 answer-last）：子代理执行期间委托深度 +1，
             # ProtocolTui 据此把它的流式输出打标为 intermediate。
             try:
@@ -594,54 +489,39 @@ class ChildRuntime:
             )
             try:
                 wall_limit = self._runtime.budget.budget.max_wall_time_seconds
-                # The role lives on this child instance's system prompt.
-                # /fast stays only as the tool-loop routing directive.
-                # Reused team agents already carry that system prompt.
-                if not reused_agent:
-                    agent._subagent_system_prompt = build_subagent_system_prompt(
-                        self.definition,
-                        output_schema=self.output_schema,
+                role_prompt = (self.definition.prompt or self.definition.description).strip()
+                # F14 shared path: reused AgentV2 already has the role suffix
+                # in history. Re-sending it every execute inflates the unique
+                # suffix and misses Primary 97%.
+                if reused_agent:
+                    execution_prompt = "/fast\nTask:\n" + task_prompt
+                else:
+                    execution_prompt = (
+                        "/fast\n"
+                        f"Child role and constraints:\n{role_prompt}\n\n"
+                        f"Task:\n{task_prompt}"
                     )
-                agent._subagent_inbox = self._inbox
-                pending = self.drain_inbox()
-                opening = (
-                    FROM_USER
-                    if self.session.trigger == TriggerKind.MENTION
-                    else FROM_MAIN_AGENT
-                )
-                task_block = label_block(opening, task_prompt)
-                extra = "\n\n".join(block for block in pending if block)
-                execution_prompt = "/fast\n" + task_block
-                if extra:
-                    execution_prompt = f"{execution_prompt}\n\n{extra}"
-                stream_token = None
-                if self.stream_events and callable(self._event_sink):
-                    stream_token = _CHILD_STREAM.set((self.session_id, self._event_sink))
-                try:
-                    if wall_limit > 0:
-                        try:
-                            answer = await __import__("asyncio").wait_for(
-                                agent.run(
-                                    execution_prompt,
-                                    mode="build",
-                                    effect="search" if self._runtime.is_read_only else "write",
-                                ),
-                                timeout=wall_limit,
-                            )
-                        except __import__("asyncio").TimeoutError as exc:
-                            raise TimeLimitExceeded(
-                                f"Wall-clock limit exceeded: {wall_limit}s/{wall_limit}s",
-                                code=TimeLimitExceeded.CODE,
-                            ) from exc
-                    else:
-                        answer = await agent.run(
-                            execution_prompt,
-                            mode="build",
-                            effect="search" if self._runtime.is_read_only else "write",
+                if wall_limit > 0:
+                    try:
+                        answer = await __import__("asyncio").wait_for(
+                            agent.run(
+                                execution_prompt,
+                                mode="build",
+                                effect="search" if self._runtime.is_read_only else "write",
+                            ),
+                            timeout=wall_limit,
                         )
-                finally:
-                    if stream_token is not None:
-                        _CHILD_STREAM.reset(stream_token)
+                    except __import__("asyncio").TimeoutError as exc:
+                        raise TimeLimitExceeded(
+                            f"Wall-clock limit exceeded: {wall_limit}s/{wall_limit}s",
+                            code=TimeLimitExceeded.CODE,
+                        ) from exc
+                else:
+                    answer = await agent.run(
+                        execution_prompt,
+                        mode="build",
+                        effect="search" if self._runtime.is_read_only else "write",
+                    )
             finally:
                 reset_session_binding(binding)
                 if depth_token is not None and callable(reset_delegate_depth):
@@ -740,8 +620,29 @@ class ChildRuntime:
             self._active_agent = None
             token_stats.end_usage_scope(usage_scope_token)
 
+    def release(self) -> None:
+        """Release child-local resources after a NORMAL completion.
+
+        Audit P2 (round 4): only ``shutdown()`` reclaimed the child's managed
+        shell, and shutdown only ran on cancellation/failure, so every
+        successful child left one live shell behind for the host's lifetime.
+        A completed child is terminal -- nothing may reuse it -- so its shell
+        must be reclaimed on success too.  Never raises; idempotent.
+        """
+        try:
+            self._runtime.namespace.clear()
+        except Exception:
+            pass
+        self._release_child_shell()
+
     def shutdown(self) -> None:
-        """Cancel active child execution and release child-local state."""
+        """Cancel active child execution and release child-local state.
+
+        Audit P2-02: the child's managed shell survived an explicit shutdown.
+        The child session's shell is invalidated synchronously (so nothing can
+        reuse it) and its process tree is reaped, either on a scheduled task or
+        on a private loop when no loop is running.
+        """
         self._runtime.cancel_token.cancel()
         active = self._active_agent
         cancel = getattr(active, "cancel", None)
@@ -751,6 +652,68 @@ class ChildRuntime:
             except Exception:
                 pass
         self._runtime.namespace.clear()
+        self._release_child_shell()
+
+    def _inherited_working_directory(self):
+        """The parent's cwd, captured while its session binding is still active."""
+        try:
+            from ..session_runtime import current_working_directory
+
+            return current_working_directory()
+        except Exception:
+            return None
+
+    def _bind_child_working_directory(self, inherited_cwd=None):
+        """Point this child session at its approved start directory.
+
+        ``inherited_cwd`` is the parent's cwd captured before the child session
+        was bound; without it ``current_working_directory()`` here would answer
+        for the child session that has no cwd yet (round-4 audit P2-7).
+
+        Returns a token to reset afterwards (``None`` when nothing changed).
+        The child gets its OWN session-scoped cwd entry, so it inherits the
+        approved start directory without sharing the parent's mutable state.
+        """
+        try:
+            from ..session_runtime import (
+                current_working_directory,
+                initial_working_directory,
+                set_working_directory,
+            )
+
+            start = self._runtime.workspace_root
+            if start is None:
+                # Inherit the parent's current directory, which is the approved
+                # starting point for a child.
+                start = inherited_cwd
+                if start is None:
+                    start = current_working_directory()
+            candidate = Path(start)
+            if not candidate.is_dir():
+                candidate = initial_working_directory()
+            set_working_directory(candidate)
+            return candidate
+        except Exception:
+            return None
+
+    def _release_child_shell(self) -> None:
+        """Drop this child session's managed shell.  Never raises."""
+        try:
+            import asyncio as _asyncio
+
+            from ..persistent_shell import close_shells, invalidate_session_sync
+
+            doomed = invalidate_session_sync(self.session_id)
+            if not doomed:
+                return
+            try:
+                loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                _asyncio.run(close_shells(doomed))
+                return
+            loop.create_task(close_shells(doomed))
+        except Exception:
+            pass
 
 
 # ============================================================================

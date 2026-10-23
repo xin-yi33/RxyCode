@@ -209,20 +209,26 @@ class TestVerifySyntax:
         assert "SYNTAX_ERROR" in result
 
     def test_valid_js_brackets(self, tmp_path):
+        # 2026-10-23: bracket counting was removed from _verify_syntax because
+        # it reported OK for genuinely broken JS.  The synchronous legacy probe
+        # now declines to judge JS/TS (empty string = not checked); real checks
+        # live in core.post_write_diagnostics.
         result = self._verify(tmp_path / "test.js", "function f() { return 1; }\n")
-        assert result == "OK"
+        assert result == ""
 
     def test_invalid_js_bracket_mismatch(self, tmp_path):
         result = self._verify(tmp_path / "test.js", "function f() { return 1;\n")
-        assert "BRACKET_MISMATCH" in result
+        assert result == ""
+        assert "BRACKET_MISMATCH" not in result
 
     def test_valid_ts_syntax(self, tmp_path):
         result = self._verify(tmp_path / "test.ts", "const x: number = 1;\n")
-        assert result == "OK"
+        assert result == ""
 
     def test_invalid_ts_brackets(self, tmp_path):
         result = self._verify(tmp_path / "test.ts", "const arr = [1, 2;\n")
-        assert "BRACKET_MISMATCH" in result
+        assert result == ""
+        assert "BRACKET_MISMATCH" not in result
 
     def test_unsupported_extension(self, tmp_path):
         result = self._verify(tmp_path / "test.txt", "some content")
@@ -243,19 +249,19 @@ class TestVerifySyntax:
         assert result == "OK"
 
     def test_jsx_syntax_valid(self, tmp_path):
-        code = "const App = () => { return <div>hello</div>; };\n"
-        result = self._verify(tmp_path / "test.jsx", code)
-        assert result == "OK"
+        result = self._verify(
+            tmp_path / "test.jsx", "const App = () => { return <div>hello</div>; };\n"
+        )
+        assert result == ""
 
     def test_jsx_syntax_bracket_mismatch(self, tmp_path):
-        code = "const App = () => { return <div>hello;\n"
-        result = self._verify(tmp_path / "test.jsx", code)
-        assert "BRACKET_MISMATCH" in result
+        result = self._verify(tmp_path / "test.jsx", "const App = () => { return <div>hello;\n")
+        assert result == ""
+        assert "BRACKET_MISMATCH" not in result
 
     def test_tsx_syntax_valid(self, tmp_path):
-        code = "const x = <Component prop={1} />;\n"
-        result = self._verify(tmp_path / "test.tsx", code)
-        assert result == "OK"
+        result = self._verify(tmp_path / "test.tsx", "const x = <Component prop={1} />;\n")
+        assert result == ""
 
 
 class TestWriteTool:
