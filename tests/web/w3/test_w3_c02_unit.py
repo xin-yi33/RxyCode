@@ -256,8 +256,10 @@ class _Stack:
 
 def _login(page, origin: str) -> None:
     """Local-secret login via the W9 /login page's 本机口令 section."""
-    # CI runners under xdist load can exceed playwright's 30s nav default.
+    # CI runners under xdist load can exceed playwright's 30s nav default;
+    # expect_navigation/expect_response wait contexts use default_timeout.
     page.set_default_navigation_timeout(60000)
+    page.set_default_timeout(60000)
     page.goto(f"{origin}/login", wait_until="domcontentloaded")
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
@@ -266,9 +268,9 @@ def _login(page, origin: str) -> None:
     # string, or a bounced redirect satisfies the wait and the next expect
     # fails with a misleading "no composer" message.
     page.wait_for_url(
-        lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=30000
+        lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=60000
     )
-    expect(page.get_by_label("消息")).to_be_visible(timeout=30000)
+    expect(page.get_by_label("消息")).to_be_visible(timeout=60000)
 
 
 def _provision_byok(page, stack: _Stack) -> None:
