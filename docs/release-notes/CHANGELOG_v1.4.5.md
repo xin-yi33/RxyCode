@@ -202,3 +202,11 @@
 - **测试适配**：`test_theme_topbar_and_settings_entry_points_follow_selected_theme` 改走契约路由 `/settings/appearance` 与 APP-01 三模式 `radiogroup`（旧版"切换到浅色/深色"按钮已被规格化缩略图单选取代）；`设置` heading 断言加 `exact` 防子串误中分区标题。
 - **验证**：`tests/web/w3` 全目录 **59 passed / 10 skipped / 0 failed**（含 `test_theme_cookie_and_computed_styles_survive_mobile_spa_route_and_reload[chromium]`、production 布局断言、`mobile_browser_ui` 全套）；`tsc --noEmit` 全绿。
 - 工作树中 Tailwind v3 迁移（`@tailwind` 指令 + rgb channel 变量）为用户并行 WIP，未随本提交收拢；仅暂存外观钩子块的 `--rxy-bg` 修复。
+
+## 修复：W3 浏览器测试在 Linux CI 的 locale 与环境级联（2026-10-22）
+
+- **locale 漂移**：账户菜单 `注册`/`登录` 等标签走 i18n（`navigator.locale`）——CI runner en-US 下发英文标签，`get_by_role("menuitem", name="注册")` 永久超时（主题持久化、cookie 异常两用例挂于 `_navigate_guest_to_register`）。`w3_c08`/`mobile_browser_ui` 全部浏览器上下文固定 `locale="zh-CN"` 消除环境差异。
+- **pytest-asyncio 0.25 pin 撤回**：`0badf1d3` 将 pytest-asyncio 锁到 `<0.26` 后，Linux CI 出现 ~70 条 `asyncio.run() cannot be called from a running event loop`/`event loop is already running`/`Playwright Sync API inside the asyncio loop` 级联失败；对照 pin 前同分支 run 无一条 loop 错误，且本机 1.4.0 + `asyncio_mode=auto` 下 `tests/web/w3` 全目录 59 passed。`requirements-dev.txt` 回到 `>=1.4,<2`。
+- **已部署 WIP 收拢（用户批准）**：生产实际运行但未入库的 apps/web 代码落地——auth/ALTCHA 兼容层（`altchaCompat.ts`/`authTransport.ts`/`secureRequestId.ts` + 5 个 auth 页面）、Tailwind v3 迁移（tailwind.config/postcss/globals/lockfile）、ModelPicker/Composer 移动端、以及 `infra/compose/Caddyfile.prod`/`compose.yaml`；另有 `apps/web/NUL` 重定向垃圾文件未收。此前 w3_c08 约 120 条 auth-compat、4 条 mobile_browser_ui、production CSS/task-send 断言全因实现缺席而红，收拢后恢复。
+- **移动抽屉**：会话列表 nav `min-h-0`→`min-h-24`，模拟键盘/可视视口收缩后保留可滚动区域。
+- **遗留（并行修复中）**：Linux backend 层仍见 w0–w9 模块级失败（per-stack 库种子/超时级联）与少量 core/e2e 失败；与 `05bfa41e`/`789e0115` 同一战线。
