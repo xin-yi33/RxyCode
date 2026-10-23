@@ -86,11 +86,22 @@ def _postgres() -> str:
     )
     if started.returncode != 0:
         raise RuntimeError(started.stderr or started.stdout)
+    url = "postgresql+psycopg://postgres@127.0.0.1:55433/rxycode"
     deadline = time.time() + 60
     while time.time() < deadline:
         ready = _docker("exec", "rxy-w5c06-pg", "pg_isready", "-U", "postgres", "-d", "rxycode")
         if ready.returncode == 0:
-            return "postgresql+psycopg://postgres@127.0.0.1:55433/rxycode"
+            # isready can pass during initdb recovery while the postmaster
+            # still drops client connects — prove a real session works.
+            try:
+                from sqlalchemy import create_engine, select
+
+                with create_engine(url).connect() as probe:
+                    probe.execute(select(1))
+                return url
+            except Exception:
+                time.sleep(1)
+                continue
         time.sleep(1)
     logs = _docker("logs", "rxy-w5c06-pg")
     raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")

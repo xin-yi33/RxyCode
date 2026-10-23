@@ -35,13 +35,15 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _redis_url() -> str:
     _docker("rm", "-f", _REDIS)
-    started = _docker("run", "-d", "--name", _REDIS, "-p", "127.0.0.1:56380:6379", "redis:7")
+    # Ephemeral host port — a fixed bind races sibling workers on shared runners.
+    started = _docker("run", "-d", "--name", _REDIS, "-p", "127.0.0.1:0:6379", "redis:7")
     assert started.returncode == 0, started.stderr
+    mapped = _docker("port", _REDIS, "6379").stdout.strip().rsplit(":", 1)[-1]
     deadline = time.time() + 30
     while time.time() < deadline:
         ping = _docker("exec", _REDIS, "redis-cli", "ping")
         if ping.stdout.strip() == "PONG":
-            return "redis://127.0.0.1:56380/0"
+            return f"redis://127.0.0.1:{mapped}/0"
         time.sleep(0.5)
     raise RuntimeError("redis did not become ready")
 

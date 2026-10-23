@@ -302,3 +302,14 @@
 ## CI 修复：w9 旧套件对齐 BYOK-only（2026-10-23）
 
 - `test_runs_api.py`/`test_session_files.py` 在平台旁路存在时从不配模型即可建 run；BYOK-only 定型后全部 `POST /tasks` 403 `BYOK_REQUIRED`（15 失败）。新增 `_seed_byok(client)`：建 deepseek 连接（canary key）+ 挂载 `deepseek-chat` + 设为默认模型，keyring 一次性生成到进程临时文件。凡期望 202/409/429 的提交方均 seed；仅 GET 或期望 404（project/session 校验先于 resolver）的 client 不 seed。本地两文件 15/15 过。
+
+## BYOK Composer 刷新恢复与待定发送保护（2026-10-23）
+
+- 刷新已存在会话时，从最新一条历史 run 恢复模型；若该引用无效，要求用户重选，不回退到较早 run。无显式有效模型且 catalog 尚未返回时，新任务与已有会话均阻止发送；已有会话在历史加载/失败期间也阻止发送并显示恢复、重试或手选状态。访客仍走原登录提示；有效显式选择不必等待历史。
+- 发送成功清正文但保留模型；新 session 仅向未显式选模型的草稿继承本次有效选择；切换会话隔离草稿，登出清理草稿。未新增模型默认存储、接口或自动挑选策略，BYOK 权限不变，界面只显示模型名称。
+- 验证：Node 4/4、候选真实页面 Playwright 10/10、主仓原 pytest 2/2、`npm test`（tsc）与 `npm run build` 通过。产品版本仍为 1.4.5。已通过静态 assets 优先、index 最后原子替换上线；未重启业务容器。Cloudflare 普通 HTML 响应会注入现有 Web Analytics beacon，原始完整 index bytes 另以全文件 Range 核验；详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。真实 provider 两轮验收仍待主审完成。
+
+## CI 修复：w2_c04 定端口竞争 + w5_c06 pg 启动窗口（2026-10-23）
+
+- `test_w2_c04`：`rxy-w2c04-redis` 固定 `-p 127.0.0.1:56380:6379` 在 py3.12 上撞 iptables 绑定（address already in use）——与 chaos/w7_c02 同型，改 `0` 临时端口 + `docker port` 发现。
+- `test_w5_c06`：自建 `rxy-w5c06-pg` 的 `pg_isready` 在 initdb 恢复窗口内即返回 ready，但 postmaster 仍会中断客户端连接（`server closed the connection unexpectedly`）。ready 循环升级为真实 `select(1)` 探活，过不了的继续等到 60s 截止。
