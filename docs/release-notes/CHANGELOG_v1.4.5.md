@@ -210,3 +210,10 @@
 - **已部署 WIP 收拢（用户批准）**：生产实际运行但未入库的 apps/web 代码落地——auth/ALTCHA 兼容层（`altchaCompat.ts`/`authTransport.ts`/`secureRequestId.ts` + 5 个 auth 页面）、Tailwind v3 迁移（tailwind.config/postcss/globals/lockfile）、ModelPicker/Composer 移动端、以及 `infra/compose/Caddyfile.prod`/`compose.yaml`；另有 `apps/web/NUL` 重定向垃圾文件未收。此前 w3_c08 约 120 条 auth-compat、4 条 mobile_browser_ui、production CSS/task-send 断言全因实现缺席而红，收拢后恢复。
 - **移动抽屉**：会话列表 nav `min-h-0`→`min-h-24`，模拟键盘/可视视口收缩后保留可滚动区域。
 - **遗留（并行修复中）**：Linux backend 层仍见 w0–w9 模块级失败（per-stack 库种子/超时级联）与少量 core/e2e 失败；与 `05bfa41e`/`789e0115` 同一战线。
+
+## 修复：W3-C05 PTY 尺寸上报与 chaos 端口竞争（2026-10-22）
+
+- **根因（Linux CI `test_w3_c05_contract` 15s recv 超时）**：本地（非沙箱）PTY 以 `env=None` 全量继承宿主环境——CI runner 导出的 `COLUMNS`/`LINES` 使 spawn 出的 `python -i` 里 `shutil.get_terminal_size()` 直接读 env 而非 TIOCGWINSZ，resize 到 40×12 后仍打印 `(80, 24)`，测试永远等不到 `(40, 12)` → recv 超时 → 客户端 1011 断开（stderr 中 ASGI `WebSocketDisconnect(1011)` 只是症状）。已用 docker 探针在 python:3.12-slim 实证：env 带 `COLUMNS=80 LINES=24` 时复现 `(80, 24)`，剥离后 resize+查询正确返回 `(40, 12)`。
+- **修复**：`pty.py` 新增 `_child_env()`——本地 `_PosixPty`/`_WinPty` spawn 时剥离 `COLUMNS`/`LINES`（沙箱路径 `_cloud_env` 本就无此二值）。spawn 出的终端尺寸由内核 PTY winsize 权威回答，与真实终端仿真器语义一致（xterm/ConPTY 不向子进程 env 注入宿主窗口尺寸）。这是真实产品修复，不止为测试：任何带 `COLUMNS`/`LINES` 的环境（tmux/systemd 单元/CI shell）下打开的终端此前都会谎报尺寸。
+- **chaos `_redis_start` 端口竞争**：固定 `-p 127.0.0.1:56390:6379` 在 GHA 上偶发 `failed to set up container networking: driver failed programming external connectivity`（iptables 编程竞争/残留绑定）。改 `-p 127.0.0.1:0:6379` 临时端口 + `docker port` 发现并回写有效 `redis://` URL；场景用 pause/unpause，端口映射不变。
+- **验证**：本机 `tests/web/w3/test_w3_c05_unit.py` 2/2 通过（winpty 路径同样走 `_child_env`）；`ruff` 两文件绿。

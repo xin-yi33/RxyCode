@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -85,7 +86,8 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _redis_start(redis_url: str) -> None:
+def _redis_start(redis_url: str) -> str:
+    """Start redis on an ephemeral host port; return the effective URL."""
     _docker("rm", "-f", _REDIS_CONTAINER)
     started = _docker(
         "run",
@@ -93,15 +95,20 @@ def _redis_start(redis_url: str) -> None:
         "--name",
         _REDIS_CONTAINER,
         "-p",
-        "127.0.0.1:56390:6379",
+        "127.0.0.1:0:6379",
         "redis:7",
     )
     if started.returncode != 0:
         raise RuntimeError(f"redis container failed: {started.stderr.strip()}")
+    mapped = _docker("port", _REDIS_CONTAINER, "6379/tcp").stdout.strip()
+    port = mapped.rsplit(":", 1)[-1]
+    if not port.isdigit():
+        raise RuntimeError(f"redis port discovery failed: {mapped!r}")
+    effective = re.sub(r":\d+/", f":{port}/", redis_url)
     deadline = time.time() + 30
     while time.time() < deadline:
         if _docker("exec", _REDIS_CONTAINER, "redis-cli", "ping").stdout.strip() == "PONG":
-            return
+            return effective
         time.sleep(0.5)
     raise RuntimeError("redis did not become ready")
 
@@ -1172,7 +1179,7 @@ def run_all(database_url: str, redis_url: str, workdir: Path | str) -> dict:
         except Exception as exc:  # noqa: BLE001 - record, don't abort the suite
             return {"name": name, "outcome": "failed", "details": f"{type(exc).__name__}: {exc}"}
 
-    _redis_start(redis_url)
+    redis_url = _redis_start(redis_url)
     try:
         scenarios.append(
             guard(

@@ -126,6 +126,17 @@ class _Backend:
         raise NotImplementedError
 
 
+def _child_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    """Strip stale COLUMNS/LINES so children query the real PTY size."""
+    if env is None:
+        env = dict(os.environ)
+    else:
+        env = dict(env)
+    env.pop("COLUMNS", None)
+    env.pop("LINES", None)
+    return env
+
+
 def _spawn(
     argv: list[str],
     cols: int,
@@ -309,7 +320,7 @@ class _WinPty(_Backend):
         self._proc = PtyProcess.spawn(
             argv,
             cwd=str(cwd) if cwd is not None else None,
-            env=env,
+            env=_child_env(env),
             dimensions=(rows, cols),
         )
         self.pid = int(self._proc.pid)
@@ -357,7 +368,7 @@ class _PosixPty(_Backend):
         cwd: Path | None,
         env: dict[str, str] | None,
     ) -> None:
-        self._env = env
+        self._env = _child_env(env)
         import fcntl
         import pty
         import termios
