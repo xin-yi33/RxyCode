@@ -332,21 +332,6 @@ class _CredentialRefused(Exception):
         self.code = code
 
 
-def _byok_enforced() -> bool:
-    raw = os.environ.get("RXYCODE_BYOK_ENFORCE", "").strip().lower()
-    if not raw:
-        return True  # worker default: enforce
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _platform_users() -> frozenset[str]:
-    return frozenset(
-        part.strip()
-        for part in os.environ.get("RXYCODE_PLATFORM_MODEL_USERS", "").split(",")
-        if part.strip()
-    )
-
-
 def _resolve_run_gateway(
     database_url: str,
     run_id: str,
@@ -359,25 +344,20 @@ def _resolve_run_gateway(
     environment gateway for a BYOK snapshotted run, and never hands the
     child a credential. Raises ``_CredentialRefused`` on refusal.
     """
-    from rxycode_worker.egress import ModelGateway, model_gateway_from_env
-
     snap = snapshot if isinstance(snapshot, dict) else None
     source = str((snap or {}).get("credential_source") or "")
     actor = str(identity.get("actor_id") or "")
     tenant_id = str(identity.get("tenant_id") or "")
 
     if source == "platform":
-        # Re-checked at execution time — submission-time approval is not a
-        # durable licence to spend the platform key.
-        if actor not in _platform_users():
-            raise _CredentialRefused(
-                "PLATFORM_NOT_ALLOWED",
-                "run snapshot requests the platform credential but the "
-                "actor is not allowlisted",
-            )
-        return model_gateway_from_env()
+        raise _CredentialRefused(
+            "PLATFORM_NOT_ALLOWED",
+            "platform credentials are disabled for Web runs",
+        )
 
     if source == "byok":
+        from rxycode_worker.egress import ModelGateway
+
         connection_id = str(snap.get("connection_id") or "")
         expected_version = int(snap.get("credential_version") or 0)
         from sqlalchemy import create_engine, text
@@ -471,12 +451,10 @@ def _resolve_run_gateway(
         )
 
     if snap is None or not source:
-        if _byok_enforced():
-            raise _CredentialRefused(
-                "BYOK_REQUIRED",
-                "run has no model snapshot and BYOK enforcement is on",
-            )
-        return model_gateway_from_env()
+        raise _CredentialRefused(
+            "BYOK_REQUIRED",
+            "run has no model snapshot; Web runs require BYOK",
+        )
     raise _CredentialRefused(
         "MODEL_UNAVAILABLE", f"unknown credential_source {source!r}"
     )
@@ -4273,6 +4251,178 @@ def _run_journal_dir(state_root: Path, tenant_id: str, run_id: str) -> Path:
     return Path(state_root) / "journals" / str(tenant_id) / str(run_id)
 
 
+class _AttachmentImportError(Exception):
+    """A bound attachment could not be fetched or verified — the run cannot
+    honor its declared input and must settle failed, never guess."""
+
+    def __init__(self, message: str, records: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.records = records or []
+
+
+def _stage_attachments(att_dir: Path, manifest: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fetch each bound attachment into a parent-owned staging dir.
+
+    The dir is ro-bound into the sandbox and the confined child copies the
+    files into its workspace itself — the same pattern as config_src
+    (audit r4-F2: the parent never writes into the writable workspace).
+    Returns per-attachment import records for the ``attachment.import``
+    durable events; raises _AttachmentImportError on the first failure.
+    """
+    records: list[dict[str, Any]] = []
+    if not manifest:
+        return records
+    from rxycode_server.attachments.store import blob_config_from_env, open_store
+
+    store = open_store(blob_config_from_env())
+    staged: list[dict[str, str]] = []
+    att_dir.mkdir(parents=True, exist_ok=True)
+    for item in manifest:
+        attachment_id = str(item.get("attachment_id") or "")
+        filename = str(item.get("filename") or "attachment.bin")
+        object_key = str(item.get("object_key") or "")
+        expected_sha = str(item.get("sha256") or "")
+        record = {
+            "attachment_id": attachment_id,
+            "filename": filename,
+            "size_bytes": int(item.get("size_bytes") or 0),
+            "sha256": expected_sha,
+            "status": "imported",
+            "reason": "",
+        }
+        try:
+            digest = hashlib.sha256()
+            safe = re.sub(r"[^A-Za-z0-9._ -]", "_", filename).strip() or "attachment.bin"
+            target = att_dir / attachment_id / safe
+            target.parent.mkdir(parents=True, exist_ok=True)
+            written = 0
+            with store.open_read(object_key) as src, open(target, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    dst.write(chunk)
+                    written += len(chunk)
+            if expected_sha and digest.hexdigest() != expected_sha:
+                raise _AttachmentImportError(
+                    f"attachment {attachment_id} sha256 mismatch"
+                )
+            record["size_bytes"] = written
+            staged.append({"attachment_id": attachment_id, "filename": filename})
+            records.append(record)
+        except Exception as exc:
+            record["status"] = "failed"
+            record["reason"] = (
+                "sha256 mismatch on import"
+                if isinstance(exc, _AttachmentImportError)
+                else f"{type(exc).__name__}: {exc}"[:200]
+            )
+            records.append(record)
+            raise _AttachmentImportError(
+                f"attachment {attachment_id} import failed: {exc}"[:300],
+                records=records,
+            ) from exc
+    (att_dir / "attachments.json").write_text(
+        json.dumps({"attachments": staged}), encoding="utf-8"
+    )
+    return records
+
+
+#: Workspace subtrees that never count as run deliverables — caches, tool
+#: internals, imported user files, VCS metadata, dependency dirs.
+_ARTIFACT_EXCLUDED_PREFIXES = (
+    ".data",
+    ".cache",
+    "imports",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+)
+_ARTIFACT_MAX_FILES = 50
+_ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _workspace_snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
+    """{relpath: (size, mtime_ns)} for every real file under the workspace."""
+    snapshot: dict[str, tuple[int, int]] = {}
+    if not workdir.is_dir():
+        return snapshot
+    for path in workdir.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(workdir).as_posix()
+        head = rel.split("/", 1)[0]
+        if head in _ARTIFACT_EXCLUDED_PREFIXES or any(
+            part.startswith(".") for part in rel.split("/")
+        ):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        snapshot[rel] = (stat.st_size, stat.st_mtime_ns)
+    return snapshot
+
+
+def _register_run_artifacts(
+    cfg: Any, tenant_id: str, run_id: str, workdir: Path, baseline: dict[str, tuple[int, int]]
+) -> int:
+    """Register files the turn created or changed as S3-backed artifacts.
+
+    Bound by count and per-file size; skipped entirely when the deployment
+    has no artifact store configured (dev stacks without MinIO).
+    """
+    import mimetypes
+
+    endpoint = os.environ.get("RXYCODE_S3_ENDPOINT", "").strip()
+    bucket = os.environ.get("RXYCODE_S3_BUCKET", "").strip()
+    access_key = os.environ.get("RXYCODE_S3_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("RXYCODE_S3_SECRET_KEY", "").strip()
+    if not (endpoint and bucket and access_key and secret_key):
+        return 0
+    from rxycode_server.artifacts.service import store_artifact
+
+    registered = 0
+    for rel, (size, _mtime) in sorted(_workspace_snapshot(workdir).items()):
+        if registered >= _ARTIFACT_MAX_FILES:
+            break
+        previous = baseline.get(rel)
+        if previous is not None and previous[0] == size:
+            continue  # unchanged content is not a new deliverable
+        if size <= 0 or size > _ARTIFACT_MAX_BYTES:
+            continue
+        try:
+            body = (workdir / rel).read_bytes()
+        except OSError:
+            continue
+        content_type = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+        preview_kind = "frontend_static" if rel.lower().endswith((".html", ".htm")) else None
+        try:
+            store_artifact(
+                cfg.database_url,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                filename=rel.rsplit("/", 1)[-1],
+                body=body,
+                content_type=content_type,
+                s3_endpoint=endpoint,
+                bucket=bucket,
+                access_key=access_key,
+                secret_key=secret_key,
+                relative_path=rel,
+                preview_kind=preview_kind,
+            )
+            registered += 1
+        except Exception:
+            _LOG.warning(
+                "run %s: artifact registration failed for %s", run_id, rel, exc_info=True
+            )
+    return registered
+
+
 def _remove_claim_dirs(claim_dirs: Iterable[Path]) -> None:
     """Remove every per-claim state_root dir — conf copy, ctl sockets,
     overlay upper/work/seed layers — after the child is dead and the
@@ -5301,6 +5451,34 @@ async def run_sandboxed_turn() -> int:
         except OSError:
             _LOG.warning("run %s: config copy into workspace failed", run_id, exc_info=True)
 
+    # Staged prompt attachments: the child copies them into the workspace
+    # (the ro-bound source is the only thing the parent ever wrote — a
+    # planted symlink under imports/ can at worst point back into this
+    # ro mount, which copy2 only reads). ``imports/`` is where the model
+    # finds user-provided files during the turn.
+    prompt_attachments: list[dict[str, Any]] = []
+    attachments_src = os.environ.get("RXYCODE_TURN_ATTACHMENTS_SRC", "").strip()
+    if attachments_src:
+        try:
+            staged = json.loads(
+                (Path(attachments_src) / "attachments.json").read_text(encoding="utf-8")
+            )
+            for item in staged.get("attachments") or []:
+                attachment_id = str(item.get("attachment_id") or "")[:64]
+                filename = str(item.get("filename") or "attachment.bin")
+                safe = re.sub(r"[^A-Za-z0-9._ -]", "_", filename).strip() or "attachment.bin"
+                src_file = Path(attachments_src) / attachment_id / safe
+                if not src_file.is_file() or src_file.is_symlink():
+                    raise FileNotFoundError(f"staged attachment missing: {attachment_id}")
+                dst_dir = workdir / "imports" / attachment_id
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                dst = dst_dir / safe
+                shutil.copy2(src_file, dst)
+                prompt_attachments.append({"path": str(dst), "name": filename})
+        except Exception:
+            _LOG.warning("run %s: attachment import into workspace failed", run_id, exc_info=True)
+            raise
+
     emit = _RunEmit("", tenant_id, run_id, emitter=channel.emit)
     remember_web_run(
         "",
@@ -5345,6 +5523,7 @@ async def run_sandboxed_turn() -> int:
             permission_profile=str(permission_profile or "default"),
             deadline_at=deadline_at,
             trace_id=trace_id or uuid.uuid4().hex,
+            surface="web",
         )
         context_tokens = bind_prompt_context(session_id, tui, run_context=run_context)
         bind_worker_todo_sink(emit)
@@ -5476,6 +5655,7 @@ async def run_sandboxed_turn() -> int:
                     run_context=run_context,
                     tui=tui,
                     harness_resume=harness_resume,
+                    attachments=prompt_attachments or None,
                 )
             finally:
                 delta = max(
@@ -5925,6 +6105,7 @@ async def execute_run(
     sandbox_id = ""
     provider = None
     workdir: Path | None = None
+    workspace_baseline: dict[str, tuple[int, int]] = {}
     proc: "asyncio.subprocess.Process | None" = None
     proc_identity: Any | None = None
     ctl_server: Any | None = None
@@ -6015,6 +6196,45 @@ async def execute_run(
             ),
         )
         claim_dirs.append(data_dir)
+
+        # Bound prompt attachments: parent stages bytes into a claim-private
+        # dir (ro-bound later); the confined child copies them into the
+        # workspace itself. Every fetch is sha-verified; a failure refuses
+        # the run — the model never sees a silent-empty attachment set.
+        attachments_manifest = loaded.get("attachments") or []
+        att_dir = provider.state_root / f"{sandbox_id}-att"
+        if attachments_manifest:
+            from rxycode_server.events.store import append_event
+
+            try:
+                att_records = await asyncio.to_thread(
+                    _stage_attachments, att_dir, attachments_manifest
+                )
+            except _AttachmentImportError as exc:
+                for record in exc.records:
+                    await asyncio.to_thread(
+                        append_event,
+                        cfg.database_url,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        event_type="attachment.import",
+                        payload=record,
+                    )
+                raise _ResumeSettled(
+                    "failed",
+                    f"attachment import failed: {exc}"[:1500],
+                ) from exc
+            for record in att_records:
+                await asyncio.to_thread(
+                    append_event,
+                    cfg.database_url,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    event_type="attachment.import",
+                    payload=record,
+                )
+            claim_dirs.append(att_dir)
+
         # A stale result file from an earlier run in this workspace must
         # never be read as this run's outcome (audit r4-F3).
         (workdir / _TURN_RESULT).unlink(missing_ok=True)
@@ -6178,8 +6398,8 @@ async def execute_run(
         # The gateway holds the model key PARENT-SIDE: the child's model
         # entry is rewritten to 127.0.0.1:<port> and this proxy injects the
         # real auth on the upstream hop. For a snapshotted run the credential
-        # is THAT run's BYOK/platform binding — never the shared env key
-        # unless the actor is allowlisted (re-checked inside the resolver).
+        # is that run's BYOK binding. Web runs are BYOK-only; no platform
+        # credential or shared environment-key fallback is allowed.
         run_gateway = await asyncio.to_thread(
             _resolve_run_gateway,
             cfg.database_url,
@@ -6241,6 +6461,10 @@ async def execute_run(
             "NO_PROXY": "localhost,127.0.0.1,::1",
             "no_proxy": "localhost,127.0.0.1,::1",
         }
+        if attachments_manifest:
+            # Parent-staged bytes + attachments.json — the child copies them
+            # into the workspace itself (audit r4-F2 pattern).
+            turn_env["RXYCODE_TURN_ATTACHMENTS_SRC"] = str(att_dir)
         # Task-private HOME + package caches under the workspace mount.
         turn_env.update(_task_turn_env(workdir))
         if resume_record is not None:
@@ -6257,6 +6481,8 @@ async def execute_run(
         ro_binds = ["/repo", str(data_dir)] + [
             entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry
         ]
+        if attachments_manifest:
+            ro_binds.append(str(att_dir))
         # Task-private writable mounts: the control dir and the memory
         # scope dir (parent-owned path under workspaces_root/.memory —
         # never inside the workspace, never tenant-crossing).
@@ -6293,6 +6519,9 @@ async def execute_run(
                 lower = str(seed)
             overlays.append((str(upper), str(work), root, lower))
         phase_mark("sandbox_probed")
+        # Deliverable diff baseline — files already here are inputs or prior
+        # runs' outputs; the turn's own writes become artifacts.
+        workspace_baseline = await asyncio.to_thread(_workspace_snapshot, workdir)
         argv = provider.spawn_argv(
             sandbox_id,
             tenant_id=tenant_id,
@@ -6498,6 +6727,22 @@ async def execute_run(
                 provider.destroy(sandbox_id, tenant_id=tenant_id)
             except Exception:
                 pass
+        # Run deliverables: files the turn created or changed under the
+        # session workspace become signed-download artifacts. Registration
+        # failure never blocks the terminal settle — the workspace copy is
+        # still the durable source of truth.
+        if workdir is not None:
+            try:
+                await asyncio.to_thread(
+                    _register_run_artifacts,
+                    cfg,
+                    tenant_id,
+                    run_id,
+                    workdir,
+                    workspace_baseline,
+                )
+            except Exception:
+                _LOG.warning("run %s: artifact scan failed", run_id, exc_info=True)
         # Per-claim dirs go last — the child is dead, the sockets are
         # closed and the record is destroyed; upper/work/seed layers and
         # the scrubbed config must not pile up under state_root

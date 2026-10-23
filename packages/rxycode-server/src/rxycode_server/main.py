@@ -16,6 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from rxycode_server.api.approvals import router as approvals_router
 from rxycode_server.api.artifacts import router as artifacts_router
+from rxycode_server.api.attachments import router as attachments_router
 from rxycode_server.api.files import router as files_router
 from rxycode_server.api.auth import AuthRateLimit, router as auth_router
 from rxycode_server.api.models import router as models_router
@@ -25,6 +26,7 @@ from rxycode_server.api.sse import router as sse_router
 from rxycode_server.api.terminal_ws import router as terminal_router
 from rxycode_server.api.version import router as version_router
 from rxycode_server.api.workspace import router as workspace_router
+from rxycode_server.attachments.store import blob_config_from_env
 from rxycode_server.devices.gateway import Registry, build_router
 from rxycode_server.notifications.service import router as product_router
 from rxycode_server.previews.proxy import PreviewProxy
@@ -147,7 +149,9 @@ def create_app(
     app.state.s3_bucket = s3_bucket or None
     app.state.s3_access_key = s3_access_key or None
     app.state.s3_secret_key = s3_secret_key or None
+    app.state.attachment_blobs = blob_config_from_env()
     app.include_router(auth_router)
+    app.include_router(attachments_router)
     app.include_router(models_router)
     app.include_router(projects_router)
     app.include_router(runs_router)

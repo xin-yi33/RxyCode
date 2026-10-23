@@ -20,6 +20,7 @@ from rxycode_server.api.auth import (
     db_session,
     require_write,
 )
+from rxycode_server.attachments.service import AttachmentError
 from rxycode_server.byok.resolver import resolve_run_model
 from rxycode_server.persistence.models import (
     Outbox,
@@ -56,6 +57,7 @@ class _TaskIn(BaseModel):
     permission_profile: str
     project_id: str | None = None
     model_ref: str | None = None
+    attachment_ids: list[str] | None = None
 
     _clean_message = field_validator("message")(_strip_unstorable)
 
@@ -65,6 +67,7 @@ class _RunIn(BaseModel):
     request_id: str
     permission_profile: str
     model_ref: str | None = None
+    attachment_ids: list[str] | None = None
 
     _clean_message = field_validator("message")(_strip_unstorable)
 
@@ -128,6 +131,7 @@ def _submit(
     fresh_session: SessionRow | None = None,
     model_snapshot: dict | None = None,
     request_model_ref: str | None = None,
+    attachment_ids: list[str] | None = None,
 ):
     """create_run + contract error mapping. fresh_session is deleted on error."""
     target_id = f"cloud:{record.tenant_id}:{project_id}"
@@ -143,6 +147,7 @@ def _submit(
             user_id=record.user_id,
             model_snapshot=model_snapshot,
             request_model_ref=request_model_ref,
+            attachment_ids=attachment_ids,
         )
     except RunAlreadyActive:
         _discard(db, fresh_session)
@@ -150,6 +155,9 @@ def _submit(
     except RunConflict:
         _discard(db, fresh_session)
         raise HTTPException(status_code=409, detail="REQUEST_CONFLICT") from None
+    except AttachmentError as exc:
+        _discard(db, fresh_session)
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from None
     except QuotaRefused as exc:
         _discard(db, fresh_session)
         return JSONResponse(
@@ -350,6 +358,7 @@ def create_task(
         fresh_session=session,
         model_snapshot=model_snapshot,
         request_model_ref=payload.model_ref,
+        attachment_ids=payload.attachment_ids,
     )
 
 
@@ -382,6 +391,7 @@ def create_session_run(
         permission_profile=payload.permission_profile,
         model_snapshot=model_snapshot,
         request_model_ref=payload.model_ref,
+        attachment_ids=payload.attachment_ids,
     )
 
 
@@ -466,6 +476,75 @@ def list_tenant_sessions(
     )
 
 
+#: Versioned web policy bundle in force — the stable surface appendix plus
+#: the capability/binding semantics of this deployment (API-RUN-OBS).
+WEB_POLICY_VERSION = "web-2026-10-22.1"
+
+
+def _run_observability(db: Session, row: Run) -> dict[str, object]:
+    """Read-only projection of the durable event log: attachment imports,
+    phase timings, and an honest diagnostic. No speculation — every field
+    comes from rows the worker/API actually wrote."""
+    events = db.scalars(
+        select(RunEvent).where(RunEvent.run_id == row.id).order_by(RunEvent.seq)
+    ).all()
+    imports: list[dict[str, object]] = []
+    phases: list[dict[str, object]] = []
+    last_error = ""
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if event.type == "attachment.import":
+            imports.append(payload)
+        elif event.type == "run.phase":
+            phases.append(
+                {
+                    "name": str(payload.get("phase") or ""),
+                    "elapsed_ms": int(payload.get("elapsed_ms") or 0),
+                }
+            )
+        elif event.type == "run.error":
+            last_error = str(payload.get("message") or payload.get("detail") or "")
+    status = str(row.status or "")
+    diagnostic = {"kind": "none", "detail": "", "recoverable": False}
+    if status == "waiting_approval":
+        diagnostic = {
+            "kind": "waiting_approval",
+            "detail": "the turn is parked on an approval decision",
+            "recoverable": True,
+        }
+    elif status == "cancel_requested":
+        diagnostic = {
+            "kind": "cancel_requested",
+            "detail": "a stop was requested; the worker is draining",
+            "recoverable": False,
+        }
+    elif status == "failed":
+        diagnostic = {
+            "kind": "failed",
+            "detail": last_error,
+            "recoverable": True,
+        }
+    elif status == "recovery_required":
+        diagnostic = {
+            "kind": "recovery_required",
+            "detail": last_error
+            or "the claim could not prove a clean handoff; a new submission is safe",
+            "recoverable": True,
+        }
+    elif status == "cancelled":
+        diagnostic = {"kind": "cancelled", "detail": "", "recoverable": False}
+    elif status in ("running", "leased"):
+        diagnostic = {"kind": "running", "detail": "", "recoverable": True}
+    elif status == "pending":
+        diagnostic = {"kind": "queued", "detail": "", "recoverable": True}
+    return {
+        "attachment_imports": imports,
+        "diagnostic": diagnostic,
+        "timings": {"phases": phases},
+        "effective_web_policy_version": WEB_POLICY_VERSION,
+    }
+
+
 @router.get("/api/v1/runs/{run_id}")
 def get_run(run_id: str, request: Request) -> dict[str, object]:
     record = current_record(request)
@@ -486,6 +565,7 @@ def get_run(run_id: str, request: Request) -> dict[str, object]:
                 "message": str(created.get("message") or ""),
                 "permission_profile": str(created.get("permission_profile") or ""),
                 "model": _run_model_json(row),
+                **_run_observability(db, row),
             }
     finally:
         engine.dispose()

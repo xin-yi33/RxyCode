@@ -40,6 +40,7 @@ def _digest(
     request_id: str,
     session_id: str,
     model_ref: str | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> str:
     body = {
         "message": message,
@@ -53,6 +54,10 @@ def _digest(
         # keeps legacy digests identical; same request_id + different
         # model_ref is a REQUEST_CONFLICT, not a silent replay.
         body["model_ref"] = model_ref
+    if attachment_ids:
+        # Ordered ids join the digest — a replayed request_id carrying a
+        # different attachment set is a conflict, not a silent replay.
+        body["attachment_ids"] = attachment_ids
     payload = json.dumps(
         body,
         sort_keys=True,
@@ -169,6 +174,7 @@ def create_run(
     model_snapshot: dict[str, object] | None = None,
     request_model_ref: str | None = None,
     quota: object | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> RunAccepted:
     """Insert run + event + outbox. The caller's tenant wins over any body claim."""
     from rxycode_server.quotas.service import QuotaDecision, QuotaRefused, active_gate
@@ -194,6 +200,7 @@ def create_run(
         request_id,
         session_id,
         model_ref=request_model_ref,
+        attachment_ids=attachment_ids,
     )
     tracer, span = _trace_run_create_start(database_url, tenant_id, request_id)
     engine = create_engine(database_url, poolclass=NullPool)
@@ -257,6 +264,25 @@ def create_run(
                     )
                 )
                 db.flush()
+                attachments: list[dict[str, object]] = []
+                if attachment_ids:
+                    # Same transaction as the run row: a refused attachment
+                    # (foreign tenant, unfinished upload, expired) rolls the
+                    # whole run back — no half-bound submissions.
+                    from rxycode_server.attachments.service import (
+                        bind_for_run,
+                        import_manifest,
+                    )
+
+                    bound = bind_for_run(
+                        db,
+                        tenant_id=tenant_id,
+                        owner_user_id=user,
+                        session_id=session_id,
+                        run_id=run_id,
+                        attachment_ids=attachment_ids,
+                    )
+                    attachments = import_manifest(bound)
                 db.add(
                     RunEvent(
                         event_id=event_id,
@@ -270,6 +296,7 @@ def create_run(
                             "request_id": request_id,
                             "session_id": session_id,
                             "target_id": target_id,
+                            "attachments": attachments,
                             # Run-scoped W3C propagation: the claiming
                             # worker parents its span under this http span
                             # by reading it back per run_id — never via
@@ -403,9 +430,11 @@ def load_run(database_url: str, run_id: str) -> dict[str, str]:
     finally:
         engine.dispose()
     payload = event.payload
+    attachments = payload.get("attachments")
     return {
         "message": str(payload["message"]),
         "permission_profile": str(payload["permission_profile"]),
         "session_id": str(payload["session_id"]),
         "target_id": str(payload["target_id"]),
+        "attachments": attachments if isinstance(attachments, list) else [],
     }

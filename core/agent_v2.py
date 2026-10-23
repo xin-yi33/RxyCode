@@ -7149,7 +7149,26 @@ class AgentV2:
         override = getattr(self, "_subagent_system_prompt", None)
         if isinstance(override, str) and override.strip():
             return override
-        return get_system_prompt(variant=self._prompt_variant())
+        prompt = get_system_prompt(variant=self._prompt_variant())
+        # FR-WEB-02: the Web surface appends one stable block — fixed text,
+        # keyed off the server-set RunContext.surface, never off user text.
+        # Dynamic capability facts travel in the trusted run context so the
+        # shared prefix stays byte-identical across tenants (cache-warm).
+        try:
+            import importlib
+
+            context = importlib.import_module(
+                "rxycode_protocol.run_context"
+            ).current_run_context()
+        except ImportError:
+            context = None
+        if getattr(context, "surface", "") == "web":
+            from RxyCode.RxyCode1_1_0.core.prompts.web_surface import (
+                WEB_SURFACE_APPENDIX,
+            )
+
+            prompt = prompt + WEB_SURFACE_APPENDIX
+        return prompt
 
     def replace_model_history(self, messages: list | None) -> None:
         """用另一份对话替换下一轮模型实际续写的 AgentPrefix，并换暴露标识。"""

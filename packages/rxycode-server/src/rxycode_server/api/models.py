@@ -30,8 +30,6 @@ from rxycode_server.byok.resolver import (
     PLATFORM_MODEL_REF,
     byok_enforced,
     keyring_available,
-    platform_model_name,
-    platform_model_users,
 )
 from rxycode_server.persistence.models import ModelConnection, User, UserModel
 
@@ -80,6 +78,38 @@ def _conn_json(row: ModelConnection, model_count: int = 0) -> dict:
     }
 
 
+def _input_capabilities(model: UserModel, connection: ModelConnection | None) -> dict:
+    """What this model can consume as prompt input. ``verified`` is true only
+    when a registered provider actually claimed the model — the fallback
+    resolver answers conservatively without pretending it knows."""
+    try:
+        from core.providers import get_by_name, resolve
+
+        pid = (connection.provider_id if connection else "") or ""
+        cfg = {
+            "provider": pid,
+            "base_url": connection.base_url if connection else "",
+            "model_name": model.model_id,
+        }
+        provider = get_by_name(pid) if pid else None
+        if provider is not None:
+            verified = True
+        else:
+            provider = resolve(cfg)
+            verified = provider.name != "openai"  # openai is the generic fallback
+        caps = provider.capabilities(cfg)
+        return {
+            "text": True,
+            "images": bool(getattr(caps, "supports_vision", False)),
+            # Non-image attachments always land in the run workspace — tools
+            # read them there regardless of model vision.
+            "files": True,
+            "verified": verified,
+        }
+    except Exception:
+        return {"text": True, "images": False, "files": True, "verified": False}
+
+
 def _model_json(model: UserModel, connection: ModelConnection | None) -> dict:
     status = "available"
     if connection is None or connection.state != "active":
@@ -96,6 +126,7 @@ def _model_json(model: UserModel, connection: ModelConnection | None) -> dict:
         "connection_name": connection.display_name if connection else "",
         "source": "byok",
         "status": status,
+        "input_capabilities": _input_capabilities(model, connection),
     }
 
 
@@ -208,9 +239,13 @@ def model_access(
     user = db.get(User, record.user_id)
     return {
         "require_byok": byok_enforced(getattr(request.app.state, "mode", None)),
-        "platform_allowed": record.user_id in platform_model_users(),
+        "platform_allowed": False,
         "byok_available": keyring_available(),
-        "default_model_ref": (user.default_model_ref if user else None) or None,
+        "default_model_ref": (
+            user.default_model_ref
+            if user and user.default_model_ref != PLATFORM_MODEL_REF
+            else None
+        ),
     }
 
 
@@ -594,21 +629,9 @@ def list_models(request: Request, db: Session = Depends(db_session)) -> dict:
     ).all()
     user = db.get(User, record.user_id)
     default_ref = (user.default_model_ref if user else None) or None
+    if default_ref == PLATFORM_MODEL_REF:
+        default_ref = None
     models = [_model_json(model, conn) for model, conn in rows]
-    if record.user_id in platform_model_users():
-        models.append(
-            {
-                "model_ref": PLATFORM_MODEL_REF,
-                "model_id": platform_model_name(),
-                "display_name": "平台额度",
-                "provider_id": "platform",
-                "provider_name": "平台额度",
-                "connection_id": "",
-                "connection_name": "",
-                "source": "platform",
-                "status": "available",
-            }
-        )
     return {"models": models, "default_model_ref": default_ref}
 
 
@@ -627,9 +650,7 @@ def set_default_model(
     if not ref:
         user.default_model_ref = None
     elif ref == PLATFORM_MODEL_REF:
-        if record.user_id not in platform_model_users():
-            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
-        user.default_model_ref = PLATFORM_MODEL_REF
+        raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
     else:
         model = db.get(UserModel, ref)
         if (

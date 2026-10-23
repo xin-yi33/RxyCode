@@ -1204,9 +1204,42 @@ def github_callback(
     return {"user_id": user.id, "tenant_id": tenant_id}
 
 
+def _web_capabilities(request: Request) -> dict[str, object]:
+    """What this deployment's web surface can actually do — the composer and
+    preview UI hide affordances the surface cannot honor."""
+    from rxycode_server.attachments.service import (
+        MAX_ATTACHMENT_BYTES,
+        MAX_ATTACHMENTS_PER_RUN,
+    )
+
+    blobs = getattr(request.app.state, "attachment_blobs", None)
+    attachments_configured = blobs is not None
+    preview_root = bool(getattr(request.app.state, "preview_root", "") or "")
+    return {
+        "attachments": attachments_configured,
+        "attachment_max_bytes": MAX_ATTACHMENT_BYTES,
+        "attachment_max_per_run": MAX_ATTACHMENTS_PER_RUN,
+        "preview": {
+            # Kinds that can honestly produce a rendered page on this
+            # deployment. Static builds serve from the preview snapshot;
+            # office/pdf need a converter that is not yet provisioned.
+            "kinds": {
+                "frontend_static": True,
+                "frontend_build": preview_root,
+                "pdf": False,
+                "office": False,
+                "image": True,
+            }
+        },
+        "surface": "web",
+    }
+
+
 @router.get("/api/v1/me")
 def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]:
-    return _me_body(current_record(request), db)
+    body = _me_body(current_record(request), db)
+    body["web_capabilities"] = _web_capabilities(request)
+    return body
 
 
 def _session_digest(request: Request) -> str:

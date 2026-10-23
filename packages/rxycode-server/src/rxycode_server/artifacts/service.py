@@ -147,6 +147,9 @@ def store_artifact(
     bucket: str,
     access_key: str,
     secret_key: str,
+    relative_path: str = "",
+    partial: bool = False,
+    preview_kind: str | None = None,
 ) -> dict[str, object]:
     """Upload the bytes, then save metadata and artifact.created in one transaction."""
     if not isinstance(body, bytes) or len(content_type) > 128 or not content_type.strip():
@@ -203,6 +206,12 @@ def store_artifact(
                     sha256=digest,
                     size=len(body),
                     content_type=content_type,
+                    filename=_safe_name(filename),
+                    relative_path=(relative_path or "")[:500],
+                    availability="available",
+                    partial=bool(partial),
+                    preview_kind=(preview_kind or None),
+                    created_at=datetime.now(timezone.utc).isoformat(),
                 )
             )
             _add_event(db, run, "artifact.created", payload)
@@ -242,6 +251,67 @@ def open_download(
         engine.dispose()
 
 
+def issue_download(
+    row: Artifact, *, tenant_id: str, signing_key: str, ttl_seconds: int
+) -> dict[str, object]:
+    """Sign a download for an already-loaded artifact row — no engine churn
+    per manifest item."""
+    if not isinstance(ttl_seconds, int) or ttl_seconds <= 0 or ttl_seconds > _MAX_DOWNLOAD_TTL:
+        raise ArtifactForbidden()
+    expires = int(datetime.now(timezone.utc).timestamp()) + ttl_seconds
+    return {
+        "artifact_id": row.id,
+        "expires": expires,
+        "signature": _signature(signing_key, row.id, tenant_id, expires, row.sha256),
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _authorize_download(
+    database_url: str,
+    *,
+    tenant_id: str,
+    artifact_id: str,
+    expires: int | str,
+    signature: str,
+    signing_key: str,
+    now: datetime | None = None,
+    run_id: str | None = None,
+) -> Artifact:
+    """Verify tenant binding, expiry, and signature; return the artifact row."""
+    expires_at = _parse_expires(expires)
+    if _moment(now).timestamp() >= expires_at:
+        raise ArtifactForbidden()
+    engine = _engine(database_url)
+    try:
+        with Session(engine) as db:
+            row, _run = _owned(db, artifact_id, tenant_id, run_id)
+            expected = _signature(signing_key, row.id, tenant_id, expires_at, row.sha256)
+            detached = Artifact(
+                id=row.id,
+                run_id=row.run_id,
+                object_key=row.object_key,
+                sha256=row.sha256,
+                size=int(row.size),
+                content_type=row.content_type,
+                filename=row.filename or "",
+                relative_path=row.relative_path or "",
+                availability=row.availability or "available",
+                partial=bool(row.partial),
+                preview_kind=row.preview_kind,
+                created_at=row.created_at or "",
+            )
+    finally:
+        engine.dispose()
+    try:
+        matches = hmac.compare_digest(expected, signature)
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise ArtifactForbidden()
+    return detached
+
+
 def read_download(
     database_url: str,
     *,
@@ -258,30 +328,79 @@ def read_download(
     run_id: str | None = None,
 ) -> bytes:
     """Return the object only after the tenant, expiry, and signature all match."""
-    expires_at = _parse_expires(expires)
-    if _moment(now).timestamp() >= expires_at:
-        raise ArtifactForbidden()
-    engine = _engine(database_url)
-    try:
-        with Session(engine) as db:
-            row, _run = _owned(db, artifact_id, tenant_id, run_id)
-            expected = _signature(signing_key, row.id, tenant_id, expires_at, row.sha256)
-            object_key = row.object_key
-            digest = row.sha256
-            size = int(row.size)
-    finally:
-        engine.dispose()
-    try:
-        matches = hmac.compare_digest(expected, signature)
-    except (TypeError, ValueError):
-        matches = False
-    if not matches:
-        raise ArtifactForbidden()
+    row = _authorize_download(
+        database_url,
+        tenant_id=tenant_id,
+        artifact_id=artifact_id,
+        expires=expires,
+        signature=signature,
+        signing_key=signing_key,
+        now=now,
+        run_id=run_id,
+    )
     if not s3_endpoint or not bucket or not access_key or not secret_key:
         raise RuntimeError("artifact storage is not configured")
     client = _client(s3_endpoint, access_key, secret_key)
-    found = client.get_object(Bucket=bucket, Key=object_key)
+    found = client.get_object(Bucket=bucket, Key=row.object_key)
     data = found["Body"].read()
-    if hashlib.sha256(data).hexdigest() != digest or len(data) != size:
+    if hashlib.sha256(data).hexdigest() != row.sha256 or len(data) != row.size:
         raise ArtifactForbidden()
     return data
+
+
+def stream_download(
+    database_url: str,
+    *,
+    tenant_id: str,
+    artifact_id: str,
+    expires: int | str,
+    signature: str,
+    signing_key: str,
+    s3_endpoint: str | None = None,
+    bucket: str | None = None,
+    access_key: str | None = None,
+    secret_key: str | None = None,
+    now: datetime | None = None,
+    run_id: str | None = None,
+    byte_range: tuple[int | None, int | None] | None = None,
+) -> dict[str, object]:
+    """Authorized streaming view of an artifact. ``byte_range`` is a parsed
+    HTTP Range; a partial body skips the full-object sha check (the range is
+    verified by the signature + tenant binding, not the whole-file digest)."""
+    row = _authorize_download(
+        database_url,
+        tenant_id=tenant_id,
+        artifact_id=artifact_id,
+        expires=expires,
+        signature=signature,
+        signing_key=signing_key,
+        now=now,
+        run_id=run_id,
+    )
+    if not s3_endpoint or not bucket or not access_key or not secret_key:
+        raise RuntimeError("artifact storage is not configured")
+    client = _client(s3_endpoint, access_key, secret_key)
+    kwargs: dict[str, object] = {"Bucket": bucket, "Key": row.object_key}
+    status = 200
+    content_length = int(row.size)
+    range_header = ""
+    if byte_range is not None:
+        start, end = byte_range
+        if start is None:  # suffix range: last N bytes
+            start = max(0, int(row.size) - int(end or 0))
+            end = int(row.size) - 1
+        end = int(row.size) - 1 if end is None else min(int(end), int(row.size) - 1)
+        if start > end or start < 0:
+            raise ArtifactForbidden()
+        kwargs["Range"] = f"bytes={start}-{end}"
+        status = 206
+        content_length = end - start + 1
+        range_header = f"bytes {start}-{end}/{row.size}"
+    found = client.get_object(**kwargs)
+    return {
+        "row": row,
+        "body": found["Body"],
+        "status": status,
+        "content_length": content_length,
+        "content_range": range_header,
+    }

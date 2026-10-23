@@ -386,6 +386,8 @@ def purge_deleted_sessions(db: Session, *, older_than: datetime) -> int:
     from rxycode_server.persistence.models import (
         Approval,
         Artifact,
+        Attachment,
+        PreviewJob,
         RunEvent,
         ToolInvocation,
     )
@@ -401,6 +403,13 @@ def purge_deleted_sessions(db: Session, *, older_than: datetime) -> int:
             ),
             {"ids": list(run_ids)},
         )
+        artifact_ids = db.scalars(
+            select(Artifact.id).where(Artifact.run_id.in_(run_ids))
+        ).all()
+        if artifact_ids:
+            db.execute(
+                PreviewJob.__table__.delete().where(PreviewJob.artifact_id.in_(artifact_ids))
+            )
         for model in (Approval, RunEvent, ToolInvocation, Artifact):
             db.execute(model.__table__.delete().where((model.run_id.in_(run_ids))))
         db.execute(
@@ -410,6 +419,9 @@ def purge_deleted_sessions(db: Session, *, older_than: datetime) -> int:
         db.execute(
             text("DELETE FROM usage_records WHERE run_id = ANY(:ids)"),
             {"ids": list(run_ids)},
+        )
+        db.execute(
+            Attachment.__table__.delete().where(Attachment.session_id.in_(doomed))
         )
         db.execute(Run.__table__.delete().where(Run.id.in_(run_ids)))
     db.execute(

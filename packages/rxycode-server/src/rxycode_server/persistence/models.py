@@ -488,7 +488,80 @@ class Artifact(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     size: Mapped[int] = mapped_column(Integer)
     content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    filename: Mapped[str] = mapped_column(String(400), server_default="", default="")
+    relative_path: Mapped[str] = mapped_column(String(500), server_default="", default="")
+    availability: Mapped[str] = mapped_column(String(24), server_default="available", default="available")
+    partial: Mapped[bool] = mapped_column(Boolean, server_default="false", default=False)
+    preview_kind: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), server_default="", default="")
     run: Mapped[Run] = relationship()
+
+
+class Attachment(Base):
+    """A file the user attached to a run. Staged bytes live in the attachment
+    store; the row carries state, digest, and the run/session binding."""
+
+    __tablename__ = "attachments"
+    __table_args__ = (
+        Index("ix_attachments_user", "owner_user_id", "created_at"),
+        Index("ix_attachments_session", "tenant_id", "session_id"),
+        Index(
+            "uq_attachments_request",
+            "owner_user_id",
+            "request_id",
+            unique=True,
+            postgresql_where=text("request_id IS NOT NULL AND request_id <> ''"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filename: Mapped[str] = mapped_column(String(400))
+    content_type: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    declared_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    received_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    state: Mapped[str] = mapped_column(String(24), server_default="created", default="created")
+    stage: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    object_key: Mapped[str] = mapped_column(String(500), server_default="", default="")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    expires_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    updated_at: Mapped[str] = mapped_column(String(40))
+
+
+class PreviewJob(Base):
+    """One artifact → preview conversion. Status + location are the contract;
+    a failed job carries an honest reason code."""
+
+    __tablename__ = "preview_jobs"
+    __table_args__ = (
+        Index("ix_preview_jobs_run", "run_id"),
+        Index("ix_preview_jobs_artifact", "artifact_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_id: Mapped[str] = mapped_column(ForeignKey("artifacts.id"))
+    sha256: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(24))
+    status: Mapped[str] = mapped_column(String(16), server_default="queued", default="queued")
+    entrypoint: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    preview_url: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    expires_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40))
+    artifact: Mapped[Artifact] = relationship()
 
 
 class UsageRecord(Base):
@@ -800,6 +873,8 @@ WEB_TABLES = (
     "devices",
     "device_grants",
     "artifacts",
+    "attachments",
+    "preview_jobs",
     "usage_records",
     "auth_sessions",
     "device_locks",

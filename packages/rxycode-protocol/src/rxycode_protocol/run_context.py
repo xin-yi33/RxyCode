@@ -35,6 +35,11 @@ class RunContext:
     permission_profile: str
     deadline_at: str
     trace_id: str
+    #: Which client surface submitted the run ("cli"/"opentui"/"desktop"/"web").
+    #: Server-side set; empty for surfaces that do not declare one. The web
+    #: prompt appendix keys off this — it is trusted context, never parsed
+    #: from user text.
+    surface: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {key: str(value) for key, value in asdict(self).items()}
