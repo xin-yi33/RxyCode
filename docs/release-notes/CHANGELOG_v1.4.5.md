@@ -307,7 +307,12 @@
 
 - 刷新已存在会话时，从最新一条历史 run 恢复模型；若该引用无效，要求用户重选，不回退到较早 run。无显式有效模型且 catalog 尚未返回时，新任务与已有会话均阻止发送；已有会话在历史加载/失败期间也阻止发送并显示恢复、重试或手选状态。访客仍走原登录提示；有效显式选择不必等待历史。
 - 发送成功清正文但保留模型；新 session 仅向未显式选模型的草稿继承本次有效选择；切换会话隔离草稿，登出清理草稿。未新增模型默认存储、接口或自动挑选策略，BYOK 权限不变，界面只显示模型名称。
-- 验证：Node 4/4、候选真实页面 Playwright 10/10、主仓原 pytest 2/2、`npm test`（tsc）与 `npm run build` 通过。产品版本仍为 1.4.5。已通过静态 assets 优先、index 最后原子替换上线；未重启业务容器。Cloudflare 普通 HTML 响应会注入现有 Web Analytics beacon，原始完整 index bytes 另以全文件 Range 核验；详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。真实 provider 两轮验收仍待主审完成。
+- 验证：Node 4/4、候选真实页面 Playwright 10/10、主仓原 pytest 2/2、`npm test`（tsc）与 `npm run build` 通过。未修改产品版本号。已通过静态 assets 优先、index 最后原子替换上线；未重启业务容器。Cloudflare 普通 HTML 响应会注入现有 Web Analytics beacon，原始完整 index bytes 另以全文件 Range 核验；详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。截至该部署记录时真实 provider 两轮验收仍待主审完成，后续结果见下方补记。
+
+### 线上真实 provider 验收补记（2026-10-23）
+
+- 上述待验收项已由主审完成：会话 `28093b300301433497d66789cf9f808a` 刷新后不重选模型，Enter 连续创建两轮成功 Run（`aa43aa3a71ba43dcaea72b218c26eb1c`、`8615057e01f0478c855964d738f470a7`）；两轮均为 `deepseek-flash` / `credential_source=byok`，GET 均 HTTP 200、`status=succeeded`，POST 均提交 `model_ref=m_8f193a80f3a84948b7ff3e9974160c5f`。正常退出/重登后该会话模型仍自动恢复，未误报 Key 缺失。
+- 线上浏览器 fetch 的批准 JS/CSS 字节与 hash/长度匹配；容器、StartedAt 及 `.env`、keyring、Caddy、base compose 指纹未变。未修改产品版本号。实际 provider 验收仅覆盖这一个可用模型；本地模拟多模型不代表线上多模型切换。390×844 为 Chromium 视口，不是 vivo 真机。
 
 ## CI 修复：w2_c04 定端口竞争 + w5_c06 pg 启动窗口（2026-10-23）
 
@@ -318,3 +323,4 @@
 
 真实本地栈（FastAPI `mode=local` + vite 构建产物 + 单端口反代 + 真 Postgres）+ agent-browser 实测：本机口令登录、Composer 附件卡（选择→82B 就绪→绑定→发送）、`run.created` 载荷含完整附件清单（sha256/object_key/size）、BYOK_REQUIRED 诚实报错+去添加 API Key 链路、UI 建 DeepSeek 连接、拉取模型对无效 Key 返回真实 401（不装成功）、手动挂载 deepseek-chat+默认、排队→停止→已取消终态、`/me.web_capabilities` 与 `/models input_capabilities` 真实字段、会话时间线、移动视口布局+抽屉、控制台零错误。
 - **修复**：`main.py::serve()` 本地模式经 `from RxyCode.RxyCode1_1_0.api_server import reject_as_public_web_gateway` 引用——把仓库目录名当包路径，离开 `D:\agent-demo\RxyCode\RxyCode1_1_0` 布局即 ImportError（本地模式公网绑定的拒绝逻辑等于裸崩）。改为内联 `_is_loopback_bind_host` 自检，非 loopback 抛带说明的 RuntimeError。
+- **生产迁移发现并修复**：`alembic/versions/012_files_batch.py` 附件部分唯一约束写成 `sa.UniqueConstraint(postgresql_where=…)`——SQLAlchemy 2.x 下 `postgresql_where` 只被 `Index` 接受，`upgrade head` 在生产 Postgres 上 `ArgumentError` 整体回滚（本地测试经 metadata 路径未覆盖 alembic 执行，故漏检）。改为 `op.create_index(unique=True, postgresql_where=…)`，与 models.py 既有写法一致；已在 test pg 上全量 001→012 验证。
