@@ -58,6 +58,19 @@ def _session_digest(client: TestClient, secret: str) -> str:
 def test_w11_code_send_email_cap(postgres_url: str):
     """6th code send to the same email inside the 5-minute window -> 429."""
     app = _app(postgres_url)
+    # _Window buckets are fixed monotonic slices — an unfrozen burst that
+    # straddles a boundary silently re-allows. Freeze each limiter window so
+    # the six sends share one bucket.
+    limiter = app.state.auth_rate
+    for window in (
+        limiter.ip,
+        limiter.email,
+        limiter.code_email,
+        limiter.code_ip,
+        limiter.register_hour,
+        limiter.security,
+    ):
+        window._window = lambda: 0  # noqa: SLF001
     client = TestClient(app)
     email = _new_email()
     codes = [

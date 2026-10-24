@@ -193,16 +193,53 @@ def test_w7_c02_integration(postgres_url: str):
         csrf = client.get("/api/v1/auth/csrf").json()["csrf_token"]
         headers = {"X-CSRF-Token": csrf, "Origin": ORIGIN, "X-Local-Secret": SECRET}
         assert client.post("/api/v1/auth/local/login", headers=headers).status_code == 200
-        tenant_a = client.get("/api/v1/me").json()["organization"]["tenant_id"]
+        # FastAPI yield-dependency teardown commits AFTER the response is
+        # sent — login answers before the auth_sessions row commits, so /me
+        # can briefly read as unauthenticated. Poll until it answers.
+        deadline = time.time() + 15
+        me = client.get("/api/v1/me")
+        while me.status_code != 200 or "organization" not in me.json():
+            assert time.time() < deadline, "/me never became authenticated"
+            time.sleep(0.05)
+            me = client.get("/api/v1/me")
+        tenant_a = me.json()["organization"]["tenant_id"]
         project = client.post(
             "/api/v1/projects", json={"name": "chaos", "repo_config": {}}, headers=headers
         )
+        project_id = project.json()["id"]
+        # Same commit-after-response window: the sessions POST reads the
+        # project row on a fresh connection — wait until it is visible.
+        while client.get(
+            f"/api/v1/projects/{project_id}/sessions", headers=headers
+        ).status_code != 200:
+            assert time.time() < deadline, "project row never committed"
+            time.sleep(0.05)
         opened = client.post(
-            f"/api/v1/projects/{project.json()['id']}/sessions",
+            f"/api/v1/projects/{project_id}/sessions",
             json={"title": "chaos"},
             headers=headers,
         )
+        assert opened.status_code == 200, opened.text
         session_a = opened.json()["id"]
+        # FastAPI yield-dependency teardown commits AFTER the response is
+        # sent — the POST answered with an id while the sessions row was
+        # still uncommitted. Poll until the row is visible to a fresh
+        # connection before create_run's FK check reads it.
+        visibility = create_engine(postgres_url)
+        try:
+            deadline = time.time() + 15
+            while True:
+                with Session(visibility) as db:
+                    visible = db.execute(
+                        text("SELECT 1 FROM sessions WHERE id = :sid AND tenant_id = :tid"),
+                        {"sid": session_a, "tid": tenant_a},
+                    ).first()
+                if visible is not None:
+                    break
+                assert time.time() < deadline, "sessions row never committed"
+                time.sleep(0.05)
+        finally:
+            visibility.dispose()
         run_a = create_run(
             postgres_url,
             tenant_id=tenant_a,

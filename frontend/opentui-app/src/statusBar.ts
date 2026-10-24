@@ -2,6 +2,12 @@ import type { Mode } from "./types.ts";
 import { MODE_LABELS } from "./types.ts";
 import { C } from "./theme.ts";
 import { stringWidth } from "./layout.ts";
+import {
+  formatBudgetPair,
+  formatQuotaPair,
+  rateCell,
+  sizeCell,
+} from "./lib/displayColumns.ts";
 
 export interface StatusBarInput {
   connected: boolean;
@@ -19,45 +25,56 @@ export interface StatusBarInput {
 
 export type StatusSegment = { key: string; text: string; fg: string; bold?: boolean };
 
-// 2026-10-09 修复：快捷键段被整段剪没时 Ctrl+P和法律其余提示完全不可见
+// 2026-10-09 修复：快捷键段被整段剪没时 Ctrl+P 和法律其余提示完全不可见
 // （终端 <126 列实测）——先试全文，放不下退紧凑文案，再放不下才剪。
 // 紧凑版必须保留 Ctrl+P（设置/命令面板入口）与 Ctrl+T:思考（2026-10-11
 // 键位换回：Ctrl+T=思考展开，Todo 移到 Ctrl+E）。
 const SHORTCUTS_FULL = "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+E:Todo Ctrl+P:设置";
 const SHORTCUTS_COMPACT = "Tab切换 /命令 Ctrl+P设置 Ctrl+T:思考";
 
-/** Classic Ink StatusBar segments (multi-color). */
+/**
+ * Classic Ink StatusBar segments (multi-color).
+ *
+ * 2026-10-24 UI polish: numeric fields render in fixed DISPLAY-cell columns.
+ * Quota/size/rate values change width while labels are CJK (2 cells each), so
+ * plain JS-string padding would drift; the helpers pad by terminal cells and
+ * keep each numeric column's right edge (and the "/" separator) anchored.
+ */
 export function buildStatusSegments(input: StatusBarInput): StatusSegment[] {
   const connIcon = input.connected ? "●" : "○";
   const connLabel = input.connected ? "online" : "offline";
-  const ctxUsed = input.contextUsedK.toFixed(1);
-  const ctxMax = String(input.contextMaxK);
+  const contextText =
+    "上下文:" +
+    formatQuotaPair(input.contextUsedK.toFixed(1) + "k", String(input.contextMaxK) + "k");
+  // Size / rate are numeric cells too ("0B" → "907.0k", "0.0%" → "100.0%").
+  const cacheText = "缓存:" + sizeCell(input.cacheSize) + "/" + rateCell(input.cacheRate);
 
   const all: StatusSegment[] = [
     {
       key: "connection",
-      text: `${connIcon} ${connLabel}`,
+      text: connIcon + " " + connLabel,
       fg: input.connected ? C.green : C.accent,
       bold: true,
     },
-    { key: "context", text: `上下文:${ctxUsed}k/${ctxMax}k`, fg: C.primary },
-    { key: "cache", text: `缓存:${input.cacheSize}/${input.cacheRate}`, fg: C.teal },
+    { key: "context", text: contextText, fg: C.primary },
+    { key: "cache", text: cacheText, fg: C.teal },
     { key: "mode", text: MODE_LABELS[input.mode], fg: input.modeColor, bold: true },
     {
       key: "thinking",
-      text: `思考:${input.thinkingExpanded ? "开" : "关"}`,
+      text: "思考:" + (input.thinkingExpanded ? "开" : "关"),
       fg: input.thinkingExpanded ? C.green : C.overlay2,
     },
     { key: "cancel", text: "Esc:终止", fg: C.overlay2 },
-    { key: "shortcuts", text: "Tab:切换 /:命令 Ctrl+T:思考 Ctrl+E:Todo Ctrl+P:设置", fg: C.overlay2 },
+    { key: "shortcuts", text: SHORTCUTS_FULL, fg: C.overlay2 },
   ];
   if (input.teamRole) {
-    all.splice(4, 0, { key: "teamRole", text: `[${input.teamRole}]`, fg: C.yellow, bold: true });
+    all.splice(4, 0, { key: "teamRole", text: "[" + input.teamRole + "]", fg: C.yellow, bold: true });
   }
   if (input.teamBudget) {
+    // Budget is a used/max quota too — align both sides so the slash is stable.
     all.splice(input.teamRole ? 5 : 4, 0, {
       key: "teamBudget",
-      text: input.teamBudget,
+      text: formatBudgetPair(input.teamBudget),
       fg: C.teal,
     });
   }

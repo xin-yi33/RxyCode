@@ -1,4 +1,5 @@
 import { MacOSScrollAccel, type ScrollAcceleration } from "@opentui/core";
+import { SURFACES } from "./theme.ts";
 
 /** OpenCode default: fixed 3 lines per wheel tick when accel is off. */
 export class CustomSpeedScroll implements ScrollAcceleration {
@@ -24,6 +25,6 @@ export function createScrollAcceleration(): ScrollAcceleration {
 
 /** OpenCode-style scrollbar track (muted border on dark field — not brand pink). */
 export const SCROLLBAR_TRACK = {
-  backgroundColor: "#111111",
+  backgroundColor: SURFACES.track,
   foregroundColor: "#555555",
 } as const;

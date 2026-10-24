@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
+import { FileName } from "../../components/FileName"
 import { createClient } from "../../sdk/client"
 
 const api = createClient()
@@ -35,18 +36,22 @@ export function SessionFiles({
         工作区文件（{items.length}）
       </summary>
       <ul className="mt-2 space-y-1">
-        {items.map((file) => (
-          <li key={file.path} className="flex items-center gap-2 text-xs">
-            <a
-              className="min-w-0 flex-1 truncate font-mono underline decoration-muted/50 underline-offset-2"
-              href={api.sessionFileUrl(sessionId, file.path)}
-              download={file.path.split("/").pop()}
-            >
-              {file.path}
-            </a>
-            <span className="shrink-0 text-muted">{fmtSize(file.size)}</span>
-          </li>
-        ))}
+        {items.map((file) => {
+          const name = file.path.split("/").pop() || file.path
+          return (
+            <li key={file.path} className="flex items-center gap-2 text-xs">
+              <a
+                className="min-w-0 flex-1 font-mono underline decoration-muted/50 underline-offset-2"
+                href={api.sessionFileUrl(sessionId, file.path)}
+                download={name}
+                title={file.path}
+              >
+                <FileName name={name} className="font-mono" />
+              </a>
+              <span className="shrink-0 text-muted">{fmtSize(file.size)}</span>
+            </li>
+          )
+        })}
       </ul>
     </details>
   )

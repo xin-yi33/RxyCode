@@ -1,47 +1,51 @@
 import { useEffect, useRef } from "react"
 
-import { IconClose } from "../../components/icons"
+import { FileName } from "../../components/FileName"
+import { IconClose, IconRefresh } from "../../components/icons"
 import type { PreviewJob } from "../../sdk/client"
+import { usePreviewPane } from "./SplitWorkspace"
 
 type PreviewDrawerProps = {
   job: PreviewJob | null
   title: string
-  open: boolean
+  open?: boolean
   onClose: () => void
 }
 
-// 预览抽屉：桌面 50/50 右分屏，移动端全屏覆盖（E3 §07 fig-39/40）。
+// 预览面（E3 §07 fig-39/40）：桌面是分屏右栏（Pane），手机是全屏覆盖层。
 // iframe 始终 sandbox + no-referrer —— 预览内容是不可信产物。
-export function PreviewDrawer({ job, title, open, onClose }: PreviewDrawerProps) {
+// Esc 由 SplitWorkspace 统一处理：先恢复拖拽前快照，再考虑关闭预览。
+export function PreviewDrawer({ job, title, open = true, onClose }: PreviewDrawerProps) {
+  const pane = usePreviewPane()
+  const mode = pane?.mode ?? "overlay"
   const closeRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!open) return
     closeRef.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose()
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
   const ready = job?.status === "ready" && job.preview_url
   return (
     <div
       role="dialog"
-      aria-modal="true"
+      aria-modal={mode === "overlay" ? true : undefined}
       aria-label={`预览 ${title}`}
       data-preview-drawer
+      data-preview-mode={mode}
       className={
-        "fixed inset-0 z-40 flex flex-col bg-card sm:inset-y-0 sm:right-0 " +
-        "sm:left-auto sm:w-1/2 sm:border-l sm:border-border sm:shadow-xl"
+        mode === "overlay"
+          ? "fixed inset-0 z-40 flex flex-col bg-card"
+          : "flex h-full min-h-0 w-full flex-col bg-card"
       }
     >
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-        <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <span className="min-w-0 flex-1 text-sm">
+          <FileName name={title} />
+        </span>
         {job?.status ? (
-          <span className="text-xs text-muted">
+          <span className="shrink-0 text-xs text-muted">
             {job.status === "ready"
               ? "就绪"
               : job.status === "failed"
@@ -51,11 +55,22 @@ export function PreviewDrawer({ job, title, open, onClose }: PreviewDrawerProps)
                   : "生成中…"}
           </span>
         ) : null}
+        {pane && mode === "pane" ? (
+          <button
+            type="button"
+            aria-label="重置分栏"
+            title="恢复 50/50 分栏"
+            className="shrink-0 rounded p-1.5 text-muted hover:bg-sidebar"
+            onClick={() => pane.resetSplit()}
+          >
+            <IconRefresh size={14} />
+          </button>
+        ) : null}
         <button
           ref={closeRef}
           type="button"
           aria-label="关闭预览"
-          className="rounded p-1.5 text-muted hover:bg-sidebar"
+          className="shrink-0 rounded p-1.5 text-muted hover:bg-sidebar"
           onClick={onClose}
         >
           <IconClose size={14} />

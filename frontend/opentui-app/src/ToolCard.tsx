@@ -13,6 +13,7 @@ import {
   classifyTool,
   diffCounts,
   fileLabel,
+  fileEditVerb,
   genericSummary,
   groupDiffHunks,
   isPlanMdPath,
@@ -24,18 +25,30 @@ import {
   type DiffLine,
 } from "./lib/toolDisplay.ts";
 import { padToWidth, wrapContentLines } from "./layout.ts";
+import {
+  alignSignedCounts,
+  durationCell,
+  padDisplayEnd,
+  truncateDisplayEnd,
+} from "./lib/displayColumns.ts";
+import { middleEllipsisFileName } from "./lib/fileName.ts";
 import { C } from "./theme.ts";
 import type { ChatMessage } from "./types.ts";
 
-function useToolElapsed(startedAt: number, endedAt: number | undefined, running: boolean): string {
+/** Elapsed ms for the fixed-width duration column (compact formatter in displayColumns). */
+function useToolElapsedMs(startedAt: number, endedAt: number | undefined, running: boolean): number {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!running) return;
     const iv = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(iv);
   }, [running]);
-  return new ElapsedTimer(startedAt).format(running ? now : endedAt ?? now);
+  return new ElapsedTimer(startedAt).elapsedMs(running ? now : endedAt ?? now);
 }
+
+/** Header grid widths (display cells) — status/duration stay on one column. */
+export const TOOL_NAME_COLUMN = 10;
+export const TOOL_STATUS_COLUMN = 11;
 
 function DiffHunk({
   kind,
@@ -122,7 +135,12 @@ export function ToolCard({
   const family = classifyTool(name);
   const args = parseToolArgs(resolved.toolArgs);
   const command = toolCommand(args);
-  const elapsed = useToolElapsed(resolved.timestamp, resolved.endedAt, running);
+  const elapsedMs = useToolElapsedMs(resolved.timestamp, resolved.endedAt, running);
+  // Numeric cells: the name/status columns are fixed display-cell widths so the
+  // duration column starts and ends on the same grid column across tool cards.
+  const nameCell = padDisplayEnd(truncateDisplayEnd(name, TOOL_NAME_COLUMN), TOOL_NAME_COLUMN);
+  const statusCell = padDisplayEnd(`[${st}]`, TOOL_STATUS_COLUMN);
+  const elapsedCell = durationCell(elapsedMs);
   const headerColor = running ? C.subtext : ok ? C.green : C.yellow;
   const expanded = running ? true : resolved.toolExpanded !== false;
   const fullResult = getToolFullResult(resolved.id);
@@ -164,9 +182,9 @@ export function ToolCard({
       <box onMouseDown={onHeaderDown}>
         <text selectable={false}>
           <span fg={headerColor}>
-            {`  ${icon} >_ ${name} [${st}] ：`}
+            {`  ${icon} >_ ${nameCell}${statusCell}`}
           </span>
-          <span fg={C.subtext}>{elapsed}</span>
+          <span fg={C.subtext}>{elapsedCell}</span>
           <span fg={C.subtext}>{expanded ? "  ...v" : "  ...>"}</span>
         </text>
       </box>
@@ -204,16 +222,17 @@ function ToolBody({
   if (family === "edit") {
     const diff = buildEditDiff(name, args);
     const counts = diffCounts(diff);
+    const countCells = alignSignedCounts(counts.added, counts.removed);
     const preview = fullResult
       ? { lines: diff.filter((l) => l.kind !== "ctx"), clipped: 0 }
       : selectDiffPreview(diff, EDIT_PREVIEW_LINES);
     const hunks = groupDiffHunks(preview.lines);
     const filePath = String(args.filePath || args.file_path || args.path || name);
-    const label = fileLabel(filePath);
+    // Tool file lines are another long-file-name surface: keep the extension
+    // (incl. compound suffixes) visible inside the card width.
+    const label = middleEllipsisFileName(fileLabel(filePath), Math.max(12, wrapW - 26));
     const planFile = isPlanMdPath(filePath);
-    const verb = (name.toLowerCase().includes("write") || name.toLowerCase().includes("create"))
-      ? "Wrote"
-      : "Edited";
+    const verb = fileEditVerb(name, args);
     const canClip = !planFile && diff.filter((l) => l.kind !== "ctx").length > EDIT_PREVIEW_LINES;
     const shownHunks = planFile
       ? groupDiffHunks(diff.filter((l) => l.kind !== "ctx"))
@@ -223,9 +242,9 @@ function ToolBody({
       <box style={{ flexDirection: "column", width: "100%" }}>
         <text selectable>
           <span fg={C.subtext}>{`  ${verb} ${label} `}</span>
-          <span fg={C.green}>{`+${counts.added}`}</span>
+          <span fg={C.green}>{countCells.added}</span>
           <span fg={C.subtext}>{" "}</span>
-          <span fg={C.red}>{`-${counts.removed}`}</span>
+          <span fg={C.red}>{countCells.removed}</span>
         </text>
         {shownHunks.map((hunk, i) => {
           const node = (
