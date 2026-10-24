@@ -475,10 +475,15 @@ async def _run_managed(command: str, workdir: str, timeout: int) -> str | None:
         # Either the shell died or a command overran its cap.  Both leave the
         # environment undefined: destroy it and say so instead of replaying.
         await ps.release_shell(identity)
-        return (
-            "[error executing bash: managed shell environment was lost "
-            f"({exc}). Shell state (variables, functions, venv, cwd) is no "
-            "longer available; the next command starts a fresh shell.]"
+        outcome = ps.CommandOutcome(
+            stdout=exc.stdout,
+            exit_code=exc.exit_code,
+            truncated=exc.truncated,
+            error=(
+                "managed shell environment was lost "
+                f"({exc}). Shell state (variables, functions, venv, cwd) is no "
+                "longer available; the next command starts a fresh shell."
+            ),
         )
     except asyncio.CancelledError:
         # A cancelled command leaves the shell's state undefined.

@@ -44,7 +44,9 @@ async def test_exit_code_is_per_command():
             await sh.run("cmd /c exit 7", timeout=30)
             r = await sh.run("Write-Output ok", timeout=30)
         else:
-            await sh.run("exit 7", timeout=30)
+            # A failing child command leaves the persistent shell alive;
+            # bare `exit` deliberately destroys its state (covered separately).
+            await sh.run("(exit 7)", timeout=30)
             r = await sh.run("echo ok", timeout=30)
         print(f"  rc after previous failure: {r.exit_code}")
         assert r.exit_code == 0, "stale exit code leaked from the previous command"

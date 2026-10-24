@@ -616,6 +616,18 @@
 - Quality 有效 workflow 合同对照：同一 Agent 与 new Agent 两组 **2 passed**，相邻 pause 单测 **3 passed**。此前“分类器空/无效 → missing contract → 204 次 `_raw_stream`”来自不完整 fixture；有效合同对照未复现该循环，因此本轮不把它记为生产 bug，也未修改 workflow 或默认开关。
 - 收口 5 个测试代码无用绑定后，三文件目标复跑 **21 passed**，ruff 通过；未修改任何断言或生产源码。
 
+## 2026-10-24 · CLI 持久 Shell：提前退出证据与 POSIX 协议路径
+
+**真实原因**：Linux Quality 隔离候选通过真实 `ToolOrchestrator → bash → ManagedShell` 确认三项问题：裸 `exit 7` 在 END 前终止 shell，被无字段 `ShellLostError` 转成 `exit_code=None`；协议文件默认取宿主 `Path.cwd()`，宿主 `/` 只读而受控 workspace 可写时，命令虽执行但 rc/cwd 文件写入失败；POSIX 模板手拼路径单引号，含空格和单引号的目录会破坏重定向。相同配置的 one-shot `execute_async` 对照正常，`false → true` 的每命令退出状态亦正常；本次不把这些已证实的协议缺陷归因于沙箱权限。
+
+**最小改法**：
+
+- EOF 且没有 END 时保留已收输出（含原来为跨块 marker 留下的尾部）；若进程退出通知尚未到达，仅在既有命令超时/取消边界内等待 `Process.wait()`，不加 deadline、轮询或重放。`ShellLostError` 携带真实 `returncode`，`bash` 走原有 capture/失败格式化及工具 evidence 入口；即便 rc=0，缺少完成凭据仍为 failed，销毁 shell 并明确变量/函数/venv/cwd 状态丢失。BEGIN 前退出不归因于未执行的命令，取消/超时不把清理 kill 的返回码冒充命令结果，信号退出保留负值且仍失败。
+- 协议文件固定使用该 shell 的初始受控 workspace，不使用宿主 cwd、宿主 temp 或单次命令 workdir；POSIX 的 rc/err/cwd 文件重定向与 workdir 均用标准库 `shlex.quote()`，保持字面路径、不执行其中的 shell 语法。未改全局 cwd、权限/default workflow、版本号、sandbox backend 或已有超时策略。
+- 新增可复用 `test_shell_lost_evidence.py`：覆盖退出通知竞态、已收输出/共享 capture、rc=7/0/负信号、BEGIN 前 EOF、live EOF 的取消/超时、协议目录选择和含单引号/注入字符的路径；真实 orchestrator 复合链验证 workspace 与 hostcwd 不同、workspace 含单引号、`exit 7/0` 均诚实失败、只写一次、下一调用为新环境且不重放。既有 per-command 退出码 fixture 在 POSIX 改用 `(exit 7)`，让被测命令失败而不终止父 shell；断言未弱化，裸 `exit` 另由新增复合链覆盖。
+
+**Windows 验证**：目标九文件首轮 **91 passed**，最终新增回归独立复跑 **16 passed**；模块身份/startup/fast import boundary/P7 **27 passed**；Ruff、diffcheck 通过；P7 **180 / 181**，统计器与阈值未改。`python -m pytest -p no:cacheprovider tests/test_core tests/test_execution tests/test_tools tests/test_subagents -m 'not serial' -n 2 --dist loadscope -q --timeout=180` 为 **9855 passed / 4 skipped / 0 failed**（337.75s，63 warnings；skip 仍为两个 POSIX FIFO 条件项与本机缺 eslint/tsc）。同四目录 `-m serial` lane 无选中项（9859 deselected，pytest exit 5），因此全部 9859 项均已覆盖，未排除此前四个文件。所有测试设 `PYTHONDONTWRITEBYTECODE=1`、`-p no:cacheprovider` 和审计根独立 `ds-` runtime；完整日志 `D:/agent-demo/tmp-rxy-audit-852b59da-20261023/ds-posix-protocol-full.log`。Linux 真进程与只读 rootfs 复验由 Quality 接手，本记录不宣称全仓库或 Linux 已验收。仅本地提交，未 push/deploy。
+
 ## 云端 Web 事故修复批：附件读取 / question 卡渲染与单选 / question 恢复崩溃（2026-10-24，本地已验证，待部署）
 
 线上会话 `0e7dab8474874bbaadc443e4d99fd18f`（run `211f0165ba014f3dae77dac8e5626491`，2026-10-23 23:08 CST）暴露四个连在一起的严重问题，用户报告为“上传文件后所有工具调用全部失败 / question 选项应该竖排编号但顺序乱 / 选择后像是所有选项都被提交 / 随后直接异常结束”。逐条取证后确认是**三条独立根因叠加**，均已修复。

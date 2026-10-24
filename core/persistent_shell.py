@@ -37,6 +37,7 @@ import base64
 import codecs
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -84,7 +85,24 @@ class ShellStartupError(RuntimeError):
 
 
 class ShellLostError(RuntimeError):
-    """The shell died, or its state can no longer be trusted."""
+    """The shell died, or its state can no longer be trusted.
+
+    A reaped process can supply exit evidence, but never a completion receipt.
+    Timeout/cancel cleanup must not supply the return code of its own kill.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exit_code: int | None = None,
+        stdout: str = "",
+        truncated: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.truncated = truncated
 
 
 @dataclass
@@ -464,23 +482,25 @@ def _build_wrapped_command(
         return "\r\n".join(parts) + "\r\n"
 
     # POSIX: scope only the directory; never a subshell (variables must live).
+    rc_file = shlex.quote(protocol.rc_file_path)
+    err_file = shlex.quote(protocol.err_file_path)
+    cwd_file = shlex.quote(protocol.cwd_file_path)
     parts = [f"printf '%s\\n' '{protocol.begin}'"]
     if workdir:
-        escaped = workdir.replace("'", "'\\''")
         parts.append("__rxy_prev=$PWD")
         parts.append(
-            "if ! cd '" + escaped + "' 2>/dev/null; then "
-            f"printf '126' > '{protocol.rc_file_path}'; "
-            f"printf 'workdir_failed' > '{protocol.err_file_path}'; "
-            f"printf '%s' \"$__rxy_prev\" > '{protocol.cwd_file_path}'; "
+            f"if ! cd {shlex.quote(workdir)} 2>/dev/null; then "
+            f"printf '126' > {rc_file}; "
+            f"printf 'workdir_failed' > {err_file}; "
+            f"printf '%s' \"$__rxy_prev\" > {cwd_file}; "
             f"printf '%s\\n' '{protocol.end} done'; exit 0; fi"
         )
     parts.append(command)
     parts.append("__rxy_rc=$?")
-    parts.append(f"printf '%s' \"$__rxy_rc\" > '{protocol.rc_file_path}'")
+    parts.append(f"printf '%s' \"$__rxy_rc\" > {rc_file}")
     if workdir:
         parts.append('[ -n "$__rxy_prev" ] && cd "$__rxy_prev" 2>/dev/null')
-    parts.append(f"printf '%s' \"$PWD\" > '{protocol.cwd_file_path}'")
+    parts.append(f"printf '%s' \"$PWD\" > {cwd_file}")
     # The END marker is preceded by a newline so a command whose last output
     # has no trailing newline cannot glue itself to the marker (audit P2-03).
     parts.append(f"printf '\\n%s\\n' '{protocol.end} done'")
@@ -877,6 +897,9 @@ class ManagedShell:
                 self._closed = True
                 await self.close()
                 raise
+            except ShellLostError:
+                await self.close()
+                raise
 
     async def _run_locked(
         self,
@@ -894,7 +917,9 @@ class ManagedShell:
                 f"managed shell exited with code {process.returncode}"
             )
 
-        protocol = _marker_protocol()
+        # The initial controlled workspace is visible to the sandbox. Neither
+        # the host process cwd nor a one-call workdir is a safe protocol root.
+        protocol = _marker_protocol(self._initial_cwd)
         payload = _build_wrapped_command(
             command,
             protocol,
@@ -966,8 +991,23 @@ class ManagedShell:
             if not raw:
                 if state == "done":
                     break
+                if state == "collecting":
+                    # The retained tail is payload now, not a split END marker.
+                    emit(buf + decoder.decode(b"", final=True))
+                # stdout EOF alone is not proof of process exit. Reap through
+                # the existing command timeout/cancellation boundary, before
+                # close() can replace natural exit evidence with our own kill.
+                if process.returncode is None:
+                    await process.wait()
+                if self._powershell:
+                    truncated = (
+                        _feed_file(protocol.out_file_path, capture, chunks) or truncated
+                    )
                 raise ShellLostError(
-                    "managed shell exited before the command reported completion"
+                    "managed shell exited before the command reported completion",
+                    exit_code=process.returncode if state == "collecting" else None,
+                    stdout="" if capture is not None else "".join(chunks),
+                    truncated=truncated,
                 )
             buf += decoder.decode(raw)
 
