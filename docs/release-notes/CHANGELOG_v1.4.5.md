@@ -765,3 +765,4 @@
 - **`tools/patch.py` diff 错配静默成功（w6_c02_negative 真缺陷）**：`_apply_diff` 的 context(` `)/remove(`-`) 行此前**从不与文件实际内容比对**——错配 diff 照样「应用成功」且可能写坏文件。改为严格校验：期望行与 `orig_lines[orig_idx]` 不等即抛 `ValueError(context mismatch at file line N)`，`run_patch` 不写盘，`apply_patch` 报 applied=False、不再应用后续 diff（`later_diff` 原子性保持）。
 - **w6_c03 外网导航 flake**：chromium `navigate_click` 返回 ok 但落地页为 `chrome-error://chromewebdata/` 时此前不重试——改为状态+落地页双重检查最多 3 次，`iana.org`/`example domain` 与密钥隔离断言不变。
 - 验证：`tests/test_execution` + `tests/test_core` 全套 **8365 passed**（Windows）；w6_c02 单测 2/2；跨 loop 回归 3/3；ruff 全过。Linux 句式分支由 CI 层验证。
+- **`test_agent_main_chain` fixture 失同步（master 预存回归）**：`_attach_diagnostics` 给写后证据 detail 追加 `[syntax check: …]` 块后，集成测试 fixture 的 `write_result` 仍只含 `[wrote …]`——grounding `source_id` hash 不匹配，validator 以 "Claim 1 references unknown source_id" 拒答。fixture 改经 `post_write_report_async` 同一生产入口生成期望 detail（不硬编码块文本）。
