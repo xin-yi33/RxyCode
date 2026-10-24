@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import socket
+import struct
 import zlib
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -49,6 +50,9 @@ _MAX_REQUEST_BYTES = 512 * 1024
 #: A Harness checkpoint travels compressed; the decompressed form is capped
 #: so a crafted frame cannot expand past what the parent is willing to store.
 _MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024
+
+#: Existing control-channel transmission limit, shared by all control clients.
+CTL_TIMEOUT_SECONDS = 30.0
 
 
 class CtlError(RuntimeError):
@@ -87,7 +91,13 @@ def unpack_checkpoint(packed: str) -> dict[str, Any]:
     return value
 
 
-def ctl_call(sock_path: str | os.PathLike[str], op: str, *, timeout: float = 30.0, **args: Any) -> Any:
+def ctl_call(
+    sock_path: str | os.PathLike[str],
+    op: str,
+    *,
+    timeout: float = CTL_TIMEOUT_SECONDS,
+    **args: Any,
+) -> Any:
     """One synchronous request/response round-trip on the control socket.
 
     Each call opens a fresh connection — safe from loop threads and worker
@@ -172,6 +182,7 @@ class CtlServer:
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        peer_credentials = _peer_credentials(writer)
         try:
             # The client half-closes (shutdown SHUT_WR) after its frame —
             # read until EOF, NOT a single read(): reader.read() returns
@@ -191,7 +202,7 @@ class CtlServer:
             except (asyncio.TimeoutError, asyncio.IncompleteReadError):
                 chunks = []
             raw = b"".join(chunks).strip()
-            response = await self._dispatch(raw)
+            response = await self._dispatch(raw, peer_credentials=peer_credentials)
         except Exception as exc:  # never wedge the child on a framing bug
             _LOG.warning("ctl dispatch failed", exc_info=True)
             response = {"ok": False, "error": {"type": "internal", "message": str(exc)[:400]}}
@@ -206,7 +217,12 @@ class CtlServer:
         except Exception:
             pass
 
-    async def _dispatch(self, raw: bytes) -> dict[str, Any]:
+    async def _dispatch(
+        self,
+        raw: bytes,
+        *,
+        peer_credentials: tuple[int, int, int] | None = None,
+    ) -> dict[str, Any]:
         if not raw or len(raw) > _MAX_REQUEST_BYTES:
             return {"ok": False, "error": {"type": "bad_request", "message": "empty or oversized"}}
         try:
@@ -220,6 +236,13 @@ class CtlServer:
         handler = self._handlers.get(op)
         if handler is None or not isinstance(args, dict):
             return {"ok": False, "error": {"type": "unknown_op", "message": op[:80]}}
+        args = dict(args)
+        # Kernel credentials, never client fields, scope process registration.
+        for key in ("_peer_pid", "_peer_uid", "_peer_gid"):
+            args.pop(key, None)
+        if peer_credentials is not None:
+            pid, uid, gid = peer_credentials
+            args.update({"_peer_pid": pid, "_peer_uid": uid, "_peer_gid": gid})
         try:
             result = await asyncio.to_thread(handler, args)
         except Exception as exc:
@@ -228,6 +251,28 @@ class CtlServer:
                 "error": {"type": type(exc).__name__, "message": str(exc)[:800]},
             }
         return {"ok": True, "result": result}
+
+
+def _peer_credentials(writer: asyncio.StreamWriter) -> tuple[int, int, int] | None:
+    """Read kernel SO_PEERCRED from the accepted Unix socket."""
+    if not hasattr(socket, "SO_PEERCRED"):
+        return None
+    sock = writer.get_extra_info("socket")
+    getter = getattr(sock, "getsockopt", None)
+    if not callable(getter):
+        return None
+    try:
+        pid, uid, gid = struct.unpack(
+            "3i",
+            getter(
+                socket.SOL_SOCKET,
+                socket.SO_PEERCRED,
+                struct.calcsize("3i"),
+            ),
+        )
+    except (OSError, struct.error):
+        return None
+    return (int(pid), int(uid), int(gid))
 
 
 class TurnChannel:
@@ -241,7 +286,13 @@ class TurnChannel:
     def __init__(self, sock_path: str | os.PathLike[str]) -> None:
         self.sock_path = str(sock_path)
 
-    def _call(self, op: str, *, timeout: float = 30.0, **args: Any) -> Any:
+    def _call(
+        self,
+        op: str,
+        *,
+        timeout: float = CTL_TIMEOUT_SECONDS,
+        **args: Any,
+    ) -> Any:
         return ctl_call(self.sock_path, op, timeout=timeout, **args)
 
     def emit(self, event_type: str, payload: Mapping[str, Any]) -> int:
@@ -267,6 +318,38 @@ class TurnChannel:
         shape ``load_command_events`` returns for the DB-backed path."""
         result = self._call("commands", after_seq=int(after_seq))
         return list((result or {}).get("events") or [])
+
+    def process_observe_start(
+        self,
+        process_key: str,
+        window_id: str,
+    ) -> dict[str, Any]:
+        return dict(
+            self._call(
+                "process_observe_start",
+                process_key=str(process_key),
+                window_id=str(window_id),
+            )
+            or {}
+        )
+
+    def process_observe_sample(
+        self,
+        window_id: str,
+    ) -> dict[str, Any]:
+        return dict(
+            self._call("process_observe_sample", window_id=str(window_id)) or {}
+        )
+
+    def process_observe_cancel(self, window_id: str) -> dict[str, Any]:
+        return dict(
+            self._call("process_observe_cancel", window_id=str(window_id)) or {}
+        )
+
+    def process_release(self, process_key: str) -> dict[str, Any]:
+        return dict(
+            self._call("process_release", process_key=str(process_key)) or {}
+        )
 
     def pause_approval(
         self,

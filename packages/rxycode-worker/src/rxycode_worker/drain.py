@@ -4945,6 +4945,7 @@ def _ctl_handlers(
     paused_info: dict[str, Any],
     sandbox_id: str = "",
     phase_mark: Any | None = None,
+    process_observer: Any | None = None,
 ) -> dict[str, Any]:
     """Parent-side ops for one run's control socket.
 
@@ -5240,6 +5241,31 @@ def _ctl_handlers(
         )
         return {"result": cleaned}
 
+    def _process_register(args: dict[str, Any]) -> dict[str, Any]:
+        if process_observer is None:
+            return {"registered": False, "reason": "observer_unavailable"}
+        return process_observer.register(args)
+
+    def _process_observe_start(args: dict[str, Any]) -> dict[str, Any]:
+        if process_observer is None:
+            return {"available": False, "reason": "observer_unavailable"}
+        return process_observer.observe_start(args)
+
+    def _process_observe_sample(args: dict[str, Any]) -> dict[str, Any]:
+        if process_observer is None:
+            return {"available": False, "reason": "observer_unavailable"}
+        return process_observer.observe_sample(args)
+
+    def _process_observe_cancel(args: dict[str, Any]) -> dict[str, Any]:
+        if process_observer is None:
+            return {"cancelled": False}
+        return process_observer.observe_cancel(args)
+
+    def _process_release(args: dict[str, Any]) -> dict[str, Any]:
+        if process_observer is None:
+            return {"released": False}
+        return process_observer.release_process(args)
+
     return {
         "emit": _emit,
         "phase": _phase,
@@ -5251,6 +5277,11 @@ def _ctl_handlers(
         "journal_state": _journal_state_op,
         "journal_reserve": _journal_reserve,
         "journal_complete": _journal_complete,
+        "process_register": _process_register,
+        "process_observe_start": _process_observe_start,
+        "process_observe_sample": _process_observe_sample,
+        "process_observe_cancel": _process_observe_cancel,
+        "process_release": _process_release,
     }
 
 
@@ -5796,6 +5827,15 @@ async def run_sandboxed_turn() -> int:
         session_id=session_id,
         channel=channel,
     )
+    from RxyCode.RxyCode1_1_0.utils.shell import (
+        bind_process_observer,
+        reset_process_observer,
+    )
+    from rxycode_worker.process_observer import RemoteProcessObserver
+
+    process_observer_token = bind_process_observer(
+        RemoteProcessObserver(channel)
+    )
 
     try:
         loaded = await asyncio.to_thread(channel.load_run)
@@ -6107,6 +6147,7 @@ async def run_sandboxed_turn() -> int:
             _BOUND.pop(run_id, None)
         except Exception:
             pass
+        reset_process_observer(process_observer_token)
         # The result file is the parent's contract: status + real measured
         # tokens + the honest error string, written best-effort — a missing
         # file means the sandbox was killed and the parent reports that.
@@ -6434,6 +6475,7 @@ async def execute_run(
     proc: "asyncio.subprocess.Process | None" = None
     proc_identity: Any | None = None
     ctl_server: Any | None = None
+    process_observer: Any | None = None
     egress: Any | None = None
     # Per-claim dirs under state_root — removed at teardown so completed
     # runs cannot accumulate config copies, sockets or overlay layers
@@ -6703,6 +6745,9 @@ async def execute_run(
             EgressProxy,
             egress_allowlist_from_env,
         )
+        from rxycode_worker.process_observer import ProcessObserverRegistry
+
+        process_observer = ProcessObserverRegistry()
 
         ctl_server = CtlServer(
             ctl_sock,
@@ -6717,6 +6762,7 @@ async def execute_run(
                 paused_info=paused_info,
                 sandbox_id=sandbox_id,
                 phase_mark=phase_mark,
+                process_observer=process_observer,
             ),
         )
         await ctl_server.start()
@@ -6883,6 +6929,11 @@ async def execute_run(
             proc_identity = psutil.Process(proc.pid)
         except Exception:
             proc_identity = None
+        if process_observer is not None and proc_identity is not None:
+            try:
+                process_observer.bind_root(proc.pid, proc_identity.create_time())
+            except Exception:
+                pass
 
         turn_task = asyncio.ensure_future(
             _wait_child(proc, stderr_tail, streamed, proc_identity)
@@ -7025,6 +7076,11 @@ async def execute_run(
     except Exception as exc:
         turn_error = f"{type(exc).__name__}: {exc}"
     finally:
+        if process_observer is not None:
+            try:
+                process_observer.close()
+            except Exception:
+                pass
         # A leftover confined child must not outlive the drain's decision.
         # proc_identity.is_running() re-verifies (pid, create_time) — a
         # reaped-and-reused pid is NOT ours to signal (audit W8-r3).

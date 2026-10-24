@@ -360,7 +360,7 @@ class ToolOrchestrator:
     async def _report_process_liveness(
         self,
         text: str,
-        details: dict[str, Any],
+        details: dict[str, Any] | None,
     ) -> None:
         """Report through this call's request-context TUI, never a global one."""
         await shell_runtime.emit_process_liveness_to_tui(
@@ -1276,6 +1276,17 @@ class ToolOrchestrator:
                 duration_ms=elapsed_ms(),
             )
         finally:
+            context = shell_runtime.current_process_probe()
+            process_key = getattr(context, "process_key", "") if context else ""
+
+            def consume_release(task: asyncio.Task[Any]) -> None:
+                if not task.cancelled():
+                    task.exception()
+
+            release_task = asyncio.create_task(
+                shell_runtime.release_process_observation(process_key)
+            )
+            release_task.add_done_callback(consume_release)
             shell_runtime.reset_process_probe(probe_token)
         finished = self._finish(
             name,
@@ -2123,8 +2134,11 @@ class ToolOrchestrator:
                             "note": probe.note,
                         }
 
+                    spawn_argv = shell_runtime.wrap_process_argv(
+                        shell_executor.build_argv(command)
+                    )
                     result = await backend.run_command(
-                        shell_executor.build_argv(command),
+                        spawn_argv,
                         cwd,
                         timeout=timeout,
                         probe_callback=probe_native,

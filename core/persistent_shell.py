@@ -37,6 +37,7 @@ import base64
 import codecs
 import logging
 import os
+import secrets
 import shlex
 import shutil
 import signal
@@ -568,6 +569,7 @@ class ManagedShell:
         self._initial_cwd = cwd
         self._env = env
         self._sandbox_command = sandbox_command
+        self._process_registration_key = secrets.token_hex(32)
         self._process: asyncio.subprocess.Process | None = None
         #: The event loop that spawned the process.  asyncio transports and
         #: StreamReaders bind to it forever; a shell reused from another loop
@@ -639,12 +641,20 @@ class ManagedShell:
         if cwd and not Path(cwd).is_dir():
             cwd = None
 
-        plan = ShellSandboxPlan(argv=list(self.argv))
+        spawn_argv = list(self.argv)
+        try:
+            spawn_argv = shell_module.wrap_process_argv(
+                spawn_argv,
+                process_key=self._process_registration_key,
+            )
+        except Exception:
+            pass
+        plan = ShellSandboxPlan(argv=spawn_argv)
         if self._sandbox_command is not None:
             # Reuse ShellExecutor's sandbox/policy wrapping so the persistent
             # shell is protected exactly like a one-shot command.
             try:
-                plan = self._sandbox_command(list(self.argv), cwd)
+                plan = self._sandbox_command(list(spawn_argv), cwd)
             except Exception as exc:
                 raise ShellStartupError(
                     f"sandbox refused to wrap the managed shell: {exc}",
@@ -816,6 +826,21 @@ class ManagedShell:
     async def close(self) -> None:
         """Terminate the shell and its whole process tree.  Idempotent."""
         self._closed = True
+        registration_key = self._process_registration_key
+        self._process_registration_key = ""
+        if registration_key:
+            try:
+                cleanup = asyncio.create_task(
+                    shell_module.release_process_observation(registration_key)
+                )
+
+                def consume_cleanup(task: asyncio.Task[Any]) -> None:
+                    if not task.cancelled():
+                        task.exception()
+
+                cleanup.add_done_callback(consume_cleanup)
+            except Exception:
+                pass
         process = self._process
         self._process = None
         if self._stderr_task is not None:
@@ -1067,6 +1092,7 @@ class ManagedShell:
                             process.pid,
                             elapsed_seconds=now - started,
                             completion=command_done,
+                            process_key=self._process_registration_key,
                         )
                     )
                 if pending_read is None:

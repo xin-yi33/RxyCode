@@ -9,6 +9,31 @@
 
 ## RxyCode Web
 
+### Web 进程物理观察桥接（2026-10-25）
+
+- 旧内核容器的 bwrap PID namespace 没有 `/proc`，且实测 `/proc/<pid>/status`
+  无可用 `NSpid`，不能可靠映射子 namespace PID。新增 Web-only 受信注册 exec
+  包装：使用现有 Unix control socket，由父侧 `SO_PEERCRED` 取得 kernel peer
+  PID，并验证它是本 run bwrap 根的后代且 create_time 稳定；包装以原 argv、
+  原 env 和同 PID exec，CLI 不包装。
+- 物理进程注册与观察窗口分离：managed persistent shell 跨命令只注册一次，
+  180/300/600 秒及后续 300 秒窗口各自使用不可猜 window id；窗口 cancel
+  只删除当前窗口，不删除进程注册。注册/窗口均有界，进程死亡或 run 结束时
+  清理，迟到/重复/cross-run/非本 bwrap 后代请求被拒。
+- 输入 side 仍由共享 Harness 持有 5 秒窗口、checkpoint cadence、当前会话
+  BYOK judge 和用户反馈；父侧仅提供 CPU/IO/进程事实。观察不可用时发送普通
+  no-details progress 并返回 `unknown`，不调用 judge、不伪造 0。
+- 修复 `ProcessTreeSampler` 将 `NoSuchProcess/Zombie/AccessDenied` 静默归零：
+  现在保留 tuple 兼容接口但显式记录 unavailable；慢 RPC 返回前后复核命令完成
+  与当前 probe ownership，取消后的迟到结果不反馈、不判活。
+- Linux 同生产权限临时容器真实验证：注册后 exec 同 PID/starttime，父侧
+  sampler 两窗口 CPU 与 IO 均增长，one-shot 子树进程数 `1,1`、managed
+  持久 shell 子树 `2,2`，外部 decoy 未进入采样；managed 连续两条命令后同一
+  长命令两 checkpoint 均 `continue`，注册仅 1 次且窗口为 2 个。
+- 包装冷启动中位增量 `24.38 ms`（直接 `/bin/true` `1.21 ms`，注册包装后
+  `25.58 ms`，n=12）；warm managed 命令不重复启动注册 Python。未部署、
+  未普通 push、未改 P6/judge 15 秒/预算/续期/权限/DB/journal/schema/UI。
+
 ### 思考过程与 BYOK 额度（2026-10-22 已部署）
 
 - Web 思考块的标题是 `thoughts`。它不再拼接 `Analyzing your request...`、`Thinking... (round N)`、`思考中...` 这类进度文案。这些仍只做活动状态。模型的 `event/reasoning_snapshot` 按 CLI 的方式拼进这块。

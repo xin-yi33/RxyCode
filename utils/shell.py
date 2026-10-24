@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -62,13 +63,19 @@ class ProcessProbeContext:
     call_id: str
     generation: int
     handler: Callable[[dict[str, Any]], Awaitable[Any]] | None
-    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+    reporter: Callable[[str, dict[str, Any] | None], Awaitable[None]] | None = None
+    observer: Any | None = None
+    process_key: str = ""
     seq: int = 0
     reported: set[str] | None = None
 
 
 _PROCESS_PROBE_CONTEXT: ContextVar[ProcessProbeContext | None] = ContextVar(
     "process_liveness_probe",
+    default=None,
+)
+_PROCESS_OBSERVER: ContextVar[Any | None] = ContextVar(
+    "process_observer",
     default=None,
 )
 
@@ -78,14 +85,17 @@ def bind_process_probe(
     *,
     call_id: str,
     generation: int,
-    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    reporter: Callable[[str, dict[str, Any] | None], Awaitable[None]] | None = None,
 ) -> Token[ProcessProbeContext | None]:
     """Bind one tool call's liveness sink for managed/one-shot/native shells."""
+    observer = _PROCESS_OBSERVER.get()
     context = ProcessProbeContext(
         call_id=str(call_id or ""),
         generation=max(0, int(generation)),
         handler=handler,
         reporter=reporter,
+        observer=observer,
+        process_key=secrets.token_hex(32) if observer is not None else "",
         reported=set(),
     )
     return _PROCESS_PROBE_CONTEXT.set(context)
@@ -97,6 +107,56 @@ def reset_process_probe(token: Token[ProcessProbeContext | None]) -> None:
 
 def current_process_probe() -> ProcessProbeContext | None:
     return _PROCESS_PROBE_CONTEXT.get()
+
+
+def bind_process_observer(observer: Any | None) -> Token[Any | None]:
+    """Install a Web-only physical observer for tasks created below this context."""
+    return _PROCESS_OBSERVER.set(observer)
+
+
+def reset_process_observer(token: Token[Any | None]) -> None:
+    _PROCESS_OBSERVER.reset(token)
+
+
+def current_process_observer() -> Any | None:
+    return _PROCESS_OBSERVER.get()
+
+
+def wrap_process_argv(
+    argv: list[str],
+    *,
+    process_key: str | None = None,
+) -> list[str]:
+    """Wrap one Web tool argv with its trusted registration helper.
+
+    CLI and direct shell callers have no bound observer and receive the original
+    argv unchanged.  A wrapper failure is an observation failure, never a reason
+    to block the user's command.
+    """
+    context = current_process_probe()
+    observer = getattr(context, "observer", None) if context is not None else None
+    if observer is None:
+        observer = current_process_observer()
+    key = str(process_key or (context.process_key if context is not None else ""))
+    if observer is None or not key:
+        return list(argv)
+    try:
+        wrapped = observer.wrap_argv(list(argv), key)
+    except Exception:
+        return list(argv)
+    return list(wrapped) if isinstance(wrapped, (list, tuple)) and wrapped else list(argv)
+
+
+async def release_process_observation(process_key: str | None = None) -> None:
+    """Release a process registration even when no checkpoint fired."""
+    context = current_process_probe()
+    observer = getattr(context, "observer", None) if context is not None else None
+    if observer is None:
+        observer = current_process_observer()
+    key = str(process_key or (context.process_key if context is not None else ""))
+    if observer is None or not key:
+        return
+    await observer.release_process(key)
 
 
 def process_probe_deadlines(
@@ -343,17 +403,27 @@ class ProcessTreeSampler:
     def __init__(self, pid: int | None):
         self.pid = pid
         self._procs: dict[int, psutil.Process] = {}
+        self.available = bool(pid)
+        self.reason = "" if pid else "process_missing"
 
     def sample(self) -> tuple[float, int, int, int]:
         if not self.pid:
             return 0.0, 0, 0, 0
+        self.available = True
+        self.reason = ""
         try:
             root = self._procs.get(self.pid)
             if root is None:
                 root = psutil.Process(self.pid)
                 self._procs[self.pid] = root
             children = root.children(recursive=True)
-        except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            self.available = False
+            self.reason = "process_missing"
+            return 0.0, 0, 0, 0
+        except psutil.AccessDenied:
+            self.available = False
+            self.reason = "process_denied"
             return 0.0, 0, 0, 0
         seen = {self.pid}
         for child in children:
@@ -375,11 +445,38 @@ class ProcessTreeSampler:
                 try:
                     counters = proc.io_counters()
                     io_bytes += int(counters.read_bytes) + int(counters.write_bytes)
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
                 except (AttributeError, OSError, psutil.AccessDenied):
-                    pass
-            except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+                    self.available = False
+                    self.reason = "io_unavailable"
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
+            except psutil.AccessDenied:
+                self.available = False
+                self.reason = "process_denied"
+        if live == 0:
+            self.available = False
+            self.reason = self.reason or "process_missing"
         return cpu, rss, live, io_bytes
+
+
+class _LocalProcessObservation:
+    """Adapter that keeps the existing sampler as the only local algorithm."""
+
+    def __init__(self, pid: int | None):
+        self.sampler = ProcessTreeSampler(pid)
+
+    async def prime(self, _process_key: str, _window_id: str) -> bool:
+        self.sampler.sample()
+        return bool(getattr(self.sampler, "available", True))
+
+    async def sample(self, _window_id: str) -> tuple[float, int, int, int] | None:
+        value = self.sampler.sample()
+        return value if getattr(self.sampler, "available", True) else None
+
+    async def cancel(self, _window_id: str) -> None:
+        return None
 
 
 def watchdog_is_busy(
@@ -430,6 +527,16 @@ def _probe_completion_done(completion: Any) -> bool:
     return bool(done()) if callable(done) else False
 
 
+def _probe_still_owned(
+    context: ProcessProbeContext,
+    bound_context: ProcessProbeContext | None,
+    seq: int,
+) -> bool:
+    if bound_context is None:
+        return True
+    return current_process_probe() is context and context.seq == seq
+
+
 async def _wait_probe_slice(completion: Any, seconds: float) -> bool:
     """Wait for a probe slice; True means command/work completed first."""
     if seconds <= 0:
@@ -453,7 +560,7 @@ async def _wait_probe_slice(completion: Any, seconds: float) -> bool:
 async def emit_process_liveness_to_tui(
     tui: Any,
     text: str,
-    details: dict[str, Any],
+    details: dict[str, Any] | None,
 ) -> None:
     """Write one probe result to an explicitly owned TUI/reporter."""
     if tui is None:
@@ -482,9 +589,9 @@ async def emit_process_liveness_to_tui(
 
 async def _emit_process_liveness(
     text: str,
-    details: dict[str, Any],
+    details: dict[str, Any] | None,
     *,
-    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    reporter: Callable[[str, dict[str, Any] | None], Awaitable[None]] | None = None,
     allow_global_tui: bool = True,
 ) -> None:
     """Emit one real probe result through the existing progress channel."""
@@ -506,6 +613,21 @@ async def _emit_process_liveness(
     await emit_process_liveness_to_tui(tui, text, details)
 
 
+async def _report_process_unknown(
+    reason: str,
+    context: ProcessProbeContext,
+    *,
+    bound_context: ProcessProbeContext | None,
+) -> None:
+    text = f"进程观察不可用（{reason or 'unavailable'}）；本次未判定"
+    await _emit_process_liveness(
+        text,
+        None,
+        reporter=context.reporter,
+        allow_global_tui=bound_context is None,
+    )
+
+
 async def run_process_probe(
     pid: int | None,
     *,
@@ -513,6 +635,7 @@ async def run_process_probe(
     completion: Any = None,
     observe_seconds: float | None = None,
     idle_cpu_percent: float | None = None,
+    process_key: str | None = None,
 ) -> ProcessProbeResult | None:
     """Observe one five-second window, judge it, and report exactly once.
 
@@ -540,18 +663,83 @@ async def run_process_probe(
             WATCHDOG_OBSERVE_SECONDS,
         )
     observe_seconds = max(0.05, float(observe_seconds))
-    sampler = ProcessTreeSampler(pid)
-    # Prime psutil, then use two real interval samples for the CPU verdict.
-    # Never use the immediate post-prime reading: it is approximately zero and
-    # would falsely classify a CPU-busy command as idle.
-    sampler.sample()
+    source = context.observer or _LocalProcessObservation(pid)
+    key = str(process_key or context.process_key)
+    window_id = secrets.token_hex(32) if context.observer is not None else ""
     first_slice = observe_seconds / 2.0
-    if await _wait_probe_slice(completion, first_slice):
-        return None
-    cpu1, _rss1, live1, io1 = sampler.sample()
-    if await _wait_probe_slice(completion, observe_seconds - first_slice):
-        return None
-    cpu2, _rss2, live2, io2 = sampler.sample()
+    try:
+        # Prime psutil, then use two real interval samples for the CPU verdict.
+        # Never use the immediate post-prime reading: it is approximately zero
+        # and would falsely classify a CPU-busy command as idle.
+        if context.observer is not None and not key:
+            raise RuntimeError("process registration unavailable")
+        if not await source.prime(key, window_id):
+            if _probe_completion_done(completion) or not _probe_still_owned(
+                context,
+                bound_context,
+                seq,
+            ):
+                return None
+            await _report_process_unknown(
+                "物理采样不可用",
+                context,
+                bound_context=bound_context,
+            )
+            note = "本次未判定（物理采样不可用）"
+            return ProcessProbeResult(action="unknown", note=note, details={})
+        if await _wait_probe_slice(completion, first_slice):
+            return None
+        sample1 = await source.sample(window_id)
+        if _probe_completion_done(completion) or not _probe_still_owned(
+            context,
+            bound_context,
+            seq,
+        ):
+            return None
+        if await _wait_probe_slice(completion, observe_seconds - first_slice):
+            return None
+        sample2 = await source.sample(window_id)
+        if _probe_completion_done(completion) or not _probe_still_owned(
+            context,
+            bound_context,
+            seq,
+        ):
+            return None
+        if sample1 is None or sample2 is None:
+            await _report_process_unknown(
+                "物理采样不可用",
+                context,
+                bound_context=bound_context,
+            )
+            note = "本次未判定（物理采样不可用）"
+            return ProcessProbeResult(action="unknown", note=note, details={})
+        cpu1, _rss1, live1, io1 = sample1
+        cpu2, _rss2, live2, io2 = sample2
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if _probe_completion_done(completion) or not _probe_still_owned(
+            context,
+            bound_context,
+            seq,
+        ):
+            return None
+        await _report_process_unknown(
+            type(exc).__name__,
+            context,
+            bound_context=bound_context,
+        )
+        note = f"本次未判定（物理采样失败：{type(exc).__name__}）"
+        return ProcessProbeResult(action="unknown", note=note, details={})
+    finally:
+        if context.observer is not None and window_id:
+            cleanup = asyncio.create_task(source.cancel(window_id))
+
+            def consume_cancel(task: asyncio.Task[Any]) -> None:
+                if not task.cancelled():
+                    task.exception()
+
+            cleanup.add_done_callback(consume_cancel)
     busy = watchdog_is_busy(
         cpu=cpu2,
         rss=0,
@@ -577,6 +765,12 @@ async def run_process_probe(
         f"进程 {live1}→{live2}；"
         f"本窗口{'有活动' if busy else 'CPU/IO 偏低'}"
     )
+    if _probe_completion_done(completion) or not _probe_still_owned(
+        context,
+        bound_context,
+        seq,
+    ):
+        return None
     action = "unknown"
     note = "本次未判定（无可用会话 LLM）"
     if context.handler is not None:
@@ -1757,7 +1951,7 @@ class ShellExecutor:
             )
 
         cidfile: Path | None = None
-        spawn_argv = argv
+        spawn_argv = wrap_process_argv(list(argv))
         spawn_cwd = policy.cwd
         os_sandbox_pair = None
         if policy.mode == "docker":

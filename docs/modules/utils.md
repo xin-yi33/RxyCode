@@ -99,3 +99,27 @@ continues through the existing process-tree cleanup path and removes incomplete
 artifacts. `append_capture_hints()` lets existing ShellExecutor consumers expose
 generated local artifact path lines (or a capture-failure notice) without
 reopening complete files.
+
+## Web process-observation bridge
+
+The shared `ProcessProbeContext` can carry a Web-only physical observer without
+changing checkpoint cadence, the five-second window, P6 budgets, cancellation,
+or the current-session liveness judge.
+
+- A trusted stdlib-only registration helper is inserted only by the Web
+  execution path. It connects to the run's existing control socket, then execs
+  the exact original argv with its original environment. CLI calls do not use
+  this wrapper.
+- The parent uses kernel `SO_PEERCRED`, never a child-reported host PID. A
+  registration is accepted only when that PID is a live descendant of the bound
+  bwrap root and its `create_time` still matches.
+- Process registration and observation windows are separate: one managed shell
+  registers once across commands, while every checkpoint gets a new
+  nonce-scoped window. Cancelling a window does not remove the persistent
+  process registration.
+- `ProcessTreeSampler` remains the only sampling algorithm. If sampling or the
+  bridge is unavailable, the probe returns `unknown`, sends one plain
+  no-details progress update, skips the judge, and never supplies fabricated
+  zero CPU/IO evidence.
+- Registration and window counts are bounded. Dead processes are pruned on
+  registry operations, and the parent registry is cleared when the run ends.

@@ -136,6 +136,14 @@ fresh process).
   and every following 300s interval, the shell observes two valid CPU intervals
   across a real five-second async window while output streaming continues.
   Low CPU/IO is only evidence; it never kills a command.
+- **Web kernel-bound observation (2026-10-25):** the confined turn cannot read
+  `/proc`. A Web-only trusted registration helper connects to the existing
+  parent control socket and execs the original argv with the same PID and
+  environment. The parent binds `SO_PEERCRED` to the run's bwrap root plus
+  create_time. Process registration persists for a managed shell's lifetime;
+  each checkpoint opens and closes its own bounded observation window. The
+  parent only returns sampled facts; checkpoint timing, five-second observation,
+  current-session judgment, and user feedback remain in the shared Harness.
 - Normal `AgentV2` injects a `SessionLivenessJudge` backed by the current
   session's already-routed `UsageTrackingLLM`. This is independent of the P6
   timeout engine and its `enabled: false` default; it never consumes extension
