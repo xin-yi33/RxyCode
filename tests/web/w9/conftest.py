@@ -84,14 +84,9 @@ def _postgres_server() -> str:
 @pytest.fixture
 def postgres_url(_postgres_server: str, monkeypatch: pytest.MonkeyPatch) -> str:
     """Empty schema migrated to head, and a deterministic env."""
-    engine = create_engine(_postgres_server)
-    with engine.begin() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
-    from rxycode_server.persistence.migrate import upgrade_head
+    from tests.support.pgurl import reset_schema
 
-    upgrade_head(_postgres_server)
+    reset_schema(_postgres_server, migrate=True)
     monkeypatch.delenv("RXYCODE_WEB_REGISTRATION", raising=False)
     for name in (
         "RXYCODE_QUOTA_CONCURRENCY",
