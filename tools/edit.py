@@ -178,11 +178,11 @@ async def _attach_diagnostics(result: str, filePath: str) -> str:
     if not isinstance(result, str) or not result.startswith(_SUCCESS_PREFIXES):
         return result
     try:
-        from .write import post_write_report
+        from .write import post_write_report_async
 
         p = resolve_session_path(filePath)
         saved = p.read_text(encoding="utf-8", errors="replace")
-        block = await post_write_report(
+        block = await post_write_report_async(
             p, saved, operation=_operation_for_result(result)
         )
         return result + block

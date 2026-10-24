@@ -12,7 +12,6 @@ from RxyCode.RxyCode1_1_0.tools.bash import bash_tool
 from RxyCode.RxyCode1_1_0.tools.grep_tool import grep_tool
 from RxyCode.RxyCode1_1_0.tools.glob_tool import glob_tool
 from RxyCode.RxyCode1_1_0.tools.ls import ls_tool
-from RxyCode.RxyCode1_1_0.tools.view import view_tool
 from RxyCode.RxyCode1_1_0.tools.webfetch import webfetch_tool
 from RxyCode.RxyCode1_1_0.tools.websearch import websearch_tool
 from RxyCode.RxyCode1_1_0.tools.git_tool import git_tool
@@ -30,6 +29,12 @@ from RxyCode.RxyCode1_1_0.tools.workflow_tool import workflow_tool
 from RxyCode.RxyCode1_1_0.tools.task_tool import task_tool
 from RxyCode.RxyCode1_1_0.tools.todo_write import todo_write_tool
 from RxyCode.RxyCode1_1_0.tools.subagent_task_tool import subagent_task_tool
+from RxyCode.RxyCode1_1_0.tools.subagent_collab import (
+    cancel_subagent_tool,
+    list_agents_tool,
+    send_message_to_subagent_tool,
+    spawn_subagent_tool,
+)
 from RxyCode.RxyCode1_1_0.tools.open_file import open_file_tool
 from RxyCode.RxyCode1_1_0.tools.virtual_browser import (
     browser_click_tool,
@@ -43,6 +48,7 @@ from RxyCode.RxyCode1_1_0.tools.file_download import file_download_tool
 
 class ToolRegistry(Protocol):
     def register(self, tool: Any, *, risk: str = ...) -> None: ...
+    def register_alias(self, alias: str, target_name: str) -> bool: ...
     def get_names(self) -> list[str]: ...
     def get(self, name: str) -> Any: ...
 
@@ -78,7 +84,6 @@ def register_builtin_tools(
         grep_tool,
         glob_tool,
         ls_tool,
-        view_tool,
         datetime_tool,
         final_answer_tool,
         websearch_tool,
@@ -96,12 +101,6 @@ def register_builtin_tools(
         question_tool,
     ]
     write_tools = [
-        # Audit P2-11: the model sees ONE file-change entry (`edit`).  It
-        # carries write/replace/patch operations, so exposing the standalone
-        # write and patch tools again would fork the contract and let a caller
-        # bypass the per-write diagnostics.  `tools/write.py` and
-        # `tools/patch.py` remain as internal implementations the unified tool
-        # calls into.
         edit_tool,
         open_file_tool,
         memory_tool,
@@ -130,6 +129,14 @@ def register_builtin_tools(
         # permission.task and child tools cross their own approval gates.
         register_tool_risk("task", RiskLevel.READ)
         registry.register(subagent_task_tool, risk="read")
+        for collab_tool in (
+            spawn_subagent_tool,
+            cancel_subagent_tool,
+            send_message_to_subagent_tool,
+            list_agents_tool,
+        ):
+            register_tool_risk(collab_tool.name, RiskLevel.READ)
+            registry.register(collab_tool, risk="read")
     else:
         register_tool_risk("task", RiskLevel.WRITE)
 
@@ -152,9 +159,14 @@ def register_builtin_tools(
 
     registry.register(file_download_tool)
 
+    # 废弃模型入口（2026-10-13）：文件读取只暴露 read，文件变更只暴露
+    # edit。旧名称是 registry 的兼容别名，不进入 request tools 数组。
+    for alias, target in (("view", "read"), ("write", "edit"), ("patch", "edit")):
+        registry.register_alias(alias, target)
+
     for name in registry.get_names():
         if name == "code_search" and not rag_enabled:
             continue
         tool = registry.get(name)
-        if tool:
+        if tool and name == tool.name:
             orchestrator.register(name, tool)

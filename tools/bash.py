@@ -14,15 +14,15 @@ from pydantic import BaseModel, Field
 
 from ..config.settings import load_config
 from ..core.session_runtime import current_session_id
+from ..utils.output_capture import write_text_artifact
 from ..utils.shell import shell_executor
-
-_logger = logging.getLogger(__name__)
 from .launch_intent import classify_shell_launch
 from .open_file import open_file, open_file_async
 from .secret_text import redact_secrets
 
 _SPILL_SEEN: dict[str, set[str]] = {}
 _SPILL_ARTIFACTS: dict[str, dict[str, frozenset[str]]] = {}
+_logger = logging.getLogger(__name__)
 SPILL_PATH_PREFIX = "Full output saved to:"
 SPILL_FAIL_MARKER = "[spill write failed; output truncated]"
 DUPLICATE_SPILL = (
@@ -59,6 +59,9 @@ class BashInput(BaseModel):
 #: is middle-truncated (head + tail kept) so a noisy command cannot blow up
 #: the context window.
 MAX_OUTPUT_CHARS = 30000
+#: 只按行数截断：超过 200 行时，上下文留首尾各 50 行，全文在 spill 文件里。
+INLINE_LINE_LIMIT = 200
+EDGE_LINES = 50
 
 #: Hint appended when truncation happens (Tier1 style, see
 #: memory/compressor.py:170-194 _middle_truncate).
@@ -114,6 +117,67 @@ def _is_duplicate_capture(result: dict, paths: list[str]) -> bool:
     seen.add(fingerprint)
     artifacts[fingerprint] = current_paths
     return False
+
+
+def _output_line_count(text: str, result: dict) -> int:
+    line_count = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
+    if line_count > 0:
+        return line_count
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _output_is_long(text: str, result: dict) -> bool:
+    return _output_line_count(text, result) > INLINE_LINE_LIMIT
+
+
+def _edge_sections(text: str, result: dict) -> tuple[str, str, int]:
+    head_lines = list(result.get("stdout_head_lines") or [])
+    if not head_lines:
+        head_lines = list(result.get("stderr_head_lines") or [])
+    if result.get("stderr") and result.get("stderr_tail_lines"):
+        tail_lines = list(result.get("stderr_tail_lines") or [])
+    else:
+        tail_lines = list(result.get("stdout_tail_lines") or [])
+    total = int(result.get("stdout_line_count") or 0) + int(result.get("stderr_line_count") or 0)
+    if head_lines or tail_lines:
+        if result.get("stdout_redaction_hold") or result.get("stderr_redaction_hold"):
+            tail_lines = []
+        return (
+            _redact_preview("\n".join(head_lines[:EDGE_LINES])),
+            _redact_preview("\n".join(tail_lines[-EDGE_LINES:])),
+            total,
+        )
+    lines = text.splitlines()
+    head = "\n".join(lines[:EDGE_LINES])
+    tail = "\n".join(lines[-EDGE_LINES:]) if len(lines) > EDGE_LINES else ""
+    return head, tail, len(lines)
+
+
+def _shape_long_output(text: str, result: dict, paths: list[str]) -> tuple[str, list[str]]:
+    """Keep the first and last 50 lines in context and point at the full file."""
+    if not text or not _output_is_long(text, result):
+        return text, paths
+    if result.get("capture_error"):
+        return _truncate_output(text), []
+    saved = list(paths)
+    truncated = bool(result.get("stdout_truncated") or result.get("stderr_truncated"))
+    if not saved and not truncated:
+        try:
+            saved = [str(write_text_artifact(text))]
+        except OSError:
+            return _truncate_output(text), paths
+    if not saved:
+        return _truncate_output(text), paths
+    head, tail, total = _edge_sections(text, result)
+    shown = (EDGE_LINES if head else 0) + (EDGE_LINES if tail and tail != head else 0)
+    omitted = max(0, total - shown)
+    parts = [head, f"... [省略 {omitted} 行，完整输出已保存至 {saved[0]}] ..."]
+    if tail and tail != head:
+        parts.append(tail)
+    parts.append("如需完整输出，请使用 read 工具读取该文件")
+    return "\n".join(part for part in parts if part), saved
 
 
 def _truncate_output(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
@@ -210,8 +274,20 @@ async def _maybe_launch_async(command: str, workdir: str = "") -> str | None:
     return await loop.run_in_executor(None, _detach_gui, command, workdir)
 
 
+def _refuse_blacklisted(command: str) -> str | None:
+    from RxyCode.RxyCode1_1_0.core.safety.policy import hard_denied_shell_reason
+
+    reason = hard_denied_shell_reason(command)
+    if not reason:
+        return None
+    return f"[blocked: dangerous command rejected] {reason}。这条命令未执行。"
+
+
 def run_bash(command: str, description: str = "", workdir: str = "", timeout: int = 1800) -> str:
     # 废弃代码（2026-09-20）：timeout: int = 60 / 120 不再作为 run_bash 默认值。
+    refused = _refuse_blacklisted(command)
+    if refused is not None:
+        return refused
     launched = _maybe_launch(command, workdir)
     if launched is not None:
         return launched
@@ -234,6 +310,11 @@ async def run_bash_async(
     cannot be used (startup failure, sandbox/docker policy, or a closed
     session), and reports honestly when shell state was lost.
     """
+    # The hard blacklist runs BEFORE any execution path (managed or one-shot):
+    # shutdown/format style commands must be refused even in full_auto.
+    refused = _refuse_blacklisted(command)
+    if refused is not None:
+        return refused
     launched = await _maybe_launch_async(command, workdir)
     if launched is not None:
         return launched
@@ -482,7 +563,9 @@ def _format_result(result: dict, command: str = "") -> str:
     if _is_duplicate_capture(result, paths):
         return DUPLICATE_SPILL
 
-    body = _truncate_output(_redact_preview(output))
+    body, paths = _shape_long_output(_redact_preview(output), result, paths)
+    if len(body) > MAX_OUTPUT_CHARS and "完整输出已保存至" not in body:
+        body = _truncate_output(body)
     if result.get("capture_error"):
         capture_error = str(result["capture_error"])
         marker = (

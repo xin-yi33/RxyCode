@@ -536,4 +536,47 @@
 - `ruff check` 全绿（本轮改动的全部 Python 文件）。
 - **未测**：Linux/macOS 真实执行（本轮逻辑与平台无关，但未在 POSIX 实测 shell 展开差异）；真实 TUI 端到端。
 
+#### 第六轮外部审计修复（2026-10-24）
+
+第六轮审计针对 `7e8a6a65` 提出 5 组 P1 与 1 组 P2。根因不在单点：重新落地 CLI 时，旧 checkout 的**公共执行层**（`ToolOrchestrator`、`tools/bash.py`、`write.py`、`session_runtime.py` 等）整文件覆盖了父提交 `37b22e88` 已有的 Web 实现——changelog 保留了 Web 条目，实现却没有。本轮按**三方合并**收口：以 `37b22e88` 为基线恢复父提交实现，再把 CLI 能力（受管持久 Shell、统一写后诊断、权限三档）逐点重放，不再整文件覆盖。
+
+**P1（安全/正确性）**
+
+- **P1-a 只读解析两处绕过**：
+  - 引号里的参数被掩码成占位符：`git diff "--output=stolen.txt" a b` 的参数检查只看到 `Q`，真实写文件。
+  - 反斜杠被当成转义：bash 里 `"\$(...)"` 是字面量，但 PowerShell 不认反斜杠转义，`$()` 仍执行。
+  - 修复：命令按引号感知拆分；前缀/构造检查用掩码文本，**参数检查用去引号的真实 token**（值保留）；双引号内反斜杠只在 `\"` 时按转义处理，其余继续扫描，`\$(...)` 因此仍被拒绝。
+- **P1-b 硬黑名单失去生产调用者**：`hard_denied_shell_reason()` 还在 `core/safety/policy.py`，但执行入口不再调用；`shutdown`/`format` 一类命令可到达执行口。
+  - 修复：恢复 `tools/bash.py::_refuse_blacklisted()` 并在**受管与一次性两条路径之前**调用；恢复 `ToolOrchestrator` 的 `hard_denied` 检查（位于审批与 Full 放行之前，命中即 `[blocked: dangerous command rejected]`，不进入审批）。
+- **P1-c Web 审批丢失原始命令与调用 ID**：`ApprovalRequest` 被构造成空 `arguments`/`call_id`，Web 暂停后无法按原调用恢复。
+  - 修复：恢复 `args_summary=args`、`arguments=dict(args)`、`call_id=str(call_id or "")` 的透传。
+- **P1-d Web 恢复入口 TypeError**：`bind_tool_journal()` 退回 3 参签名，Worker 恢复函数仍传 `remote_call_id`。
+  - 修复：恢复 `bind_tool_journal(journal, attempt_id, checkpoint_id=None, remote_call_id=None)` 与 `journal.binding(attempt_id, checkpoint_id, remote_call_id)`。
+- **P1-e JSON 配置的 ESLint 仍可执行项目代码**：`.eslintrc.json` 通过 `extends: "./payload.cjs"` 加载项目脚本；信任门只认可执行配置文件，判为"安全"。
+  - 修复：新增 `_eslint_config_may_execute()`：对 JSON/YAML 数据配置解析 `extends` 链；相对/绝对路径递归检查（目标是 `.cjs/.js` 等可执行文件即视为需信任），无法解析的相对 extends 也视为需信任；`eslint:`/`plugin:` 与包名 extends 属依赖代码，保持安全。`find_executable_eslint_config()` 据此向上查找"真正可能需要执行代码"的配置。
+
+**P2（正确性）**
+
+- **P2 同步工具丢失会话上下文**：线程池两处 `contextvars.copy_context()` 被旧版移除，同一个 `read` 调用可能按 `latest` 上下文解析到另一份文件。
+  - 修复：恢复两处 `executor.submit(contextvars.copy_context().run, ...)`。
+
+**附带恢复的父提交能力（非审计条目，但同属"整文件覆盖"回退）**
+
+- Web 执行端口：`_execution_port_module` / `_routes_through_port` / `_tool_annotations` / `call_outcome` / `selection_report` / `_match_hints` / 同步与异步端口调用链。
+- 子代理 Web 事件流：`claim_child_stream_text/progress`、`claim_child_tool_event`、`bind_events`、`_emit_child`、inbox 的 `post_message/post_labeled/drain_inbox/session`。
+- `register_alias` 协议与 `view`/`write`/`patch` 兼容别名；`subagent_collab` 四个协作工具重新注册。
+- bash 输出整形（>200 行首尾各 50 行 + spill 文件）、`session_runtime` 动态导入布局（nested/flat 部署均可用）、`tests/conftest.py` 的 `packages/*/src` 路径恢复。
+- **full_auto 下受管 Shell 与 Web 执行端口的分工**：CLI 运行时（未绑定 Web 执行端口）优先受管持久 Shell；Web 绑定端口时保持 `LocalNativeBackend` 契约（`test_full_auto_bash_format` 显式绑定端口，`test_bash_e2e_chains` 验证 CLI 状态保持）。
+- 诊断入口统一为 `tools/write.py::post_write_report_async()`；同步 `post_write_report()` 保留为兼容空实现（旧调用方不会崩），`_verify_syntax` 的 JS 括号计数标注废弃（真实检查在 `core/post_write_diagnostics`）。
+- **工作区完整性**：该 checkout 此前缺 864 个父提交文件（旧快照），本轮先恢复完整 HEAD 树再叠加 CLI 改动，避免"缺文件运行"。
+
+**验证（Windows 本机实测）**
+
+- 新增 `tests/test_core/test_audit_round6.py`（25 项）：只读两处绕过（含真实 `ChildRuntime.check_tool`）、黑名单三层（bash 同步/异步、orchestrator 审批前）、Web 审批载荷与 journal 远端 ID、JSON ESLint extends 真实执行对照、同步工具会话上下文。
+- 六轮审计回归合计：round3 15 + round4 29 + round5 50 + round6 25 + 只读判定 44 = **163 项**。
+- 回归（`37b22e88` + 本轮修复，完整实测）：`tests/test_core` **8098 passed / 4 skipped**；`tests/test_execution` + `tests/test_tools` + `tests/test_subagents` **1686 passed**；合计 **9784 passed / 4 skipped / 0 failed**。排除的 3+1 个文件为既有基线失败（`test_lazy_import_budget`、`test_credential_storage`、`test_bash_watchdog`、`test_executor_responses_reasoning`），与本次改动无关。
+- `ruff check` 全绿。
+- **未测**：Linux/macOS 真实执行；Web 侧真实 `_CtlApproval` 端到端（本轮以捕获 `ApprovalRequest` 契约 + 现有 Web 测试目录为准）；真实 TUI。
+- **发现但未改（父提交 Web 沙箱行为，非本轮审计条目）**：Windows 受限令牌启动器（`core/sandbox/tokenlaunch.py`）在部分环境向子进程 stderr 注入 `Failed to find real location of <python>`；测试已隔离（`os_sandbox.enabled: false`），产品路径需 Web 侧确认。
+
 产品版本仍为 1.4.4（4.5 未发版）；本条为 v1.4.5 开发期记录。历次改动已提交本地 master（HEAD 见 git log），未推送、未部署。

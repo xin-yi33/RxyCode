@@ -13,19 +13,25 @@ from __future__ import annotations
 import asyncio
 import atexit
 import concurrent.futures
+import contextvars
+import importlib
 import inspect
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import StructuredTool
 
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
+from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
+from RxyCode.RxyCode1_1_0.core.tool_search import current_disclosure_context_id
 from RxyCode.RxyCode1_1_0.memory.long_term import validate_session_id
 from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_falsy
 from RxyCode.RxyCode1_1_0.tools.secret_text import redact_secrets
@@ -42,9 +48,12 @@ from RxyCode.RxyCode1_1_0.core.safety.audit import get_audit_logger
 from RxyCode.RxyCode1_1_0.core.safety.policy import (
     RiskLevel,
     TOOL_NAME_ALIASES,
+    BASH_WRITE_BLOCKED_HINT,
     WRITE_PATH_BLOCKED_HINT,
+    apply_mcp_hint,
     canonical_tool_name,
     find_bash_disallowed_write_paths,
+    hard_denied_shell_reason,
     get_tool_risk,
     is_dry_run,
     is_write_allowed,
@@ -106,6 +115,13 @@ _inflight_tools: ContextVar[dict[str, str] | None] = ContextVar(
 )
 _permission_mode_override: ContextVar[str | None] = ContextVar(
     "request_permission_mode",
+    default=None,
+)
+#: The resolved call id of the in-flight execution, bound by the gated
+#: entry points so ``_finish`` can stamp its evidence without threading a
+#: new parameter through every denial/timeout/exception return site.
+_current_call_id: ContextVar[str | None] = ContextVar(
+    "tool_current_call_id",
     default=None,
 )
 
@@ -196,6 +212,38 @@ def _is_generated_spill_line(line: str) -> bool:
     return ext.lower() == ".txt" and len(stem) == 32 and all(char in "0123456789abcdef" for char in stem.lower())
 
 
+def _execution_port_module() -> Any:
+    try:
+        return importlib.import_module("rxycode_core.runtime.execution_port")
+    except ImportError:
+        src = Path(__file__).resolve().parents[1] / "packages" / "rxycode-core" / "src"
+        if src.is_dir() and str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        return importlib.import_module("rxycode_core.runtime.execution_port")
+
+
+_PORT_TOOLS = frozenset({"bash", "read", "edit", "write", "patch"})
+
+
+def _routes_through_port(name: str) -> bool:
+    if name in _PORT_TOOLS:
+        return True
+    port = _execution_port_module().current_execution_port()
+    return port is not None and name in port.specs
+
+
+def _tool_annotations(tool: Any) -> dict[str, Any]:
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, dict):
+        annotations = metadata.get("annotations")
+        if isinstance(annotations, dict):
+            return annotations
+    annotations = getattr(tool, "annotations", None)
+    if isinstance(annotations, dict):
+        return annotations
+    return {}
+
+
 class ToolOrchestrator:
     """Registry and selector for agent tools."""
 
@@ -235,7 +283,13 @@ class ToolOrchestrator:
         # Execution-time name -> tool table (not the ToolRegistry catalog).
         self._bound_tools: dict[str, Any] = {}
         self._risk_overrides: dict[str, Any] = {}
+        self._selection_report: list[dict[str, str]] = []
         self._audit_logger: Any | None = None
+        # call_id -> ToolEvidence, bounded: the caller-facing structured
+        # outcome of each executed call. Consumers (agent loop, drain)
+        # read status/exit_code from HERE instead of re-parsing the
+        # model-facing result text.
+        self._outcome_index: dict[str, ToolEvidence] = {}
         # C2: bounded executor for sync tools so a burst of sync invocations
         # queues instead of spawning unbounded threads.  Bound = explicit
         # positive int > RXYCODE_TOOL_THREADS env (positive int) >
@@ -388,10 +442,11 @@ class ToolOrchestrator:
         journal: Any | None,
         attempt_id: str | None,
         checkpoint_id: str | None = None,
+        remote_call_id: str | None = None,
     ) -> Token:
         """Bind one durable side-effect journal to the current request."""
         binding = (
-            journal.binding(attempt_id, checkpoint_id)
+            journal.binding(attempt_id, checkpoint_id, remote_call_id)
             if journal is not None and attempt_id is not None
             else None
         )
@@ -431,6 +486,18 @@ class ToolOrchestrator:
             sink.append(evidence)
         run_monitor.record_evidence(get_current_run_id(), evidence)
 
+    def call_outcome(self, call_id: str | None) -> ToolEvidence | None:
+        """The recorded execution outcome for one call.
+
+        ``status`` is ``succeeded``/``failed``/``rejected``/``dry_run`` with
+        ``exit_code`` when the tool reported one. ``None`` when the call
+        never reached the finish seam (or the caller did not pass a
+        call id) — consumers must fall back to their own classification
+        rather than assume success."""
+        if not call_id:
+            return None
+        return self._outcome_index.get(str(call_id))
+
     def _get_audit_logger(self):
         if self._audit_logger is None:
             self._audit_logger = get_audit_logger()
@@ -447,6 +514,7 @@ class ToolOrchestrator:
         risk: Any | None = None,
         audit: Any | None = None,
         config: dict | None = None,
+        duration_ms: float | None = None,
     ) -> str:
         text = self._clean_tool_output(result, config)
         evidence = build_tool_evidence(
@@ -456,8 +524,13 @@ class ToolOrchestrator:
             executed=executed,
             approval=approval,
             risk=risk,
+            call_id=_current_call_id.get(),
         )
         self._record_evidence(evidence)
+        if evidence.call_id:
+            self._outcome_index[evidence.call_id] = evidence
+            while len(self._outcome_index) > 4096:
+                self._outcome_index.pop(next(iter(self._outcome_index)))
         artifact_issues = [
             issue
             for issue in deterministic_issues([evidence])
@@ -469,7 +542,18 @@ class ToolOrchestrator:
         if executed and artifact_issues:
             text = f"[evidence failed: {'; '.join(artifact_issues)}]"
         if audit is not None and risk is not None:
-            audit.log(tool=name, risk=risk, args=args, approval=approval, result=text)
+            audit.log(
+                tool=name,
+                risk=risk,
+                args=args,
+                approval=approval,
+                result=text,
+                duration_ms=duration_ms,
+                session_id=str(current_session_id() or ""),
+                context_id=str(current_disclosure_context_id() or ""),
+                outcome=str(getattr(evidence, "status", "") or ""),
+                executed=executed,
+            )
         return text
 
     @staticmethod
@@ -559,23 +643,55 @@ class ToolOrchestrator:
         """Return all registered tools."""
         return dict(self._bound_tools)
 
-    def select_tools(self, hints: list[str]) -> list[Any]:
-        """Select tools matching the given hints.
+    def select_tools(
+        self,
+        hints: list[str],
+        *,
+        target: str | None = None,
+        capabilities: list[str] | None = None,
+        profile: str | None = None,
+        permission: Any | None = None,
+    ) -> list[Any]:
+        """Select tools matching the given hints, then the target capability.
 
-        - No hints -> all registered tools (explicit "use everything").
-        - Hints with matches -> the matched tools.
-        - Hints with NO matches -> only the read-only core subset
-          (READONLY_TOOL_NAMES), so a bad hint never silently grants
-          write/execute tools.
-
-        Matching is case-insensitive substring match on name or description.
+        Profile full does not put every ToolSpec back into the result.
         """
+        chosen = self._match_hints(hints)
+        if (
+            target is None
+            and capabilities is None
+            and profile is None
+            and permission is None
+        ):
+            self._selection_report = []
+            return chosen
+        filter_selection = importlib.import_module(
+            "rxycode_core.tools.capability_catalog"
+        ).filter_selection
+
+        kept, report = filter_selection(
+            chosen,
+            target=target,
+            capabilities=capabilities,
+            profile=profile,
+            permission=permission,
+        )
+        self._selection_report = report
+        return kept
+
+    def selection_report(self) -> list[dict[str, str]]:
+        """Reasons for the latest select_tools call."""
+        return [dict(item) for item in self._selection_report]
+
+    def _match_hints(self, hints: list[str]) -> list[Any]:
+        """Match hints. A bad hint stays inside the read-only core subset."""
         if not hints:
             return list(self._bound_tools.values())
 
         selected = []
         for hint in hints:
             hint_lower = self._canonical_name(hint)
+            self.get(hint_lower)
             for name, tool in self._bound_tools.items():
                 if hint_lower in name.lower():
                     selected.append(tool)
@@ -928,6 +1044,8 @@ class ToolOrchestrator:
         call_id: str | None = None,
     ) -> str:
         """Invoke once, applying the shared deadline and terminal recording."""
+        if call_id:
+            _current_call_id.set(str(call_id))
         timeout = self._tool_timeout_seconds(config, name)
         execution_cfg = (config or {}).get("execution", {})
         try:
@@ -941,6 +1059,11 @@ class ToolOrchestrator:
             )
         except (TypeError, ValueError):
             retry_attempts, retry_wait = 1, 1.0
+
+        started = time.perf_counter()
+
+        def elapsed_ms() -> float:
+            return round((time.perf_counter() - started) * 1000, 3)
 
         journal_binding = self.get_tool_journal_binding()
         journal_call = None
@@ -1007,6 +1130,25 @@ class ToolOrchestrator:
                 )
 
         async def invoke() -> str:
+            port_module = _execution_port_module()
+            dispatch_token = port_module.authorize_native_dispatch()
+            try:
+                return await _invoke_body()
+            finally:
+                port_module.reset_native_dispatch(dispatch_token)
+
+        async def _invoke_body() -> str:
+            if _routes_through_port(name):
+                return await self._invoke_through_port(
+                    name,
+                    args,
+                    _invoke_registered,
+                    config,
+                    tool,
+                )
+            return await _invoke_registered()
+
+        async def _invoke_registered() -> str:
             if getattr(risk, "name", "") == "READ" and retry_attempts > 1:
                 tui = self.get_event_tui()
 
@@ -1060,6 +1202,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
         except asyncio.CancelledError:
             self._finish(
@@ -1071,6 +1214,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
             raise
         except Exception as exc:
@@ -1083,6 +1227,7 @@ class ToolOrchestrator:
                 risk=risk,
                 audit=audit,
                 config=config,
+                duration_ms=elapsed_ms(),
             )
         finished = self._finish(
             name,
@@ -1093,6 +1238,7 @@ class ToolOrchestrator:
             risk=risk,
             audit=audit,
             config=config,
+            duration_ms=elapsed_ms(),
         )
         if journal_call is not None:
             verified = build_tool_evidence(
@@ -1454,6 +1600,7 @@ class ToolOrchestrator:
         safety = (config.get("safety") or {})
         name = self._canonical_name(name)
         canonical = name
+        _current_call_id.set(str(call_id) if call_id else None)
 
         tool = self.get(name)
         if tool is None:
@@ -1478,7 +1625,22 @@ class ToolOrchestrator:
             mode=mode,
             minimum_risk=self._risk_overrides.get(canonical),
         )
-        risk = policy_decision.risk
+        risk = apply_mcp_hint(canonical, policy_decision.risk, _tool_annotations(tool))
+        port = _execution_port_module().current_execution_port()
+        if port is not None:
+            denial = port.capability_denial(canonical, args)
+            if denial:
+                audit = self._get_audit_logger()
+                return self._finish(
+                    name,
+                    args,
+                    denial,
+                    executed=False,
+                    approval="rejected",
+                    risk=risk,
+                    audit=audit,
+                    config=config,
+                )
         if policy_decision.outcome is PolicyOutcome.DENY:
             audit = self._get_audit_logger()
             reason = policy_decision.reason
@@ -1510,6 +1672,20 @@ class ToolOrchestrator:
                 risk=risk, audit=audit, config=config,
             )
 
+        # 系统命令黑名单在审批和 full_auto 之前。safety.enabled=false 也不能放行。
+        if isinstance(args, dict) and self._canonical_name(name) == "bash":
+            denied = hard_denied_shell_reason(str(args.get("command") or ""))
+            if denied:
+                audit = self._get_audit_logger()
+                msg = (
+                    "[blocked: dangerous command rejected] "
+                    f"{denied}。这条命令未执行。"
+                )
+                return self._finish(
+                    name, args, msg, executed=False, approval="rejected",
+                    risk=risk, audit=audit,
+                )
+
         # Plan mode remains a hard capability boundary even when the optional
         # confirmation gate is disabled.
         if mode == "plan" and risk >= RiskLevel.WRITE:
@@ -1537,6 +1713,11 @@ class ToolOrchestrator:
 
         audit = self._get_audit_logger()
 
+        # Set when the bash write-path gate vetoed the command in a
+        # non-Full permission mode — §4 escalates it to a human approval
+        # instead of a hard reject.
+        gate_blocked_paths: list[str] | None = None
+
         # 2. write-path whitelist (only for tools that take a path arg and
         #    can write — i.e. WRITE/DANGER level)
         if risk >= RiskLevel.WRITE and isinstance(args, dict):
@@ -1556,17 +1737,33 @@ class ToolOrchestrator:
             # escape the workspace write whitelist (workspace sandbox gap).
             if self._canonical_name(name) == "bash":
                 cmd = str(args.get("command") or "")
-                blocked_paths = find_bash_disallowed_write_paths(cmd, config)
+                workdir = args.get("workdir")
+                blocked_paths = find_bash_disallowed_write_paths(
+                    cmd, config, workdir=str(workdir) if workdir else None
+                )
                 if blocked_paths:
-                    preview = ", ".join(blocked_paths[:3])
-                    msg = (
-                        "[blocked: bash write path not allowed: "
-                        f"{preview}]"
-                    )
-                    return self._finish(
-                        name, args, msg, executed=False, approval="rejected",
-                        risk=risk, audit=audit,
-                    )
+                    permission = str(
+                        _permission_mode_override.get()
+                        or safety.get("permission_mode")
+                        or "confirm_all"
+                    ).strip().lower()
+                    if permission in {"full", "full_auto"}:
+                        # Full keeps the gate as a hard reject with no
+                        # approval prompt — entering Full was already the
+                        # user's confirmation (post-W7 ruling, track B).
+                        preview = ", ".join(blocked_paths[:3])
+                        msg = (
+                            "[blocked: bash write path not allowed: "
+                            f"{preview}] " + BASH_WRITE_BLOCKED_HINT
+                        )
+                        return self._finish(
+                            name, args, msg, executed=False, approval="rejected",
+                            risk=risk, audit=audit,
+                        )
+                    # Normal modes escalate the block to a human approval;
+                    # an approved command still executes inside the kernel
+                    # sandbox (the gate only decides who may authorize it).
+                    gate_blocked_paths = blocked_paths
 
         # 3. dry-run
         if risk >= RiskLevel.WRITE and is_dry_run(config):
@@ -1578,13 +1775,13 @@ class ToolOrchestrator:
 
         # 4. approval
         approval_state = "auto"
-        canonical = self._canonical_name(name)
         # The approval tier follows the TOOL, not only the command's semantic
         # risk class.  ``bash`` is a shell: a command that merely *looks*
         # read-only ("echo hi", "ls", "pwd", "git status") is still arbitrary
         # code execution, so auto_edit must gate it like any other shell call.
         # Without this, a read-only-looking command bypassed approval entirely
         # while "cat x" / "python -c ..." correctly asked.
+        canonical = self._canonical_name(name)
         shell_tool = canonical == "bash"
         if risk >= RiskLevel.WRITE or shell_tool:
             auto_levels = {str(x).lower() for x in (safety.get("auto_approve") or [])}
@@ -1598,6 +1795,15 @@ class ToolOrchestrator:
                 "write", "edit", "patch", "format", "apply_patch",
                 "str_replace", "create_file", "write_file",
             }
+            if permission_mode in {"full_auto", "full"}:
+                auto_levels.update({"write", "danger"})
+            elif (
+                permission_mode == "auto_edit"
+                and canonical in _AUTO_EDIT_TOOLS
+                and not shell_tool
+            ):
+                auto_levels.add(risk.name.lower())
+
             # The level this call is approved *against*.
             #
             # Two independent requirements meet here:
@@ -1611,20 +1817,12 @@ class ToolOrchestrator:
             approval_level = risk.name.lower()
             if shell_tool and approval_level == "read":
                 approval_level = "write"
-            if permission_mode in {"full_auto", "full"}:
-                auto_levels.update({"write", "danger"})
-            elif (
-                permission_mode == "auto_edit"
-                and canonical in _AUTO_EDIT_TOOLS
-                and not shell_tool
-            ):
-                auto_levels.add(approval_level)
 
-            if approval_source == "explicit_command":
+            if approval_source == "explicit_command" and not gate_blocked_paths:
                 # A literal CLI/API slash command is itself an explicit user
                 # authorization. It still passes policy, dry-run and audit.
                 approval_state = "explicit_command"
-            elif approval_level in auto_levels:
+            elif approval_level in auto_levels and not gate_blocked_paths:
                 approval_state = "auto"
             else:
                 broker = get_approval_broker()
@@ -1658,6 +1856,15 @@ class ToolOrchestrator:
                     args_summary=args,
                     risk=risk,
                     tool_description=tool_description,
+                    # Gate-escalated approval (post-W7 ruling, track B): the
+                    # dialog must name the write targets that tripped the
+                    # write-path gate so the human decides with full context.
+                    gate_blocked_paths=list(gate_blocked_paths or ()),
+                    # Web pause/resume: the durable ask binds this exact
+                    # call — raw args so resume executes THE call that was
+                    # approved, not a summarized truncation of it.
+                    call_id=str(call_id or ""),
+                    arguments=dict(args) if isinstance(args, dict) else None,
                 )
                 decision = await broker.request_approval(req)
                 if decision == ApprovalDecision.REJECTED:
@@ -1740,6 +1947,145 @@ class ToolOrchestrator:
                 return f"[error executing {getattr(tool, 'name', tool)}: {e}]"
         return await self._invoke_in_executor(tool, args)
 
+    async def _invoke_through_port(
+        self,
+        name: str,
+        args: Any,
+        runner: Any,
+        config: dict | None = None,
+        tool: Any = None,
+    ) -> str:
+        """Terminal shell/read/edit calls go through NativeBackend, not around it.
+
+        ``runner`` is the existing retry-aware invocation, so READ retries stay.
+        Local full shell uses the native backend and does not wrap the argv.
+        """
+        port_module = _execution_port_module()
+        port = port_module.current_execution_port() or port_module.default_execution_port()
+        target_id = "local"
+        if isinstance(args, dict):
+            target_id = str(args.get("target") or args.get("target_id") or "local")
+        safety = ((config or {}).get("safety") or {}) if isinstance(config, dict) else {}
+        permission = str(
+            _permission_mode_override.get() or safety.get("permission_mode") or ""
+        ).strip().lower()
+        call = type("PortCall", (), {})()
+        call.name = name
+        call.target_id = target_id
+        call.version = 1
+        production_bash = False
+        if name in {"bash", "shell"}:
+            try:
+                bash_tool = importlib.import_module("tools.bash").bash_tool
+            except ImportError:
+                bash_tool = None
+            production_bash = tool is bash_tool or name == "shell"
+        if (
+            permission in {"full", "full_auto"}
+            and target_id == "local"
+            and production_bash
+        ):
+            command = args.get("command") if isinstance(args, dict) else None
+            if isinstance(command, str) and command.strip():
+                async def native_runner() -> str:
+                    workdir = ""
+                    timeout = 1800
+                    if isinstance(args, dict):
+                        workdir = str(args.get("workdir") or "")
+                        if args.get("timeout") is not None:
+                            try:
+                                timeout = max(1, int(args.get("timeout")))
+                            except (TypeError, ValueError):
+                                timeout = 1800
+                    # CLI statefulness comes first: the managed persistent shell
+                    # keeps variables / cwd / venv across turns.  Web's
+                    # LocalNativeBackend is a one-shot runner, so routing a
+                    # full_auto session straight through the execution port
+                    # silently dropped that state (round-6 audit: three bash
+                    # calls in one session lost ``$e2e``).
+                    #
+                    # Only the CLI path takes it: when a Web execution port is
+                    # explicitly bound (``current_execution_port()``), the port
+                    # owns the contract (native backend formatting, targets) and
+                    # the managed shell must not preempt it.  The backend stays
+                    # the fallback when the managed shell is not eligible.
+                    cli_runtime = port_module.current_execution_port() is None
+                    try:
+                        bash_mod = importlib.import_module("tools.bash")
+                    except ImportError:
+                        bash_mod = None
+                    if (
+                        cli_runtime
+                        and bash_mod is not None
+                        and bash_mod._managed_shell_eligible(command)
+                    ):
+                        managed = await bash_mod._run_managed(command, workdir, timeout)
+                        if managed is not None:
+                            return managed
+
+                    LocalNativeBackend = importlib.import_module(
+                        "rxycode_runner.local.native_backend"
+                    ).LocalNativeBackend
+
+                    backend = LocalNativeBackend(target="local", permission="full")
+                    port.register_local_full(backend)
+                    shell_executor = importlib.import_module("utils.shell").shell_executor
+
+                    try:
+                        cwd = shell_executor.resolved_workdir(workdir)
+                    except ValueError as exc:
+                        return f"[error executing bash: {exc}]"
+                    try:
+                        _format_result = importlib.import_module("tools.bash")._format_result
+                    except ImportError:
+                        _format_result = None
+                    # WEB-W7-C02：与常规执行面同一 argv 构造——full_auto
+                    # 在 Windows 也走 PowerShell，不再退化 create_subprocess_shell。
+                    result = await backend.run_command(
+                        shell_executor.build_argv(command), cwd, timeout=timeout
+                    )
+                    if not result.started:
+                        return "[error executing bash: command did not start]"
+                    stderr = result.stderr or ""
+                    if result.timed_out:
+                        stderr = (
+                            f"{stderr}\n" if stderr else ""
+                        ) + f"[timeout after {timeout}s]"
+                    # W9-H1：与正常 bash 路径同一个 _format_result——成功无输出
+                    # 得 [no output]，失败带 [error executing bash: …]+退出码，
+                    # 大输出走同样的截断/脱敏。unknown capture 字段缺失即取
+                    # _format_result 自己的 falsy 默认，与正常路径一致。
+                    if _format_result is not None:
+                        exit_code = result.exit_code
+                        if not isinstance(exit_code, int):
+                            exit_code = -1
+                        return _format_result(
+                            {
+                                "stdout": result.stdout or "",
+                                "stderr": stderr,
+                                "exit_code": exit_code,
+                                "success": bool(
+                                    not result.timed_out
+                                    and result.exit_code == 0
+                                ),
+                            },
+                            command,
+                        )
+                    if result.timed_out:
+                        return f"[error executing bash: timeout after {timeout}s]"
+                    text = result.stdout or ""
+                    if stderr:
+                        text += ("\n" if text else "") + stderr
+                    if result.exit_code not in (0, None):
+                        body = text or "command failed"
+                        return f"[error executing bash: {body}\n[exit code: {result.exit_code}]]"
+                    return text
+
+                event = await port.backend.ainvoke(call, native_runner)
+                return event.text
+        event = await port.backend.ainvoke(call, runner)
+        return event.text
+
     async def _invoke_in_executor(self, tool: Any, args: Any) -> str:
         """Run a sync tool on the orchestrator's bounded executor (queues when
         saturated instead of spawning unbounded threads).
@@ -1758,7 +2104,7 @@ class ToolOrchestrator:
         if executor is None:
             return "[error: tool executor is shut down]"
         try:
-            future = executor.submit(self._invoke, tool, args)
+            future = executor.submit(contextvars.copy_context().run, self._invoke, tool, args)
         except RuntimeError:
             # Executor was shut down concurrently with the submit.
             return "[error: tool executor is shut down]"
@@ -1791,7 +2137,7 @@ class ToolOrchestrator:
         if executor is None:
             raise RuntimeError("tool executor is shut down")
         try:
-            future = executor.submit(invoke_sync)
+            future = executor.submit(contextvars.copy_context().run, invoke_sync)
         except RuntimeError:
             raise RuntimeError("tool executor is shut down") from None
         return await asyncio.wrap_future(future)

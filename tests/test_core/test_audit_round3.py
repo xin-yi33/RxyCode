@@ -129,13 +129,15 @@ class TestDangerLevelPreserved:
                 "DANGER was downgraded to write and auto-approved"
             )
             # The command must be refused.  Which gate refuses first is
-            # environment-dependent: with an approval broker configured it is
-            # the approval gate ("terminal for the current turn"), while a
-            # workspace-scoped write whitelist may reject the target path
-            # earlier.  Both are safe; the property under test is "not run".
+            # environment-dependent: the hard blacklist rejects shutdown-class
+            # commands before approval, the approval gate answers "terminal for
+            # the current turn" when no broker exists, and a workspace-scoped
+            # write whitelist may reject the target path earlier.  All are
+            # safe; the property under test is "not run".
             lowered = out.lower()
             assert (
-                "terminal for the current turn" in out
+                "dangerous command rejected" in out
+                or "terminal for the current turn" in out
                 or "write path not allowed" in out
                 or "whitelist" in lowered
                 or "denied" in lowered
@@ -342,8 +344,15 @@ class TestSingleEditEntry:
         )
         names = set(registry.get_names())
         assert "edit" in names
-        assert "write" not in names, "standalone write must not be model-facing"
-        assert "patch" not in names, "standalone patch must not be model-facing"
+        # write/patch exist only as compatibility ALIASES of edit (the 37b22e88
+        # contract): resolving the alias must yield the one unified tool, and no
+        # standalone schema is registered for them.
+        assert registry.get("write") is registry.get("edit"), (
+            "standalone write must not be model-facing"
+        )
+        assert registry.get("patch") is registry.get("edit"), (
+            "standalone patch must not be model-facing"
+        )
 
     async def test_edit_tool_accepts_three_operations(self):
         from RxyCode.RxyCode1_1_0.tools.edit import edit_tool

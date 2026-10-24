@@ -377,7 +377,7 @@ class TestEditDiagnosticsCoverage:
             recorded.append((Path(path).name, operation))
             return "\n[diag: ok]"
 
-        monkeypatch.setattr(write_mod, "post_write_report", fake_report)
+        monkeypatch.setattr(write_mod, "post_write_report_async", fake_report)
 
         files = {}
         for name in ("replace.py", "write.py", "patch.py"):
@@ -412,7 +412,7 @@ class TestEditDiagnosticsCoverage:
             called.append(str(path))
             return ""
 
-        monkeypatch.setattr(write_mod, "post_write_report", fake_report)
+        monkeypatch.setattr(write_mod, "post_write_report_async", fake_report)
 
         result = await edit_mod._attach_diagnostics(
             "[error editing file: oldString not found]", str(tmp_path / "nope.py")

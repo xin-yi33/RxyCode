@@ -346,15 +346,88 @@ def executable_config_present(root: Path) -> Path | None:
     return None
 
 
+#: Config files that are DATA (not executable) but can still import code
+#: through ``extends``.
+_DATA_CONFIG_NAMES = (
+    ".eslintrc.json",
+    ".eslintrc",
+    ".eslintrc.yaml",
+    ".eslintrc.yml",
+)
+
+#: Suffixes that mean "loading this file runs code".
+_EXECUTABLE_CONFIG_SUFFIXES = frozenset({".js", ".cjs", ".mjs", ".ts", ".mts", ".cts"})
+
+_ESLINT_CONFIG_CHAIN_MAX_DEPTH = 8
+
+
+def _resolve_eslint_extends(config_path: Path, spec: str) -> Path | None:
+    """Resolve a relative ``extends`` entry to a file, or ``None``."""
+    candidate = Path(spec)
+    base = candidate if candidate.is_absolute() else config_path.parent / candidate
+    options = [base]
+    if base.suffix == "":
+        for suffix in (".js", ".cjs", ".mjs", ".json"):
+            options.append(base.with_name(base.name + suffix))
+    options.extend([base / "index.js", base / "index.cjs"])
+    for option in options:
+        if option.is_file():
+            return option
+    return None
+
+
+def _eslint_config_may_execute(config_path: Path, _depth: int = 0) -> bool:
+    """True when this ESLint config can end up loading executable code.
+
+    Audit P1 (round 5): a JSON config is not automatically safe -- its
+    ``extends`` can point at a project file (``./payload.cjs``) that ESLint will
+    ``require``.  Relative/absolute ``extends`` targets are resolved and
+    inspected recursively; an unresolvable one is treated as executable
+    ("cannot prove safe -> require trust").  Package extends and the built-in
+    ``eslint:``/``plugin:`` presets are dependency code, not project code.
+    """
+    suffix = config_path.suffix.lower()
+    if suffix in _EXECUTABLE_CONFIG_SUFFIXES:
+        return True
+    if _depth > _ESLINT_CONFIG_CHAIN_MAX_DEPTH:
+        return True
+    payload = _parse_jsonc_file(config_path) if suffix in {"", ".json"} else None
+    if payload is None:
+        # YAML / unparsable: cannot prove the extends chain is data-only.
+        return True
+    if config_path.name == "package.json":
+        payload = payload.get("eslintConfig")
+        if not isinstance(payload, dict):
+            return False
+    extends = payload.get("extends")
+    specs = extends if isinstance(extends, list) else ([extends] if extends else [])
+    for spec in specs:
+        text = str(spec).strip()
+        if not text:
+            continue
+        if text.startswith(("eslint:", "plugin:")):
+            continue
+        if not (text.startswith(".") or Path(text).is_absolute()):
+            continue
+        resolved = _resolve_eslint_extends(config_path, text)
+        if resolved is None:
+            return True
+        if _eslint_config_may_execute(resolved, _depth + 1):
+            return True
+    return False
+
+
 def find_executable_eslint_config(start: Path) -> Path | None:
-    """Find the executable ESLint config that would ACTUALLY be resolved.
+    """Find the ESLint config that would ACTUALLY be resolved and may run code.
 
     Audit P1 (round 5): checking only ``node_root`` misses the real resolution
     chain.  ESLint walks up from the working directory -- a nested package
     without its own config inherits the parent directory's
-    ``eslint.config.js`` and executes that JavaScript.  Report the nearest
-    executable config found on the way up (data-only configs such as
-    ``.eslintrc.json`` are safe and do not hide a parent executable one).
+    ``eslint.config.js`` and executes that JavaScript.
+
+    Data configs are not automatically safe either: ``.eslintrc.json`` can
+    ``extends`` a project ``.cjs`` file, which ESLint will execute.  This walk
+    therefore returns the nearest config whose EFFECTIVE chain may load code.
     """
     try:
         current = start.resolve()
@@ -364,9 +437,17 @@ def find_executable_eslint_config(start: Path) -> Path | None:
     while True:
         if current not in seen:
             seen.add(current)
-            found = executable_config_present(current)
-            if found is not None:
-                return found
+            for name in _EXECUTABLE_CONFIG_NAMES:
+                candidate = current / name
+                if candidate.is_file() and _eslint_config_may_execute(candidate):
+                    return candidate
+            for name in _DATA_CONFIG_NAMES:
+                candidate = current / name
+                if candidate.is_file() and _eslint_config_may_execute(candidate):
+                    return candidate
+            package_json = current / "package.json"
+            if package_json.is_file() and _eslint_config_may_execute(package_json):
+                return package_json
         parent = current.parent
         if parent == current:
             return None

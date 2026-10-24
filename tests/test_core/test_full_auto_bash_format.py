@@ -28,13 +28,27 @@ _CFG = {"safety": {"enabled": True, "permission_mode": "full_auto", "auto_approv
 
 @pytest.fixture
 def queued_results(monkeypatch: pytest.MonkeyPatch):
-    """Mock only the OS boundary: run_command returns queued NativeResults."""
+    """Mock only the OS boundary: run_command returns queued NativeResults.
+
+    A Web execution port is also bound for the duration.  A *bound* port is
+    what distinguishes the Web runtime (native-backend contract, covered here)
+    from the CLI runtime (managed persistent shell, covered by
+    ``test_bash_e2e_chains``); without it the orchestrator would correctly
+    prefer the CLI shell and never call ``run_command`` at all.
+    """
+    from rxycode_core.runtime import execution_port as port_module
+
     queue: list[NativeResult] = []
 
     async def fake_run(self, argv, cwd, *, timeout=1800):
         return queue.pop(0)
 
     monkeypatch.setattr(LocalNativeBackend, "run_command", fake_run)
+    monkeypatch.setattr(
+        port_module,
+        "current_execution_port",
+        lambda: port_module.default_execution_port(),
+    )
     return queue
 
 

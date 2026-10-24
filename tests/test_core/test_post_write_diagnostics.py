@@ -183,14 +183,16 @@ class TestWriteAndEditShareOnePath:
         from RxyCode.RxyCode1_1_0.tools import write as write_mod
 
         calls = []
-        real = write_mod.post_write_report
+        real = write_mod.post_write_report_async
 
         async def counting(path, content, *, operation="write"):
             calls.append(operation)
             return await real(path, content, operation=operation)
 
-        monkeypatch.setattr(write_mod, "post_write_report", counting)
-        monkeypatch.setattr(edit_mod, "post_write_report", counting, raising=False)
+        monkeypatch.setattr(write_mod, "post_write_report_async", counting)
+        monkeypatch.setattr(
+            edit_mod, "post_write_report_async", counting, raising=False
+        )
 
         target = ws_dir / "once.py"
         await write_mod.write_file_async(str(target), "x = 1\n")

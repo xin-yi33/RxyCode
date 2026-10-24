@@ -38,6 +38,10 @@ def isolated_shell(tmp_path, monkeypatch):
                 "sandbox_mode": "host",
                 "max_memory_mb": 0,
                 "max_processes": 0,
+                # Track C enables the kernel sandbox by permission mode when
+                # this is omitted; this suite measures the raw capture contract,
+                # so pin it off (a restricted-token launch adds its own stderr).
+                "os_sandbox": {"enabled": False},
             }
         },
     )

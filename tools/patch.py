@@ -53,7 +53,7 @@ async def run_patch_async(filePath: str, diff: str) -> str:
         return result
     # The patch is on disk; check the content that was actually saved through
     # the same entry point write/edit use.
-    from .write import post_write_report
+    from .write import post_write_report_async
 
     p = resolve_session_path(filePath)
     try:
@@ -61,7 +61,7 @@ async def run_patch_async(filePath: str, diff: str) -> str:
     except OSError as exc:
         return result + f"\n[syntax check: unavailable — {type(exc).__name__}]"
     try:
-        return result + await post_write_report(p, content, operation="patch")
+        return result + await post_write_report_async(p, content, operation="patch")
     except Exception as exc:  # diagnostics must never fail the patch
         return result + f"\n[syntax check: unavailable — {type(exc).__name__}]"
 

@@ -210,7 +210,15 @@ def _mask_quoted(text: str) -> str:
             continue
         if quote == '"':
             if char == "\\":
-                i += 2
+                if i + 1 < length and text[i + 1] == '"':
+                    # Escaped quote: both shells agree this does not close.
+                    i += 2
+                    continue
+                # bash treats ``\$`` as an escape; PowerShell does NOT (it uses
+                # a backtick).  Assuming bash here let ``echo "\$(...)"`` pass
+                # as quoted data while PowerShell executed it (round-5 audit),
+                # so keep scanning instead of skipping the next character.
+                i += 1
                 continue
             if char == '"':
                 quote = ""
@@ -264,6 +272,92 @@ _EXECUTABLE_CONSTRUCTS = (
 )
 
 
+def _split_command_segments(command: str) -> list[str]:
+    """Split on command separators that are NOT inside quotes.
+
+    Returns the ORIGINAL text of each segment (quotes preserved).  The masked
+    form is lossy by design, so the argument check must look at the real text:
+    ``git diff "--output=stolen.txt" a b`` masks the whole option into ``Q``
+    and a masked-only check cannot see the dangerous argument (round-5 audit).
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote = ""
+    i = 0
+    length = len(command)
+    while i < length:
+        char = command[i]
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = ""
+            i += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+            i += 1
+            continue
+        if char in ";&|\n\r":
+            segments.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(char)
+        i += 1
+    segments.append("".join(current))
+    return [segment.strip() for segment in segments if segment.strip()]
+
+
+def _real_tokens(segment: str) -> list[str]:
+    """Whitespace tokens of one segment with quotes removed, content kept.
+
+    Used for the argument check so a quoted option is still visible with its
+    real value (``--output=stolen.txt``), not as a placeholder.
+    """
+    tokens: list[str] = []
+    current: list[str] = []
+    quote = ""
+    i = 0
+    length = len(segment)
+    while i < length:
+        char = segment[i]
+        if quote == "'":
+            if char == "'":
+                quote = ""
+            else:
+                current.append(char)
+            i += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = ""
+            elif char == "`" and i + 1 < length:
+                current.append(char)
+                current.append(segment[i + 1])
+                i += 2
+                continue
+            else:
+                current.append(char)
+            i += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            i += 1
+            continue
+        if char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+            i += 1
+            continue
+        current.append(char)
+        i += 1
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
 def is_read_only_command(command: str) -> bool:
     """Check whether a bash command is whitelisted as read-only.
 
@@ -275,37 +369,35 @@ def is_read_only_command(command: str) -> bool:
     segment that executes arbitrary code.
 
     Rules, checked in order:
-      * quoted spans are masked -- single quotes are literal, double quotes
-        keep their interpolating ``$(``/backtick constructs visible
+      * segments are split with quote awareness (a ``|`` inside quotes is data)
+      * quoted spans are masked for the construct check -- single quotes are
+        literal, double quotes keep their interpolating ``$(``/backtick
+        constructs visible (both shells execute those)
       * any unquoted executable construct (``( ) [ ] { } $ ` :: @ > <``) is
         refused -- if read-only cannot be *proven*, it is not read-only
-      * every ``&&``/``||``/``;``/``&``/``|``/newline segment must match the
-        whitelist as a whole-token prefix
-      * the arguments of each segment must not write a file or run a program
-        (``git diff --output=...``, ``find -delete``, ``env cmd`` ...)
+      * every segment must match the whitelist as a whole-token prefix
+      * the REAL arguments of each segment (quotes removed, values kept) must
+        not write a file or run a program (``git diff --output=...``,
+        ``find -delete``, ``env cmd`` ...)
     """
     cmd = command.strip()
     if not cmd:
         return False
     # ``2>``/``2>&1`` stderr-only redirection is a legitimate probe.
     normalized = re.sub(r"\d?>&\d|\d?>\s*/dev/null", " ", cmd)
-    masked = _mask_quoted(normalized)
-    if any(token in masked for token in _EXECUTABLE_CONSTRUCTS):
-        return False
-    # Newlines are command separators too: "echo hi\nrm -rf x" is two commands.
-    segments = [
-        segment.strip() for segment in re.split(r"&&|\|\||[;&|\n\r]", masked)
-    ]
-    segments = [segment for segment in segments if segment]
+    segments = _split_command_segments(normalized)
     if not segments:
         return False
     for segment in segments:
+        masked = _mask_quoted(segment)
+        if any(token in masked for token in _EXECUTABLE_CONSTRUCTS):
+            return False
         if not any(
-            segment == prefix or segment.startswith(prefix + " ")
+            masked == prefix or masked.startswith(prefix + " ")
             for prefix in _READ_ONLY_COMMANDS
         ):
             return False
-        if _arguments_execute_or_write(segment.split()):
+        if _arguments_execute_or_write(_real_tokens(segment)):
             return False
     return True
 
