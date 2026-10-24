@@ -340,12 +340,16 @@
   `timeout+5` 协议、原 hard timeout 与用户取消清树不变；撤回 oneshot 180s
   idle 机械杀，不新增长墙钟或重启额度。2026-10-24 保护注释已写入
   `utils/shell.py` 与 protocol contract。
-- **验证**：`python -m pytest tests/test_execution/test_shell_timeout_watchdog_parity.py
-  tests/test_core/test_bash_watchdog.py tests/test_core/test_lazy_import_budget.py -q`
-  → **18 passed**；邻近 managed/persistent/timeout/tool-contract/lost-evidence
-  targeted 回归通过；独立 Quality 的同两文件 fresh 运行 → **15 passed / 12.38s**。
-  Ruff focused 通过，P7 `180/181` 未抬阈值。未做全量套件、未改 Build/TTFT、
-  未提交/推送/部署。
+- **验证**：最终 focused gate
+  `python -m pytest tests/test_execution/test_shell_timeout_watchdog_parity.py
+  tests/test_core/test_bash_watchdog.py tests/test_core/test_lazy_import_budget.py
+  tests/test_core/test_shell_lost_evidence.py -q` → **34 passed / 17.95s**。
+  独立 acceptance **4 passed**，其中真实默认 5 秒 probe 经
+  `ProtocolTui → worker projection → Web reducer` 链路通过；独立 fresh
+  parity/watchdog **15 passed / 12.38s**。Ruff、Web/protocol-client typecheck
+  通过，P7 `180/181` 未抬阈值。
+- **边界**：真实付费 provider 的持久运行未测；未做全仓全量套件，不改
+  Build/TTFT。本条为开发验证结果、不等于发版；版本号不变。
 
 ### Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
 
