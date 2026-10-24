@@ -863,3 +863,9 @@
 - 回归覆盖：`tests/test_core/test_session.py` 保留旧 `[error: ... Detail: boom]` 输入并与新 evidence-failure 参数化；新增 `tests/acceptance/test_session_terminal_truth.py` 覆盖显式失败、legacy stream-only 空答案、正常成功及 cancel/timeout 不变，同时断言已显示的 `MessageDelta`、`ToolBegin`/`ToolEnd` 不被终态错误抹除。Windows fresh 结果：两文件 `31 passed`，ruff 绿。
 - 第二次真实 225 秒诊断仍使用本人 BYOK `opencode-go / deepseek-flash`，由模型自行分类，未手塞合同。初始合同为 `read_only` 且 `required_checks=[]`；模型按既有 question 流程请求重建开发合同，用户批准后 classifier 返回 `classifier did not return JSON`，同一 `bash` 再次在执行前被拒。全程无子进程启动、无开始/结束标记、无退出码、无 180 秒后 probe；因此仍不能把 225 秒 liveness 计为 PASS。
 - 该次 run 的 API 终态仍标成 `succeeded`，而 SSE 最终文本明确写“命令未能执行”；这由当时运行中的旧 Session 镜像复现了上述误升级，本地修复尚未部署，不能用它证明线上已修复。旧 CI `40107843139`（`2d421314`）已完成且 6 lane 全绿；本 Session 修复尚待一次新普通 push 触发的新 CI，不升版本、不发 tag/release。
+
+### 审批恢复路径的判活接缝（2026-10-25）
+
+- 真实 Web 脚本验收 `run 2bc15f50...` 经用户批准后执行 `python liveness_225.py`，脚本自然结束、`EXIT_CODE=0`、BEGIN/END 间隔 225.0007s，但 SSE 没有 `process.liveness`。源码追踪确认 confirm 审批恢复在正式 Agent 组装前调用 `_prepare_resume -> _execute_approved_call`，裸 `ToolOrchestrator` 没有当前会话 `_liveness_judge`，也未绑定请求级 `ProtocolTui`；因此不能把“无事件”解释成“未采样”。
+- 最小修复将 approved call 推迟到 `assemble_surface_agent` 与 usage wrapper 建立之后，显式注入该 Agent 的既有 `_liveness_judge` 和同一 `ProtocolTui`，用完恢复 ContextVar。approval 安全门、journal reserve→execute→complete、原 checkpoint 续写、预算与续期 ledger 均未改。
+- 离线真实 resume 路径使用加速 checkpoint 验证实际 `_execute_approved_call -> bash -> run_process_probe`：probe 到达同一 TUI，reporter 收到注入 judge 的 `continue`；修复前同路径捕获为 `judge=None/TUI=None`。本项为代码与离线验证结果，尚不代表生产 r4 已完成真实 180 秒判活验收。

@@ -5344,6 +5344,8 @@ async def _prepare_resume(
     run_id: str,
     tenant_id: str,
     workdir: Path,
+    liveness_judge: Any | None = None,
+    event_tui: Any | None = None,
 ) -> dict[str, Any]:
     """Resolve the resume input of a parked turn, through parent-owned state.
 
@@ -5392,7 +5394,12 @@ async def _prepare_resume(
     journal = _ChannelJournal(channel)
     try:
         _ok, text_out, outcome = await _execute_approved_call(
-            record, workdir, emit, journal
+            record,
+            workdir,
+            emit,
+            journal,
+            liveness_judge=liveness_judge,
+            event_tui=event_tui,
         )
     except RuntimeError as exc:
         raise _ResumeSettled("recovery_required", str(exc)[:1500]) from exc
@@ -5449,7 +5456,13 @@ async def _park_for_human(channel: Any, pause: Any, workdir: Path) -> str:
 
 
 async def _execute_approved_call(
-    record: dict[str, Any], workdir: Path, emit: Any, journal: Any
+    record: dict[str, Any],
+    workdir: Path,
+    emit: Any,
+    journal: Any,
+    *,
+    liveness_judge: Any | None = None,
+    event_tui: Any | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """Execute the stored call through the SAME ToolOrchestrator every
     surface uses — blacklist, write-path gate and audit intact; approval
@@ -5470,6 +5483,7 @@ async def _execute_approved_call(
     from RxyCode.RxyCode1_1_0.core.safety.approval import (
         ApprovalBroker,
         ApprovalDecision,
+        get_approval_broker,
         set_approval_broker,
     )
     from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import (
@@ -5486,7 +5500,7 @@ async def _execute_approved_call(
             return ApprovalDecision.APPROVED
 
     registry = ToolRegistry()
-    orchestrator = ToolOrchestrator()
+    orchestrator = ToolOrchestrator(liveness_judge=liveness_judge)
     # Mirror the ORIGINAL turn's tool surface or qualified names resolve
     # differently on replay (audit W8-r3): `task` is the subagent dispatch
     # only when the manager flag was on, and approved MCP calls must find
@@ -5587,7 +5601,13 @@ async def _execute_approved_call(
             },
             "execution": {"workspace_root": str(workdir)},
         }
+        previous_approval_broker = get_approval_broker()
         set_approval_broker(_GrantBroker())
+        event_tui_token = (
+            ToolOrchestrator.bind_event_tui(event_tui)
+            if event_tui is not None
+            else None
+        )
         try:
             output = await orchestrator.execute_tool(
                 tool,
@@ -5596,7 +5616,9 @@ async def _execute_approved_call(
                 call_id=call_id,
             )
         finally:
-            set_approval_broker(None)
+            if event_tui_token is not None:
+                ToolOrchestrator.reset_event_tui(event_tui_token)
+            set_approval_broker(previous_approval_broker)
     finally:
         # MCP stdio servers are confined-child processes too — disconnect
         # every client so no server outlives the replayed call.
@@ -5813,14 +5835,7 @@ async def run_sandboxed_turn() -> int:
         )
         context_tokens = bind_prompt_context(session_id, tui, run_context=run_context)
         bind_worker_todo_sink(emit)
-        if os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1":
-            # The parked turn continues from its own checkpoint: the approved
-            # call (or the answer) becomes the tool result the ORIGINAL loop
-            # receives. The original prompt is restored from the checkpoint.
-            harness_resume = await _prepare_resume(
-                channel=channel, run_id=run_id, tenant_id=tenant_id, workdir=workdir
-            )
-            message = str(harness_resume["checkpoint"].get("user_input") or message)
+        resume_requested = os.environ.get("RXYCODE_TURN_RESUME", "").strip() == "1"
 
         # Imports stay inside the executed run: module import of this file
         # must not drag the whole agent stack into a bare --help process.
@@ -5921,6 +5936,30 @@ async def run_sandboxed_turn() -> int:
             workspace_root=workdir,
             emit=emit,
         )
+        if resume_requested:
+            # 2026-10-25 user constraint: approval resume must never bypass the
+            # five-second observer, current-session LLM liveness judgment, or
+            # user feedback. Execute only after Agent assembly so this call can
+            # reuse that Agent's BYOK-backed judge and request-local ProtocolTui.
+            # Keep the existing approval gate and journal reserve -> execute ->
+            # complete order; do not change it without an approved regression.
+            session_token = bind_session(session_id)
+            try:
+                try:
+                    set_working_directory(workdir)
+                except OSError:
+                    set_working_directory(workdir, persist=False)
+                harness_resume = await _prepare_resume(
+                    channel=channel,
+                    run_id=run_id,
+                    tenant_id=tenant_id,
+                    workdir=workdir,
+                    liveness_judge=getattr(agent, "_liveness_judge", None),
+                    event_tui=tui,
+                )
+            finally:
+                reset_session_binding(session_token)
+            message = str(harness_resume["checkpoint"].get("user_input") or message)
 
         runtime = AgentRuntime(
             EventBus(AppendOnlyLog()),

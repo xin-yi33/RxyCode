@@ -151,6 +151,13 @@ fresh process).
 - The retired one-shot 180s idle kill is removed. Only an explicit LLM `stop`
   cancels the current command; the original hard timeout and user cancellation
   retain their existing cleanup paths.
+- **Approval-resume parity (2026-10-25):** Web approval-resume executes an
+  approved tool only after `assemble_surface_agent`; the replay injects that
+  Agent's existing `_liveness_judge` and the request-local `ProtocolTui` into
+  the approval `ToolOrchestrator`. This keeps the same 5-second CPU/IO observer,
+  current-model judgment, additive progress feedback, journal
+  reserve -> execute -> complete order, and checkpoint continuation as a normal
+  turn. A bare pre-Agent orchestrator must not be reintroduced.
 
 ### Post-write diagnostics (`core/post_write_diagnostics.py`, 2026-10-23)
 

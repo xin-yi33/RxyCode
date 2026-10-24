@@ -2286,6 +2286,131 @@ def test_w8_c01_execute_approved_call_error_outcome(tmp_path: Path) -> None:
     # Journal-reused results carry text only — no structured outcome.
     assert outcome2 is None
 
+
+def test_w8_c01_execute_approved_call_binds_resume_liveness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approval replay must use the assembled Agent's liveness context.
+
+    The Web approval-resume path used to execute before AgentV2 existed and
+    constructed a bare ToolOrchestrator. That dropped both the session LLM
+    judge and the request-local TUI, so any process probe became an invisible
+    unknown. Keep this seam explicit without adding another execution loop.
+    """
+    import rxycode_worker.drain as drain
+    from RxyCode.RxyCode1_1_0.execution.tool_journal import (
+        RemoteJournalAdapter,
+        ToolExecutionJournal,
+    )
+    from RxyCode.RxyCode1_1_0.execution.tool_orchestrator import ToolOrchestrator
+    from RxyCode.RxyCode1_1_0.core.safety.approval import (
+        ApprovalBroker,
+        ApprovalDecision,
+        ApprovalRequest,
+        get_approval_broker,
+        set_approval_broker,
+    )
+    from RxyCode.RxyCode1_1_0.core.safety.policy import RiskLevel
+
+    captured: dict[str, object] = {}
+    judge = object()
+    event_tui = object()
+    asked: list[str] = []
+    fail_execution = False
+
+    class _PreviousBroker(ApprovalBroker):
+        async def _ask(self, request: ApprovalRequest) -> ApprovalDecision:
+            asked.append(request.tool_name)
+            return ApprovalDecision.APPROVED
+
+    previous_broker = _PreviousBroker()
+
+    async def execute_tool(self, *_args, **_kwargs):
+        captured["judge"] = self._liveness_judge
+        captured["event_tui"] = self.get_event_tui()
+        if fail_execution:
+            raise RuntimeError("candidate execute failed")
+        return "resumed ok"
+
+    monkeypatch.setattr(ToolOrchestrator, "execute_tool", execute_tool)
+    record = {
+        "tool": "bash",
+        "call_id": "call_" + "6" * 32,
+        "attempt_id": "att_" + "6" * 32,
+        "arguments": {"command": "echo resumed", "timeout": 2},
+    }
+    journal = RemoteJournalAdapter(ToolExecutionJournal(str(tmp_path / "journal")))
+
+    class _Emit:
+        def _append(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    set_approval_broker(previous_broker)
+    try:
+        ok, text, outcome = asyncio.run(
+            drain._execute_approved_call(
+                record,
+                tmp_path,
+                _Emit(),
+                journal,
+                liveness_judge=judge,
+                event_tui=event_tui,
+            )
+        )
+        restored_broker = get_approval_broker()
+    finally:
+        set_approval_broker(None)
+
+    assert ok is True
+    assert text == "resumed ok"
+    assert outcome is None  # patched execute_tool bypassed the outcome ledger
+    assert captured == {"judge": judge, "event_tui": event_tui}
+    assert restored_broker is previous_broker
+
+    # The resumed Agent's next mutating call must still reach the existing
+    # approval transport (and therefore be able to park), not a leaked grant.
+    decision = asyncio.run(
+        restored_broker.request_approval(
+            ApprovalRequest(
+                tool_name="write",
+                args_summary={"path": "next.txt"},
+                risk=RiskLevel.WRITE,
+            )
+        )
+    )
+    assert decision is ApprovalDecision.APPROVED
+    assert asked == ["write"]
+
+    # Exceptions and cancellation take the same finally path.
+    fail_execution = True
+    second_record = {
+        **record,
+        "call_id": "call_" + "5" * 32,
+        "attempt_id": "att_" + "5" * 32,
+    }
+    second_journal = RemoteJournalAdapter(
+        ToolExecutionJournal(str(tmp_path / "journal-second"))
+    )
+    set_approval_broker(previous_broker)
+    try:
+        with pytest.raises(RuntimeError, match="candidate execute failed"):
+            asyncio.run(
+                drain._execute_approved_call(
+                    second_record,
+                    tmp_path,
+                    _Emit(),
+                    second_journal,
+                    liveness_judge=judge,
+                    event_tui=event_tui,
+                )
+            )
+        restored_after_error = get_approval_broker()
+    finally:
+        set_approval_broker(None)
+    assert restored_after_error is previous_broker
+
+
 def test_w8_c01_call_outcome_is_recorded_structurally() -> None:
     """``execute_tool`` stamps the real verdict (status/executed) on the
     outcome index keyed by call_id — the loop consumes THAT record rather

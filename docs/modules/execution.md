@@ -123,6 +123,17 @@ the stable identity is tool + argument digest + identical-call ordinal. If a
 replanned request materially changes the tool or arguments, it is treated as a
 new logical operation.
 
+### Approval-resume liveness context
+
+Web approval resumes execute the stored call only after `assemble_surface_agent`.
+The resumed call receives the assembled Agent's existing `_liveness_judge` and
+the request-local `ProtocolTui`; the approval `ToolOrchestrator` binds that TUI
+for the duration of the call and restores the previous context afterward. This
+keeps approval replay on the same shell observer, BYOK-backed liveness judgment,
+typed progress feedback, and journal reserve -> execute -> complete path as a
+normal turn. It does not add a provider, schema field, execution loop, or budget
+ledger.
+
 ## Core Code: scheduler.py (execution/scheduler.py)
 
 **Purpose:** Deterministic DAG task scheduler used by the parallel executor — no
