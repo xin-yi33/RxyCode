@@ -351,9 +351,12 @@ def test_w9_b1_rate_limit(postgres_url: str, monkeypatch: pytest.MonkeyPatch):
     ]
     assert codes[:10] == [401] * 10
     assert codes[10] == 429
-    # per-email cap is 5/min on /auth/register
+    # per-email cap is 5/min on /auth/register; unique email — a leftover row
+    # from an earlier test in the shared worker DB would short-circuit to
+    # EMAIL_TAKEN (409) before the rate bucket is ever consulted.
+    reg_email = f"same-{uuid.uuid4().hex[:12]}@example.com"
     reg_codes = [
-        _register(client, "same@example.com", "password-123").status_code
+        _register(client, reg_email, "password-123").status_code
         for _ in range(6)
     ]
     assert reg_codes[-1] == 429
