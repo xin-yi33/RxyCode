@@ -14,6 +14,11 @@ import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core";
 import { stripSgrHoverReports } from "../cliRendererOptions.ts";
 import { C } from "../theme.ts";
 import { stringWidth } from "../layout.ts";
+import {
+  fitDisplay,
+  padDisplayEnd,
+  padDisplayStart,
+} from "../lib/displayColumns.ts";
 import { createScrollAcceleration, SCROLLBAR_TRACK } from "../scroll.ts";
 import { CATEGORY_FG, SELECT_BG, SELECT_FG } from "./colors.ts";
 
@@ -183,24 +188,9 @@ export function buildSelectRows<T>(
   return { flat, rows };
 }
 
-function truncateToWidth(text: string, maxW: number): string {
-  if (maxW <= 0) return "";
-  if (stringWidth(text) <= maxW) return text;
-  let out = "";
-  let w = 0;
-  for (const ch of text) {
-    const cw = stringWidth(ch);
-    if (w + cw + 1 > maxW) break;
-    out += ch;
-    w += cw;
-  }
-  return out + "…";
-}
-
+/** Display-cell helpers live in lib/displayColumns.ts (CJK-safe, shared). */
 function padEndWidth(text: string, width: number): string {
-  const w = stringWidth(text);
-  if (w >= width) return truncateToWidth(text, width);
-  return text + " ".repeat(width - w);
+  return padDisplayEnd(fitDisplay(text, width), width);
 }
 
 function RowShell({
@@ -225,7 +215,7 @@ function RowShell({
         width: "100%",
         height: 1,
         flexShrink: 0,
-        backgroundColor: bg || C.bg,
+        backgroundColor: bg || C.panel,
       }}
       onMouseDown={onMouseDown}
       onMouseOver={onMouseOver}
@@ -249,6 +239,7 @@ export function DialogSelect<T>({
   showSearch = true,
   footerHint,
   footerHintItems,
+  footerAlign = "start",
   multi = false,
   defaultSelectedIds,
   onConfirm,
@@ -265,6 +256,8 @@ export function DialogSelect<T>({
   showSearch?: boolean;
   footerHint?: string;
   footerHintItems?: Array<{ label: string; keys: string }>;
+  /** Right column alignment for option footers (age labels / counts stay on the cell grid). */
+  footerAlign?: "start" | "end";
   multi?: boolean;
   defaultSelectedIds?: string[];
   onConfirm?: (selectedIds: string[], meta: { highlightedId: string }) => void;
@@ -551,7 +544,7 @@ export function DialogSelect<T>({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.bg,
+        backgroundColor: C.panel,
       }}
       onMouseMove={() => {
         if (inputMode === "mouse") return;
@@ -594,10 +587,10 @@ export function DialogSelect<T>({
             height: listHeight,
             maxHeight: mv,
             border: false,
-            backgroundColor: C.bg,
+            backgroundColor: C.panel,
           },
-          viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
-          contentOptions: { backgroundColor: C.bg },
+          viewportOptions: { flexGrow: 1, backgroundColor: C.panel },
+          contentOptions: { backgroundColor: C.panel },
           verticalScrollbarOptions: {
             showArrows: false,
             trackOptions: {
@@ -633,7 +626,13 @@ export function DialogSelect<T>({
                 : "   ";
           const namePart = padEndWidth(prefix + row.option.title, nameCol);
           const right = row.option.footer || row.option.description || "";
-          const descPart = padEndWidth(right, Math.max(0, innerW - nameCol));
+          const rightWidth = Math.max(0, innerW - nameCol);
+          const fittedRight = fitDisplay(right, rightWidth);
+          // Numeric / relative-time footers (session age labels) right-align on
+          // the display-cell grid; descriptive footers stay left-aligned.
+          const descPart = footerAlign === "end"
+            ? padDisplayStart(fittedRight, rightWidth)
+            : padDisplayEnd(fittedRight, rightWidth);
 
           return (
             <RowShell

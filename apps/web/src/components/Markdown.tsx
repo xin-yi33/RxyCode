@@ -1,50 +1,42 @@
-import { useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type AnimationEvent as ReactAnimationEvent,
+} from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Components } from "react-markdown"
+import type { Pluggable, PluggableList } from "unified"
 
-import { IconCheck, IconCopy } from "./icons"
+import { CopyButton } from "./CopyButton"
+import {
+  createStreamRevealPlugin,
+  graphemeBoundaryAtOrAfter,
+  mountRevealFrom,
+} from "./streamReveal"
 
-// 代码块：复制按钮 + 横向可滚动。复制文本取自渲染后的 <pre>。
+// 代码块：共享 CopyButton（UI-07 反馈契约）+ 横向可滚动。复制文本取自渲染后的
+// <pre>，按钮仍由 group-hover / focus-within 显露，图标盒尺寸固定不跳。
 function CodeBlock({ children }: { children?: React.ReactNode }) {
   const ref = useRef<HTMLPreElement>(null)
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    const text = ref.current?.textContent ?? ""
-    const done = () => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    }
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => undefined)
-    } else {
-      const area = document.createElement("textarea")
-      area.value = text
-      document.body.appendChild(area)
-      area.select()
-      try {
-        document.execCommand("copy")
-        done()
-      } catch {
-        // 剪贴板不可用 —— 静默失败
-      }
-      document.body.removeChild(area)
-    }
-  }
   return (
     <div className="group relative my-2">
-      <button
-        type="button"
-        onClick={copy}
-        aria-label={copied ? "已复制" : "复制代码"}
+      <span
         className={
-          "absolute right-2 top-2 rounded-md border border-border bg-card " +
-          "p-1.5 text-muted opacity-0 transition-opacity hover:bg-sidebar " +
-          "focus-visible:opacity-100 group-hover:opacity-100"
+          "absolute right-2 top-2 inline-flex opacity-0 transition-opacity " +
+          "group-hover:opacity-100 focus-within:opacity-100"
         }
       >
-        {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-      </button>
+        <CopyButton
+          text={() => ref.current?.textContent ?? ""}
+          ariaLabel="复制代码"
+          size={14}
+          className="rounded-md border border-border bg-card p-1.5 text-muted hover:bg-sidebar"
+        />
+      </span>
       <pre
         ref={ref}
         className="overflow-x-auto rounded-lg bg-sidebar p-3 font-mono text-xs leading-relaxed"
@@ -141,12 +133,149 @@ const components: Components = {
   },
 }
 
+function readReducedMotion(): boolean {
+  if (typeof window === "undefined" || typeof document === "undefined") return false
+  if (document.documentElement.classList.contains("reduced-motion")) return true
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)
+}
+
+/** System / settings reduced-motion signal, kept live while mounted. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState<boolean>(readReducedMotion)
+  useEffect(() => {
+    const query =
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(prefers-reduced-motion: reduce)")
+        : null
+    const sync = () => setReduced(readReducedMotion())
+    sync()
+    query?.addEventListener?.("change", sync)
+    const root = typeof document !== "undefined" ? document.documentElement : null
+    const observer =
+      root && typeof MutationObserver !== "undefined" ? new MutationObserver(sync) : null
+    if (root && observer) {
+      observer.observe(root, { attributes: true, attributeFilter: ["class"] })
+    }
+    return () => {
+      query?.removeEventListener?.("change", sync)
+      observer?.disconnect()
+    }
+  }, [])
+  return reduced
+}
+
+// 动画兜底：万一 animationend 没触发（引擎差异/被取消），也把 span 收成纯文本，
+// 避免 span/定时器长期堆积。正常路径是最后一个 glyph 的 animationend。
+const REVEAL_FALLBACK_MS = 1_600
+
+type RevealState = {
+  text: string
+  from: number
+  animate: boolean
+}
+
+function useStreamReveal(text: string, streaming: boolean, animateAtMount: boolean) {
+  const reduced = useReducedMotion()
+  const animate = streaming && !reduced
+  const hostRef = useRef<HTMLDivElement>(null)
+
+  // 首次挂载：历史文本一律不逐字（from = 全文长度）；只有"到达时就是活的"
+  // 新条目才把首批新增文本做 reveal。
+  const [state, setState] = useState<RevealState>(() => ({
+    text,
+    from: animate && animateAtMount ? mountRevealFrom(text) : text.length,
+    animate,
+  }))
+
+  // prop 变化时派生下一次 reveal 起点（React 允许同组件 render 期间调整 state）：
+  // 只把"之前的文本"当纯文本，之后的增量进入 glyph 动画。
+  if (text !== state.text || animate !== state.animate) {
+    let from = state.from
+    if (!animate) {
+      from = text.length
+    } else if (!state.animate) {
+      from = text.length // 刚转为直播：不重播已显示的历史
+    } else if (text.length > state.text.length && text.startsWith(state.text)) {
+      from = state.text.length // 只动画这次追加的部分
+    } else {
+      from = text.length // 非追加式改写（快照替换等）：不逐字
+    }
+    setState({ text, from, animate })
+  }
+
+  const clampedFrom = animate ? Math.min(state.from, text.length) : text.length
+  const revealFrom = animate
+    ? graphemeBoundaryAtOrAfter(text, clampedFrom)
+    : text.length
+
+  const settle = useCallback(() => {
+    setState((current) =>
+      current.from >= current.text.length
+        ? current
+        : { ...current, from: current.text.length },
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!state.animate || state.from >= state.text.length) return
+    const timer = window.setTimeout(settle, REVEAL_FALLBACK_MS)
+    return () => window.clearTimeout(timer)
+  }, [state, settle])
+
+  const onAnimationEnd = (event: ReactAnimationEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) return
+    if (!target.classList.contains("rxy-stream-glyph")) return
+    const host = hostRef.current
+    if (!host) return
+    for (const glyph of host.querySelectorAll<HTMLElement>(".rxy-stream-glyph")) {
+      const animations =
+        typeof glyph.getAnimations === "function" ? glyph.getAnimations() : []
+      const stillRunning = animations.some(
+        (animation) => animation.playState === "running",
+      )
+      if (stillRunning) return
+    }
+    settle()
+  }
+
+  return { hostRef, revealFrom, onAnimationEnd }
+}
+
 // 助手消息体的唯一 markdown 渲染入口：react-markdown 默认不渲染原始
 // HTML（等价于注入面已消毒），链接再经 linkIsSafe 白名单 + noopener。
-export function Markdown({ text }: { text: string }) {
+// streaming 时只把最新追加的增量文字包成 .rxy-stream-glyph 做 90ms stagger
+// reveal；history / 代码块 / 链接 URL 不逐字，动画结束后恢复纯文本。
+export function Markdown({
+  text,
+  streaming = false,
+  animateAtMount = false,
+}: {
+  text: string
+  streaming?: boolean
+  animateAtMount?: boolean
+}) {
+  const { hostRef, revealFrom, onAnimationEnd } = useStreamReveal(
+    text,
+    streaming,
+    animateAtMount,
+  )
+  const revealActive = revealFrom < text.length
+  const pluggable = useMemo<PluggableList>(() => {
+    if (!revealActive) return [remarkGfm]
+    return [
+      remarkGfm,
+      createStreamRevealPlugin({ text, from: revealFrom }) as unknown as Pluggable,
+    ]
+  }, [revealActive, text, revealFrom])
+
   return (
-    <div className="rxy-md text-sm leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <div
+      ref={hostRef}
+      className="rxy-md text-sm leading-relaxed"
+      onAnimationEnd={onAnimationEnd}
+    >
+      <ReactMarkdown remarkPlugins={pluggable} components={components}>
         {text}
       </ReactMarkdown>
     </div>

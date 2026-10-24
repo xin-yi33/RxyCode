@@ -161,10 +161,19 @@ export function buildEditDiff(name: string | undefined, args: Record<string, unk
   const newText = argStr(args, "newString", "new_string", "new");
   if (oldText || newText) return lineDiff(oldText, newText);
   const written = argStr(args, "content", "contents");
-  if (written && (key.includes("write") || key.includes("create"))) {
+  if (written && (key.includes("write") || key.includes("create") || key === "edit")) {
     return written.split("\n").map((text) => ({ kind: "add" as const, text }));
   }
   return [];
+}
+
+/** The unified edit tool also writes complete files; keep legacy cards readable. */
+export function fileEditVerb(name: string | undefined, args: Record<string, unknown>): "Wrote" | "Edited" {
+  const key = (name || "").toLowerCase();
+  const writePayload = typeof args.content === "string" || typeof args.contents === "string";
+  return key.includes("write") || key.includes("create") || args.operation === "write" ||
+    (key === "edit" && args.operation == null && writePayload)
+    ? "Wrote" : "Edited";
 }
 
 export function groupDiffHunks(

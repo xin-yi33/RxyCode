@@ -244,12 +244,50 @@ isolated Playwright context and makes no auth POST; it checks the public HTTP
 upgrade behavior. Local focused browser runs completed with 24 passed and 3
 WebKit cases skipped because its browser binary is not installed; web typecheck
 passed, and official Caddy `v2.11.7 validate` accepted `Caddyfile.prod` after
-the downloaded release matched its published SHA-512. The anonymous live smoke,
-parent's fresh full-file run, and deployment verification remain pending; those
-results belong in `OPS-LOG.md` only after the parent supplies evidence. The
-brief upstream comparison is in
+the downloaded release matched its published SHA-512. These are historical local
+checks; deployed state is recorded separately below and in `OPS-LOG.md`.
+
+R5 was deployed from the frozen `mobile-compat-20261022-091225-9e85b988`
+snapshot on 2026-10-22 20:32:24 CST; the product version did not change. Public
+anonymous live ALTCHA checks passed 9/9 across real Chromium 148/98/90. Final
+Chromium 98 public UI smoke passed at 320×640 and 667×375, including stable
+dark/restored computed colors matching CSS vars, settled drawer/focus, and login
+readiness; ten anonymous screenshots were updated. RUM POSTs were aborted and
+other business writes were zero. The R5 theme control is the frozen
+`useUi`/`rxy_theme` cookie path, not the later dirty-main preferences WIP. This
+does not establish WebKit, Safari, or physical-device behavior. The concise
+comparison and verification caveats are in
 `docs/deploy/mobile-browser-adaptation-20261022.md`.
 
 ## Web 控制台（UI-2026-10-22 开发包，apps/web）
 
 路由：`/app`（会话）、`/app/p/:projectId`（项目首页）、`/scheduled`（定时任务）、`/settings/:section`（general/appearance/notifications/security/archived/models）、`/plugins`（占位）；`/app/settings?section=x` 旧深链重定向到对应新分区。侧栏三分区：导航（新任务/Ctrl+K 搜索/定时任务）+ 项目 + 会话（置顶与最近分组、⋯ 菜单走 sessions 生命周期 API）；桌面收起为 56px 图标轨。`SearchModal`：250ms 防抖、AbortController、IME 安全、五类搜索与 cursor 分页。外观引擎 `lib/appearance.ts` 把服务端偏好解析为 `<html>` data 属性与 `--rxy-*` 变量；`rxy_theme` cookie 仅作访客回退，无 localStorage。i18n `lib/i18n.tsx`（auto/zh-CN/en），偏好 locale 优先、`rxy_locale` cookie 次之、navigator 兜底。归档会话在 SessionPage 显示只读横幅并隐藏 Composer。安全：thinking 时间线条目为纯进度块，不渲染 reasoning/intermediate 原始文本（`tests/web/w3/test_w3_c03_unit.py` 契约）。后端 API 契约测试在 `tests/web/w10/`（postgres 容器同 w9）。
+
+模型选择器仅消费 `source=byok` 项：平台模型不会从旧 catalog/cache 中显示、选中或作为默认值；旧草稿仍保留原 `model_ref`，若它指向已停止的平台模型则提示配置/重选并阻止提交，不自动改选或发请求。BYOK `model_ref` 原样保存与提交。Composer 选中按钮和菜单项只展示模型名（回退 `model_id`），不展示 provider、分组或重复 ID；搜索仍匹配 provider，菜单项 key 继续使用完整 `model_ref`。模型设置列表同样忽略旧 catalog 中的平台项，不展示平台可用性文案。
+
+BYOK-only enforcement policy（前后端共同约束）：不设超级号/管理员例外；旧 allowlist 或 `enforce=0` 不得恢复平台模型；旧平台默认值必须忽略；worker 若拿到旧 snapshot 或缺少 snapshot 必须拒绝执行。BYOK 密钥加解密、ownership/version 校验与 SSRF 防护保持原实现，不因移除平台路径而放宽或重写。
+
+### BYOK Composer 草稿模型生命周期热修（2026-10-23）
+
+成功提交后 `clearDraft` 只清正文与本次 `requestId`，保留显式 `modelRef`；运行中、终态和路由切换继续使用同一选择。首页 `__new__` 收到服务端 `session_id` 后，仅在目标草稿尚无显式选择时继承本次有效 `modelRef`，不会覆盖目标会话已有选择，也不写全账号默认值。登出仍走 `resetDrafts` 清理私人草稿。选择有效模型时只清除与未选模型关联的陈旧 `BYOK_REQUIRED` 提示；实际模型权限拒绝保持可见。回归覆盖见 `tests/web/w10/test_composer_model_lifecycle.py`。
+
+### 刷新模型恢复与待定状态发送门控（2026-10-23）
+
+已存在会话仅以最新历史 run 的 `model_ref` 恢复选择；若最新引用不可用，提示用户重选，不静默退回更早 run。对已登录用户，在没有有效显式选择且 catalog 尚未返回时，新任务 `/app` 与会话 Composer 均禁用发送，submit/Enter 也执行相同拦截；访客仍优先显示原登录提示。现有会话的历史加载/失败状态独立门控；有效显式 BYOK 选择可继续，不必等待历史。失败时显示恢复失败、重试或手选提示，不把请求失败误报为缺 Key。
+
+上述状态按草稿/会话隔离；发送成功清正文并保留模型，新 session 只继承到尚无显式选择的草稿，登出清空私人草稿。未新增全局默认模型存储、接口或自动挑选策略，BYOK 权限与“仅显示模型名”规则不变。回归包括候选 `e2e/test_model_restore_page.py` 真实浏览器 10/10，及 `tests/web/w10/test_composer_model_lifecycle.py` 2/2。此补丁已静态上线；普通完整 HTML 响应中的 Cloudflare Web Analytics 注入与原始 index Range 字节核验见 `docs/deploy/OPS-LOG.md`。
+
+#### 线上真实 provider 验收补记（2026-10-23）
+
+主审在会话 `28093b300301433497d66789cf9f808a` 实测两轮 `deepseek-flash` BYOK：刷新同会话、不重选模型后 Enter 创建的两条 Run（`aa43aa3a71ba43dcaea72b218c26eb1c`、`8615057e01f0478c855964d738f470a7`）均 succeeded；两次请求保留同一 `model_ref=m_8f193a80f3a84948b7ff3e9974160c5f`。正常退出/重登后重开会话仍自动恢复，无误报 Key 缺失。线上仅验证一个实际可用模型，不把本地多模型 mock 结果当作真实多模型验收。390×844 Chromium 视口无横向溢出且按钮仅显示模型名；未进行 vivo 真机测试。
+
+### 聊天前端打磨与产物归属（UI-01～09 + 产物列表，2026-10-24）
+
+- **滚动唯一写口**：`features/timeline/useChatScrollController.ts` 是唯一写 `scrollTop` 的模块（SessionPage 只挂 `data-testid=chat-scroll`）。follow 阈值 40px、jump 阈值 120px；滚动方向区分用户输入（`lastUserInputRef`：wheel/touchmove/翻页键打时间戳）与浏览器 scroll anchoring（`CONTENT_SYNC_GRACE_MS`）——两条都满足才视为锚定位移，避免流式期间用户下滚被 `restoreReadingAnchor` 拉回。
+- **预览分栏**：`features/preview/SplitWorkspace.tsx`（`chat-preview-split`/`chat-preview-handle`/`data-preview-pane`）拥有拖拽、Esc（drag snapshot 优先恢复）、双击/重置与 ≤767px overlay 模式；**chat 子树永驻**——无预览时两层包装退化为 `display:contents` 而非切回 fragment，Composer 附件与滚动监听不因预览开关重挂载。`openSignal` nonce 是唯一允许重开已折叠 pane 的入口（`SessionPage.openPreview` 递增）。`split.ts` 的 `runSpring` 用 ≤4ms 定长子步积分——30FPS 单步 Euler 对 rigid(k=1200) 发散。
+- **产物列表**：`features/runs/ArtifactRows.tsx` 渲染 `<section data-artifacts>`——「产出文件 (N) — 以上回答在工作区生成的文件」归属分区（不是裸列表）；行内 `components/FileName.tsx`（扩展名保留截断 + `title`/`aria-label` 全名）默认内嵌 `components/FileTypeIcon.tsx`（扩展名→10 类，Windows 式类别着色+字形）；下载/预览控件均有 `title` tooltip。
+- **思考/任务块**：`ThinkingBlock` 展示 reasoning delta 累积的真实思考文本（placeholder 过滤 + snapshot 替换，对齐 OpenTUI 语义），可展开；`TasksBlock` 渲染 `plan.updated`/`todo.updated` 为 checkbox 进度清单。
+- **共享小件**：`components/Collapse.tsx`（0fr→1fr 折叠，inert+aria-hidden）、`CopyButton.tsx`+`lib/useCopyFeedback.ts`+`lib/clipboard.ts`（真实剪贴板布尔、2.5s 对勾、诚实失败）、`components/streamReveal.ts`（grapheme 安全逐字进入，reduced-motion 直通）、`components/FileTypeIcon.tsx`/`FileName.tsx`。
+- **Composer**：IME 保护（compositionend 后 500ms 内 Enter 不提交、keyCode 229、repeat、dialog[open]）+ `submitInFlightRef` 同步闸门（同一任务内两次 Enter 只一个 task POST）。
+- **回归**：`tests/web/w3/test_chat_interaction_contracts.py`、`test_chat_visual_contracts.py`、`test_chat_composite_e2e.py`（共享 fixture `_chat_case.py`）；契约断言见各文件 docstring。
+- **OpenTUI 同步打磨**：`frontend/opentui-app` 侧新增 `theme.ts` SURFACES 近黑 token、`lib/displayColumns.ts`（CJK 列宽对齐）、`lib/copyFeedback.ts`、`lib/fileName.ts`（复合后缀截断）、`ToolCard` 的 `fileEditVerb`（unified edit 写全文时标 Wrote）；`e2e/ui-polish-verify.mjs` 的清理只杀本测试 spawn 的进程树（`listCliProcesses(rootPid)` 按 ParentProcessId BFS，不再命令行子串全机匹配）。

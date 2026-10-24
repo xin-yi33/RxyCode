@@ -38,6 +38,9 @@ import { APP_VERSION, formatElapsedSuffix, formatInputHint, formatMessageLine, h
 import { EFFORT_CHIP_FG, formatComposerEffortChip } from "./dialog/effortPicker.ts";
 import { ElapsedTimer } from "./lib/elapsedTimer.ts";
 import { sanitizeCopiedText } from "./lib/copySanitize.ts";
+import { useCopyFeedback } from "./lib/copyFeedback.ts";
+import { alignEdges, displayWidth, fitDisplay } from "./lib/displayColumns.ts";
+import { middleEllipsisFileName } from "./lib/fileName.ts";
 import {
   applyThoughtExpandedOverride,
   cycleThinkingDisplay,
@@ -322,6 +325,9 @@ function ThoughtMessage({
 /** Left quarter-block — half of a full █ cell, one glyph per bubble row. */
 const USER_BAR_GLYPH = "\u258E";
 
+/** Display cells reserved for one attachment name before middle-ellipsis. */
+const ATTACHMENT_NAME_COLUMNS = 26;
+
 /** OpenCode-style user bubble: panel field + thin bar on every row. */
 function UserMessage({
   content,
@@ -339,7 +345,11 @@ function UserMessage({
   const rendered = markdown && looksLikeMarkdown(content);
   const lines = wrapContentLines(content, Math.max(8, wrapW - 2));
   const attachmentText = attachments.length
-    ? `附件: ${attachments.map((item) => `${getAttachmentName(item)} · ${getAttachmentKind(item)}`).join("  | ")}`
+    ? `附件: ${attachments
+        .map((item) =>
+          `${middleEllipsisFileName(getAttachmentName(item), ATTACHMENT_NAME_COLUMNS)} · ${getAttachmentKind(item)}`,
+        )
+        .join("  | ")}`
     : "";
   const attachmentLines = attachmentText ? wrapContentLines(attachmentText, Math.max(8, wrapW - 2)) : [];
   const barCount = Math.max(3, (rendered ? content.split(/\r?\n/).length : lines.length) + attachmentLines.length + 2);
@@ -564,8 +574,10 @@ export default function App() {
   const [sticky, setSticky] = useState<StickyState>(createStickyState());
   const [paletteIdx, setPaletteIdx] = useState(0);
   const [permissionMode, setPermissionMode] = useState("confirm_all");
-  const [copyToast, setCopyToast] = useState(false);
-  const copyToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Single copy-feedback window (COPY_FEEDBACK_MS = 2500ms) shared by every
+  // copy path (selection, /copy, plan copy). The chip reverts on its own.
+  const { feedback: copyFeedback, flash: flashCopyFeedback } = useCopyFeedback();
+  const copyToast = copyFeedback !== null;
   const ignoreSelectionCopyRef = useRef(false);
   const selectionWasDragRef = useRef(false);
   const ctrlHeldRef = useRef(false);
@@ -667,25 +679,22 @@ export default function App() {
     }
   }, []);
 
-  const flashCopyToast = useCallback(() => {
-    setCopyToast(true);
-    if (copyToastTimerRef.current) clearTimeout(copyToastTimerRef.current);
-    copyToastTimerRef.current = setTimeout(() => setCopyToast(false), 3000);
-  }, []);
-
   const copyPlain = useCallback(
     (raw: string): boolean => {
       const text = sanitizeCopiedText(raw);
       if (!text) return false;
       try {
+        // Honest result: success chip only after the OSC52 write returns; a
+        // throw shows the failure chip (never a fake "Copied").
         renderer.copyToClipboardOSC52(text);
-        flashCopyToast();
+        flashCopyFeedback(true);
         return true;
       } catch {
+        flashCopyFeedback(false);
         return false;
       }
     },
-    [flashCopyToast, renderer],
+    [flashCopyFeedback, renderer],
   );
 
   const copySelection = useCallback(() => {
@@ -1785,15 +1794,6 @@ export default function App() {
   const inputWrapW = Math.max(20, cols - 6);
   const inputHeight = inputVisibleLines(inputValue, inputWrapW);
   const attachmentLine = formatAttachmentLabels(attachments).map((label) => `[${label}]`).join("  ");
-  const clipComposerLine = (value: string, width: number) => {
-    if (stringWidth(value) <= width) return value;
-    let output = "";
-    for (const char of value) {
-      if (stringWidth(output + char + "…") > width) break;
-      output += char;
-    }
-    return `${output}…`;
-  };
 
   useKeyboard((key) => {
     ctrlHeldRef.current = Boolean(key.ctrl);
@@ -2036,6 +2036,34 @@ export default function App() {
   );
   const statusPad = Math.max(0, cols - 2 - statusUsed);
   const showProgressSlot = Boolean(progress) || isStreaming || Boolean(planDoc && !dialogOpen);
+
+  // ── Single-shell composer geometry (char cells, no CSS) ────────────────
+  // Inner width = terminal − 2 border cells − 2 padding cells. Header and
+  // attachment rows pair a left context with a right status on the cell grid;
+  // the pad comes from display width so CJK labels cannot shift the right edge.
+  const composerInnerWidth = Math.max(12, cols - 4);
+  const composerHeaderLeft =
+    ` ${modeLabel} · ${formatInputHint(isStreaming, followupCount)}` +
+    (isStreaming ? " ESC 取消" : "");
+  const composerHeaderRight = ` ${permissionMode} `;
+  const composerHeaderPad = alignEdges(
+    composerHeaderLeft,
+    composerHeaderRight,
+    composerInnerWidth,
+  ).pad;
+  const attachmentCell = attachments.length
+    ? fitDisplay(attachmentLine, composerInnerWidth)
+    : "";
+  const pasteNoticeText = pasteBusy ? "剪贴板读取中…" : pasteNotice || "Alt+V · /paste";
+  const pasteNoticeColor = pasteBusy
+    ? C.yellow
+    : pasteNotice.startsWith("剪贴板读取失败") || pasteNotice.startsWith("发送失败")
+      ? C.red
+      : C.overlay2;
+  // Keep attachment chips visible; only the transient notice gives up cells.
+  const attachmentEdges = alignEdges(attachmentCell, pasteNoticeText, composerInnerWidth, {
+    shrink: "right",
+  });
   // 等待终端的秒数跟工具卡同一起点。服务端那串（Ns）会被另一条 bash 或积压的进度盖掉，
   // 出现卡片 1 分 36 秒、旁边却是 9s。
   // 废弃代码（2026-09-22）：直接显示 progress 里的秒数。
@@ -2067,8 +2095,9 @@ export default function App() {
     ? (cols < 28 ? "等待计划审批" : "Waiting on plan approval")
     : progressForLine
       ? (() => {
-          const full = progressForLine + elapsedSuffix;
-          return full.length > cols ? `${full.slice(0, Math.max(1, cols - 3))}…` : full;
+          // Display cells, not JS length: the elapsed suffix is followed by
+          // CJK labels ("思考中"), which are two cells each.
+          return fitDisplay(progressForLine + elapsedSuffix, cols);
         })()
       : turnElapsedSec != null
         ? `思考中${elapsedSuffix}`
@@ -2128,8 +2157,8 @@ export default function App() {
             </box>
             <box style={{ flexDirection: "column", backgroundColor: C.userBubble }}>
               <text fg={C.userBubble}>{" "}</text>
-              <text fg={C.text} bg={C.userBubble}>
-                {" Copied to clipboard "}
+              <text fg={copyFeedback?.ok === false ? C.red : C.text} bg={C.userBubble}>
+                {copyFeedback?.label ?? " Copied to clipboard "}
               </text>
               <text fg={C.userBubble}>{" "}</text>
             </box>
@@ -2283,7 +2312,10 @@ export default function App() {
       ) : pendingQuestion ? (
         <QuestionDialog question={pendingQuestion} onResponse={onQuestionResponse} />
       ) : dialogOpen ? null : (
-      <box
+        /* Single-shell composer: one bordered field surface; the header,
+           attachment and input rows share it (no nested background boxes), and
+           the right-hand status is placed by display cells, not a CSS spacer. */
+        <box
         style={{
           flexShrink: 0,
           border: true,
@@ -2291,13 +2323,13 @@ export default function App() {
           borderStyle: "rounded",
           paddingLeft: 1,
           paddingRight: 1,
-          backgroundColor: C.bg,
+          backgroundColor: C.field,
           minHeight: 2 + inputHeight,
         }}
         onMouseDown={() => setPlanFocused(false)}
       >
-        <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.bg }}>
-          <box style={{ flexDirection: "row", width: "100%" }}>
+        <box style={{ flexDirection: "column", width: "100%" }}>
+          <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
             <text fg={modeColor} attributes={1}>
               {" "}
               {modeLabel}{" "}
@@ -2305,18 +2337,16 @@ export default function App() {
             <text fg={C.overlay2}>{"· "}</text>
             <text fg={C.mauve}>{formatInputHint(isStreaming, followupCount)}</text>
             {isStreaming ? <text fg={C.yellow}>{" ESC 取消"}</text> : null}
-            <box style={{ flexGrow: 1 }} />
-            <text fg={C.overlay2}>{permissionMode} </text>
+            <text>{" ".repeat(composerHeaderPad)}</text>
+            <text fg={C.overlay2}>{composerHeaderRight}</text>
           </box>
           <box style={{ flexDirection: "row", width: "100%", height: 1, overflow: "hidden" }}>
-            {attachments.length ? (
-              <text fg={C.teal} wrapMode="none">
-                {clipComposerLine(attachmentLine, Math.max(8, cols - 28))}
-              </text>
-            ) : null}
-            <box style={{ flexGrow: 1 }} />
-            <text fg={pasteBusy ? C.yellow : pasteNotice.startsWith("剪贴板读取失败") || pasteNotice.startsWith("发送失败") ? C.red : C.overlay2} wrapMode="none">
-              {clipComposerLine(pasteBusy ? "剪贴板读取中…" : pasteNotice || "Alt+V · /paste", Math.max(12, cols - 8))}
+            <text fg={C.teal} wrapMode="none">
+              {attachmentEdges.left}
+            </text>
+            <text wrapMode="none">{" ".repeat(attachmentEdges.pad)}</text>
+            <text fg={pasteNoticeColor} wrapMode="none">
+              {attachmentEdges.right}
             </text>
           </box>
           <box style={{ flexDirection: "row", width: "100%", height: inputHeight }}>
@@ -2344,7 +2374,7 @@ export default function App() {
                 if (next.trimStart().startsWith("/")) setPaletteIdx(0);
               }}
               onSubmit={submitFromInput}
-              style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.bg }}
+              style={{ flexGrow: 1, height: inputHeight, backgroundColor: C.field }}
             />
           </box>
         </box>

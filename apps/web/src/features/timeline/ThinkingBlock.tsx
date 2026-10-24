@@ -1,10 +1,12 @@
 import { useState } from "react"
 
+import { Collapse } from "../../components/Collapse"
 import { IconChevronDown, IconSpinner } from "../../components/icons"
 
 // 「思考过程」块：标题行（chevron + 步数 + 进行中状态）+ 可展开的思维链
 // 原文。文本来自 assistant.delta channel=reasoning 的累积，默认收起，
 // 点击标题展开查看完整推理；运行中默认收起但不打断滚动。
+// 展开体用共享 Collapse（0fr/1fr 180ms）——关闭时内容仍挂载但不可聚焦。
 export function ThinkingBlock({
   steps,
   active,
@@ -57,7 +59,7 @@ export function ThinkingBlock({
           {header}
         </div>
       )}
-      {open && text ? (
+      <Collapse open={open && expandable}>
         <pre
           className={
             "max-h-96 overflow-y-auto whitespace-pre-wrap break-all " +
@@ -66,7 +68,7 @@ export function ThinkingBlock({
         >
           {text}
         </pre>
-      ) : null}
+      </Collapse>
     </div>
   )
 }
