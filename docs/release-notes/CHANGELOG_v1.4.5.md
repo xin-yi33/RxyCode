@@ -419,3 +419,13 @@
 - **w3 登录 flake**：`_login` 60s 导航/默认超时 + 先等 login POST 响应再等 `/app` 路径、失败重试一次并带诊断；URL 匹配改 path 精确匹配防 query 误判。
 - **w6-c03 外网导航 flake**：`example.com` 导航遇 `ERR_NETWORK_*` 重试一次。
 - **pg 测试基建竞争**：`tests/support/pgurl.py` `ensure_container` 统一 "inspect→run" 竞窗——名冲突视为兄弟进程已建、继续就绪探测；w2/w5/w7 conftest 同款内联 `docker run --name` 统一收编；支持 `RXYCODE_PGURL` 外部库。
+
+### 产物列表 UI 修复（2026-10-24，用户反馈三点）
+
+- **下载/预览按钮 hover 无提示**：`ArtifactRows` 的下载 `<a>` 与预览 `<button>` 仅有 `aria-label`，鼠标悬停无任何说明——补 `title`（`下载 <文件名>` / `预览 <文件名>`），原生 tooltip 立即可见，读屏语义不变。
+- **文件行缺类型图标**：新增 `apps/web/src/components/FileTypeIcon.tsx`——按扩展名归 10 类（document/sheet/slides/pdf/image/archive/code/audio/video/app/generic），Windows 资源管理器式**类别着色**（docx 蓝、xlsx 绿、pptx 橙、pdf 红、图片紫、压缩包棕、代码青、媒体粉、应用深灰、未知灰）+ **类别字形**（表格网格、幻灯片框、pdf 花体、图片山形、拉链齿、`</>` 括号、音符、播放键等）；文件页+折角统一外壳，`aria-hidden` 不干扰读屏。`FileName` 默认内嵌该图标（`icon={false}` 可关），`ArtifactRows`/附件卡/预览标题等所有调用点自动获得图标；图标 `shrink-0`，扩展名优先截断语义不受影响。
+- **产物与最终回答关联弱、列表突兀**：`ArtifactRows` 从裸 `<ul>` 改为归属分区 `<section data-artifacts>`——上边框分隔 + 标题「产出文件 (N) — 以上回答在工作区生成的文件」，明确挂在本次回答名下；`FileName` 替代裸 span（保留 `title`/`aria-label` 完整名与扩展名截断）；下载锚点补 `download={filename}`。
+
+**本地验证**：`tsc --noEmit` 通过；Playwright 实测（拦截 artifacts manifest 喂 8 种类型 mock）——8 行各带正确 `data-file-category` 与 ≥6 种差异化描边色，下载锚点全部含 `title=下载…`、预览含 `title=预览…`，分区标题「产出文件 (8)」渲染，390px 窄视口无横向溢出，console 零 error。截图 `~/.rxycode/ops/verify-artifacts{,-mobile}.png`。
+
+**涉及文件**：`apps/web/src/components/FileTypeIcon.tsx`（新）、`apps/web/src/components/FileName.tsx`、`apps/web/src/features/runs/ArtifactRows.tsx`。
