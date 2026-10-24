@@ -512,6 +512,13 @@
 - 测试：新增 preview 转换/服务/任务流程单元测试 51 条、worker 映射 19 条；更新 w11 c07/c08/c09（binary 由 `preview_unsupported` 改为 ready 元数据页，保留 404/403/匿名负例）；`npm --prefix apps/web run typecheck` / `build` 0。
 - 本地渲染实测：验收用 PNG/PDF/DOCX/XLSX/PPTX/ZIP/MD/WAV/BIN 各一份经真实转换器输出，PDF 页图与 DOCX 表格在浏览器渲染正常，无外链、无脚本错误。
 
+### 上线与线上验收（2026-10-24 17:10 CST，tag `preview-f7564062-01`）
+
+- 提交 `f7564062` 已 push；三镜像同 tag 上线 rxyprod：api `d344e656f13e`（658MB）/ worker `62f4293a77dc`（664MB）/ web `3fa1bf629123`（72.1MB），build stamp 校验通过；备份 `/opt/rxycode/backups/cloudfix-preview-f7564062-01-20261024-165709/`；alembic head `012_files_batch` 不变；api/worker×3/gateway 健康、csrf 200；`/api/v1/version` 与公网均 = `f75640624ef49816ea1f90f1d83e5d7975c79c7d`。
+- 线上 API 验收：上传 9 个附件（pdf/docx/xlsx/pptx/md/html/zip/wav/bin）→ agent 复制到工作区根目录 → 9 个 artifacts 的 `preview_kind` 全部符合预期，9 个 preview job 全 `ready` 且 content 200/类型正确；png 由 bash 生成 → `preview_kind=image`、content 200 `image/png`。
+- 线上浏览器验收（Chromium 1440×900）：10 个产物均有预览按钮；image/pdf/office/archive/binary/media/frontend_static 七类逐一在分栏中渲染（截图留证）；拖动 >82% 收起、Esc 恢复快照、双击复位 50/50 实测通过；权限选择器三档「需要确认/自动编辑/完全自动」实测，`auto_edit` run 返回 202 且回显正确。
+- 诚实边界：console 3 条 error 为 Cloudflare beacon 被预览文档 CSP `default-src 'none'` 拦截（非应用错误），page error 0；vivo/iPhone 真机未测；7z/rar 与 legacy .doc/.xls/.ppt 仍走元数据页。
+
 ## RxyCode Web：三档权限前后端打通（2026-10-24）
 
 - **问题**：agent 内核有三档 `confirm_all` / `auto_edit`（写代码免批）/ `full_auto`；Web 只有“需要确认 / 完全自动”两档，server 建 run/定时任务只接受 `("confirm","full")`，approval broker 只认字面量 `full_auto`，而 Web 发送的是 `full` —— 页面挡位与后端不一致。
