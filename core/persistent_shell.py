@@ -42,6 +42,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,7 @@ from typing import Any
 from .sandbox import manager as sandbox_manager
 from .sandbox.types import JobPlan
 from .session_runtime import current_session_id
+from ..utils import shell as shell_module
 
 _logger = logging.getLogger(__name__)
 
@@ -103,6 +105,14 @@ class ShellLostError(RuntimeError):
         self.exit_code = exit_code
         self.stdout = stdout
         self.truncated = truncated
+
+
+class ShellLivenessStop(ShellLostError):
+    """The current command was cancelled by one explicit liveness decision."""
+
+    def __init__(self, note: str) -> None:
+        super().__init__(f"liveness stop: {note}")
+        self.note = note
 
 
 @dataclass
@@ -938,7 +948,12 @@ class ManagedShell:
             self._closed = True
             raise ShellLostError("managed shell pipe closed") from exc
 
-        result = await self._collect(process, protocol, capture=capture)
+        result = await self._collect(
+            process,
+            protocol,
+            timeout=timeout,
+            capture=capture,
+        )
         # A completed command already consumed its files.
         self._pending_artifacts = []
         if result.cwd_after:
@@ -950,6 +965,8 @@ class ManagedShell:
         process: asyncio.subprocess.Process,
         protocol: _MarkerProtocol,
         capture: Any = None,
+        *,
+        timeout: float = DEFAULT_COMMAND_TIMEOUT,
     ) -> CommandOutcome:
         """Read until the end marker, streaming payload into ``capture``.
 
@@ -969,6 +986,19 @@ class ManagedShell:
         state = "before_begin"
         begin_marker = protocol.begin
         end_marker = protocol.end
+        started = time.monotonic()
+        deadlines = shell_module.process_probe_deadlines(
+            started,
+            timeout,
+            getattr(
+                shell_module.shell_executor,
+                "watchdog_checkpoints",
+                shell_module.WATCHDOG_CHECKPOINTS,
+            ),
+        )
+        pending_read: asyncio.Task[bytes] | None = None
+        probe_task: asyncio.Task[Any] | None = None
+        command_done = asyncio.Event()
 
         def emit(text: str) -> None:
             nonlocal emitted, truncated
@@ -986,61 +1016,114 @@ class ManagedShell:
                     truncated = True
             emitted += len(text)
 
-        while True:
-            raw = await process.stdout.read(READ_CHUNK)
-            if not raw:
-                if state == "done":
-                    break
-                if state == "collecting":
-                    # The retained tail is payload now, not a split END marker.
-                    emit(buf + decoder.decode(b"", final=True))
-                # stdout EOF alone is not proof of process exit. Reap through
-                # the existing command timeout/cancellation boundary, before
-                # close() can replace natural exit evidence with our own kill.
-                if process.returncode is None:
-                    await process.wait()
-                if self._powershell:
-                    truncated = (
-                        _feed_file(protocol.out_file_path, capture, chunks) or truncated
+        try:
+            while True:
+                if probe_task is not None and probe_task.done():
+                    probe = await probe_task
+                    probe_task = None
+                    if probe is not None and probe.action == "stop":
+                        raise ShellLivenessStop(probe.note)
+                now = time.monotonic()
+                if (
+                    probe_task is None
+                    and deadlines
+                    and now + 0.05 >= deadlines[0]
+                ):
+                    deadlines.pop(0)
+                    probe_task = asyncio.create_task(
+                        shell_module.run_process_probe(
+                            process.pid,
+                            elapsed_seconds=now - started,
+                            completion=command_done,
+                        )
                     )
-                raise ShellLostError(
-                    "managed shell exited before the command reported completion",
-                    exit_code=process.returncode if state == "collecting" else None,
-                    stdout="" if capture is not None else "".join(chunks),
-                    truncated=truncated,
+                if pending_read is None:
+                    pending_read = asyncio.create_task(
+                        process.stdout.read(READ_CHUNK)
+                    )
+                wait_timeout = None
+                if deadlines and probe_task is None:
+                    wait_timeout = max(0.0, deadlines[0] - time.monotonic())
+                waiters: set[asyncio.Future[Any]] = {pending_read}
+                if probe_task is not None:
+                    waiters.add(probe_task)
+                done, _ = await asyncio.wait(
+                    waiters,
+                    timeout=wait_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            buf += decoder.decode(raw)
-
-            if state == "before_begin":
-                idx = buf.find(begin_marker)
-                if idx == -1:
-                    # Keep only enough tail to catch a marker split across reads.
-                    keep = len(begin_marker) - 1
-                    if len(buf) > keep:
-                        buf = buf[-keep:] if keep else ""
+                if not done:
                     continue
-                buf = buf[idx + len(begin_marker) :]
-                state = "collecting"
-                # Drop the newline the wrapper wrote after BEGIN.
-                if buf.startswith("\r\n"):
-                    buf = buf[2:]
-                elif buf.startswith("\n"):
-                    buf = buf[1:]
-
-            if state == "collecting":
-                idx = buf.find(end_marker)
-                if idx == -1:
-                    # Emit everything except a tail that could be a partial
-                    # marker; this keeps memory bounded without losing bytes.
-                    keep = len(end_marker) - 1
-                    if len(buf) > keep:
-                        emit(buf[:-keep] if keep else buf)
-                        buf = buf[-keep:] if keep else ""
+                if pending_read not in done:
+                    # A probe task completed while stdin/stdout stayed open.
+                    # Handle its verdict at the top of the next iteration.
                     continue
-                emit(buf[:idx])
-                buf = buf[idx + len(end_marker) :]
-                state = "done"
-                break
+                raw = pending_read.result()
+                pending_read = None
+                if not raw:
+                    if state == "done":
+                        break
+                    if state == "collecting":
+                        # The retained tail is payload now, not a split END marker.
+                        emit(buf + decoder.decode(b"", final=True))
+                    # stdout EOF alone is not proof of process exit. Reap through
+                    # the existing command timeout/cancellation boundary, before
+                    # close() can replace natural exit evidence with our own kill.
+                    if process.returncode is None:
+                        await process.wait()
+                    if self._powershell:
+                        truncated = (
+                            _feed_file(protocol.out_file_path, capture, chunks)
+                            or truncated
+                        )
+                    raise ShellLostError(
+                        "managed shell exited before the command reported completion",
+                        exit_code=process.returncode if state == "collecting" else None,
+                        stdout="" if capture is not None else "".join(chunks),
+                        truncated=truncated,
+                    )
+                buf += decoder.decode(raw)
+
+                if state == "before_begin":
+                    idx = buf.find(begin_marker)
+                    if idx == -1:
+                        # Keep only enough tail to catch a marker split across reads.
+                        keep = len(begin_marker) - 1
+                        if len(buf) > keep:
+                            buf = buf[-keep:] if keep else ""
+                        continue
+                    buf = buf[idx + len(begin_marker) :]
+                    state = "collecting"
+                    # Drop the newline the wrapper wrote after BEGIN.
+                    if buf.startswith("\r\n"):
+                        buf = buf[2:]
+                    elif buf.startswith("\n"):
+                        buf = buf[1:]
+
+                if state == "collecting":
+                    idx = buf.find(end_marker)
+                    if idx == -1:
+                        # Emit everything except a tail that could be a partial
+                        # marker; this keeps memory bounded without losing bytes.
+                        keep = len(end_marker) - 1
+                        if len(buf) > keep:
+                            emit(buf[:-keep] if keep else buf)
+                            buf = buf[-keep:] if keep else ""
+                        continue
+                    emit(buf[:idx])
+                    buf = buf[idx + len(end_marker) :]
+                    state = "done"
+                    command_done.set()
+                    break
+        finally:
+            command_done.set()
+            if probe_task is not None and not probe_task.done():
+                probe_task.cancel()
+            if probe_task is not None:
+                await asyncio.gather(probe_task, return_exceptions=True)
+            if pending_read is not None and not pending_read.done():
+                pending_read.cancel()
+                await asyncio.gather(pending_read, return_exceptions=True)
 
         # Exit status and error text come from the temp files the wrapper
         # wrote, not from parsing interleaved console output.

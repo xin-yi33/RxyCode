@@ -14,6 +14,7 @@ export type ToolStatus = "running" | "completed" | "failed"
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "cancelled"
 export type QuestionOption = { label: string; value: string }
 export type TaskEntry = { id: string; title: string; status: string }
+export type ProcessLivenessAction = "continue" | "stop" | "unknown"
 
 export type TimelineItem =
   | { kind: "user"; seq: number; text: string }
@@ -63,6 +64,26 @@ export type TimelineItem =
       // question.resolved 到达即 true（即使 answer 为空串，卡片也必须折叠，
       // 不能因为 answer 是 falsy 又变回可交互）。
       answered?: boolean
+    }
+  | {
+      kind: "liveness"
+      seq: number
+      probeId: string
+      probeSeq?: number
+      callId?: string
+      generation?: number
+      pid?: number
+      elapsedSeconds?: number
+      observationSeconds?: number
+      cpuStartPercent?: number
+      cpuEndPercent?: number
+      ioStartBytes?: number
+      ioEndBytes?: number
+      processCount?: number
+      action: ProcessLivenessAction
+      note: string
+      text: string
+      invalid?: boolean
     }
   | { kind: "final"; seq: number; text: string }
 
@@ -235,6 +256,24 @@ function findTasks(
 ): Extract<TimelineItem, { kind: "tasks" }> | undefined {
   for (const item of timeline) {
     if (item.kind === "tasks") return item
+  }
+  return undefined
+}
+
+function findLiveness(
+  timeline: TimelineItem[],
+  probeId: string,
+  probeSeq: number | undefined,
+): Extract<TimelineItem, { kind: "liveness" }> | undefined {
+  if (!probeId || probeSeq === undefined) return undefined
+  for (const item of timeline) {
+    if (
+      item.kind === "liveness" &&
+      item.probeId === probeId &&
+      item.probeSeq === probeSeq
+    ) {
+      return item
+    }
   }
   return undefined
 }
@@ -569,6 +608,40 @@ export function reduceEvents(
           found.answer = str(payload.answer)
           found.answered = true
         }
+        return
+      }
+      case "process.liveness": {
+        const probeId = str(payload.probe_id)
+        const probeSeq = num(payload.seq)
+        // SSE replay already dedupes by event seq; this protects the durable
+        // projection too when the same probe/checkpoint is replayed through a
+        // different envelope during recovery.
+        if (findLiveness(view.timeline, probeId, probeSeq)) return
+        const rawAction = str(payload.action)
+        const action: ProcessLivenessAction =
+          rawAction === "continue" || rawAction === "stop"
+            ? rawAction
+            : "unknown"
+        view.timeline.push({
+          kind: "liveness",
+          seq: event.seq,
+          probeId,
+          probeSeq,
+          callId: str(payload.call_id) || undefined,
+          generation: num(payload.generation),
+          pid: num(payload.pid),
+          elapsedSeconds: num(payload.elapsed_seconds),
+          observationSeconds: num(payload.observation_seconds),
+          cpuStartPercent: num(payload.cpu_start_percent),
+          cpuEndPercent: num(payload.cpu_end_percent),
+          ioStartBytes: num(payload.io_start_bytes),
+          ioEndBytes: num(payload.io_end_bytes),
+          processCount: num(payload.process_count),
+          action,
+          note: str(payload.note),
+          text: str(payload.text) || "进程判活结果已记录",
+          invalid: payload.invalid === true,
+        })
         return
       }
       case "plan.updated":

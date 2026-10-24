@@ -271,6 +271,13 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
   one-shot path (`execute_async`/`execute_argv_async`) remains in use for GUI
   launches, docker, and all internal callers (git, formatter, workflow,
   diagnostics).
+- **Process liveness (2026-10-24)**: managed, one-shot and Web/native bash
+  share one async CPU/IO probe. The window is five seconds by production
+  default, repeats after the 180/300/600 checkpoints, and is judged by the
+  current AgentV2 session model rather than the optional P6 timeout engine.
+  Low CPU/IO is never a kill decision. Probe results are request-local and
+  keyed by `call_id+pid+generation+seq`; completion/cancel discards late
+  verdicts. Direct callers without an owner LLM report “本次未判定”.
 - Uses the bounded `ShellExecutor` previews and raw stdout/stderr artifacts;
   bash formats the previews without reading the complete artifact back into
   memory. Artifact paths retain the `Full output saved to:` prefix, duplicate

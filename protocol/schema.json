@@ -5104,6 +5104,112 @@
       "title": "MessageDelta",
       "type": "object"
     },
+    "ProcessLivenessDetails": {
+      "additionalProperties": false,
+      "description": "Safe evidence from one periodic process-liveness checkpoint.\n\nThe payload deliberately carries aggregate CPU/IO observations, not a\ncommand line, prompt, stdout/stderr, or any other secret-bearing content.\n``action`` is the current-session model's decision for this probe; a\nheartbeat alone must never be rendered as that decision.\n\n2026-10-24 user protection: without explicit user confirmation, no surface\nor future refactor may bypass the 5-second observation, model judgment, or\nper-result user feedback represented by this contract.",
+      "properties": {
+        "kind": {
+          "const": "process_liveness",
+          "title": "Kind",
+          "type": "string"
+        },
+        "probe_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Probe Id",
+          "type": "string"
+        },
+        "call_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Call Id",
+          "type": "string"
+        },
+        "generation": {
+          "minimum": 0,
+          "title": "Generation",
+          "type": "integer"
+        },
+        "pid": {
+          "minimum": 1,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "seq": {
+          "minimum": 1,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "observation_seconds": {
+          "minimum": 0,
+          "title": "Observation Seconds",
+          "type": "number"
+        },
+        "cpu_start_percent": {
+          "minimum": 0,
+          "title": "Cpu Start Percent",
+          "type": "number"
+        },
+        "cpu_end_percent": {
+          "minimum": 0,
+          "title": "Cpu End Percent",
+          "type": "number"
+        },
+        "io_start_bytes": {
+          "minimum": 0,
+          "title": "Io Start Bytes",
+          "type": "integer"
+        },
+        "io_end_bytes": {
+          "minimum": 0,
+          "title": "Io End Bytes",
+          "type": "integer"
+        },
+        "process_count": {
+          "minimum": 0,
+          "title": "Process Count",
+          "type": "integer"
+        },
+        "action": {
+          "enum": [
+            "continue",
+            "stop",
+            "unknown"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 2000,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "probe_id",
+        "call_id",
+        "generation",
+        "pid",
+        "seq",
+        "elapsed_seconds",
+        "observation_seconds",
+        "cpu_start_percent",
+        "cpu_end_percent",
+        "io_start_bytes",
+        "io_end_bytes",
+        "process_count",
+        "action",
+        "note"
+      ],
+      "title": "ProcessLivenessDetails",
+      "type": "object"
+    },
     "ProgressUpdate": {
       "description": "SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py).",
       "properties": {
@@ -5125,6 +5231,17 @@
           "default": false,
           "title": "Intermediate",
           "type": "boolean"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProcessLivenessDetails"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

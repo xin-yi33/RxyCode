@@ -98,17 +98,17 @@ def test_watchdog_treats_cpu_or_io_as_busy():
 
 
 @pytest.mark.asyncio
-async def test_idle_sleep_is_stopped_after_checkpoint():
+async def test_idle_sleep_is_not_mechanically_killed_after_checkpoint():
     executor = ShellExecutor()
     executor.watchdog_checkpoints = (0.4,)
-    executor.watchdog_idle_kill_after = 0.4
     executor.watchdog_observe_seconds = 0.05
     result = await executor.execute_argv_async(
         [sys.executable, "-c", "import time; time.sleep(12)"],
-        timeout=6,
+        timeout=0.8,
     )
     assert result["success"] is False
-    assert "watchdog idle" in result["stderr"]
+    assert "watchdog idle" not in result["stderr"]
+    assert "timeout after" in result["stderr"]
 
 
 @pytest.mark.asyncio

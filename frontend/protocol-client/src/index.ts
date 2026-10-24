@@ -63,6 +63,7 @@ export type {
   JobStatusUpdate,
   MessageDelta,
   PromptRequest,
+  ProcessLivenessDetails,
   ProtocolNotification,
   QuestionRequest,
   QuestionResponse,

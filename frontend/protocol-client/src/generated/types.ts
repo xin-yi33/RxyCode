@@ -803,6 +803,21 @@ export type Method138 = "event/progress";
 export type SessionId67 = string;
 export type Text5 = string;
 export type Intermediate1 = boolean;
+export type Kind1 = "process_liveness";
+export type ProbeId = string;
+export type CallId = string;
+export type Generation = number;
+export type Pid = number;
+export type Seq1 = number;
+export type ElapsedSeconds = number;
+export type ObservationSeconds = number;
+export type CpuStartPercent = number;
+export type CpuEndPercent = number;
+export type IoStartBytes = number;
+export type IoEndBytes = number;
+export type ProcessCount = number;
+export type Action4 = "continue" | "stop" | "unknown";
+export type Note = string;
 export type Method139 = "event/reasoning_snapshot";
 export type SessionId68 = string;
 export type Text6 = string;
@@ -822,18 +837,18 @@ export type TaskId2 = string;
 export type Title2 = string;
 export type Method143 = "event/tool_begin";
 export type SessionId72 = string;
-export type CallId = string;
+export type CallId1 = string;
 export type ToolName = string;
 export type Method144 = "event/tool_end";
 export type SessionId73 = string;
-export type CallId1 = string;
+export type CallId2 = string;
 export type Ok = boolean;
 export type Summary = string;
 export type Status1 = string | null;
 export type Method145 = "event/execution";
 export type SessionId74 = string;
 export type TaskId3 = string;
-export type Kind1 = string;
+export type Kind2 = string;
 export type Origin = string;
 export type Name15 = string;
 export type Status2 = string;
@@ -861,7 +876,7 @@ export type ReportingStatus = "reported" | "partial" | "not_reported";
 export type ContextUsed = number | null;
 export type Method148 = "event/agent_usage";
 export type SessionId77 = string;
-export type Seq1 = number;
+export type Seq2 = number;
 export type InputTokens1 = number | null;
 export type OutputTokens1 = number | null;
 export type CacheHitTokens1 = number | null;
@@ -878,7 +893,7 @@ export type Reason4 = string | null;
 export type Method149 = "event/agent_needs_input";
 export type SessionId78 = string | null;
 export type RequestId7 = string | null;
-export type Kind2 = "needs_input";
+export type Kind3 = "needs_input";
 export type Preview = string | null;
 export type Method150 = "event/final";
 export type SessionId79 = string;
@@ -896,7 +911,7 @@ export type SessionId80 = string;
 export type RunId3 = string;
 export type RecoveryId = string;
 export type EventId = string;
-export type Seq2 = number;
+export type Seq3 = number;
 export type Timestamp = string;
 export type Method151 = "event/recovery_started";
 export type SourceCallId = string;
@@ -907,14 +922,14 @@ export type SessionId81 = string;
 export type RunId4 = string;
 export type RecoveryId1 = string;
 export type EventId1 = string;
-export type Seq3 = number;
+export type Seq4 = number;
 export type Timestamp1 = string;
 export type Method152 = "event/recovery_analyzing";
 export type SessionId82 = string;
 export type RunId5 = string;
 export type RecoveryId2 = string;
 export type EventId2 = string;
-export type Seq4 = number;
+export type Seq5 = number;
 export type Timestamp2 = string;
 export type Method153 = "event/recovery_attempt";
 export type Attempt = number;
@@ -925,7 +940,7 @@ export type SessionId83 = string;
 export type RunId6 = string;
 export type RecoveryId3 = string;
 export type EventId3 = string;
-export type Seq5 = number;
+export type Seq6 = number;
 export type Timestamp3 = string;
 export type Method154 = "event/recovery_resolved";
 export type Attempts = number;
@@ -934,7 +949,7 @@ export type SessionId84 = string;
 export type RunId7 = string;
 export type RecoveryId4 = string;
 export type EventId4 = string;
-export type Seq6 = number;
+export type Seq7 = number;
 export type Timestamp4 = string;
 export type Method155 = "event/recovery_exhausted";
 export type Attempts1 = number;
@@ -955,7 +970,7 @@ export type State1 =
   "submitted" | "queued" | "running" | "approval" | "succeeded" | "failed" | "cancelled" | "timed_out";
 export type Method159 = "event/todo_updated";
 export type EventId5 = string;
-export type Seq7 = number;
+export type Seq8 = number;
 export type Timestamp5 = string;
 export type SessionId88 = string;
 export type RootSessionId8 = string;
@@ -982,7 +997,7 @@ export type Method161 = "initialized";
 export type ProtocolVersion2 = string;
 export type ServerVersion = string;
 export type Method162 = "event/process_started";
-export type Pid = number;
+export type Pid1 = number;
 export type StartedAt = number;
 export type InstancePolicy = string;
 export type Method163 = "event/process_shutdown";
@@ -1003,15 +1018,15 @@ export type Method167 = "event/timeout_decision";
 export type SessionId90 = string;
 export type RunId11 = string;
 export type EventId6 = string;
-export type Seq8 = number;
+export type Seq9 = number;
 export type Timestamp6 = string;
 export type TriggerPoint = "graph_task_max_time" | "pipeline_soft_budget" | "watchdog_stall" | "tool_timeout";
-export type Action4 = "continue" | "steer" | "stop";
+export type Action5 = "continue" | "steer" | "stop";
 export type ExtendSeconds = number;
-export type Note = string;
+export type Note1 = string;
 export type Confidence = number;
 export type ExtensionIndex = number;
-export type ElapsedSeconds = number;
+export type ElapsedSeconds1 = number;
 export type FailClosed = boolean;
 export type DecisionModel = string;
 export type Cost1 = number;
@@ -1020,7 +1035,7 @@ export type Method168 = "approval/request";
 export type SessionId91 = string;
 export type RequestId8 = string;
 export type RiskLevel = "READ" | "WRITE" | "DANGER";
-export type Action5 = string;
+export type Action6 = string;
 export type RequestId9 = string;
 export type Decision1 = "approved" | "rejected" | "allow_once" | "always_allow_level";
 export type Method169 = "question/request";
@@ -1283,14 +1298,14 @@ export type SessionId96 = string;
 export type RunId12 = string;
 export type SubjectId = string;
 export type TaskHint = string;
-export type ElapsedSeconds1 = number;
+export type ElapsedSeconds2 = number;
 export type BudgetSeconds = number;
 export type ExtensionIndex1 = number;
 export type Progress = string;
 export type LastError = string;
-export type Action6 = "continue" | "steer" | "stop";
+export type Action7 = "continue" | "steer" | "stop";
 export type ExtendSeconds1 = number;
-export type Note1 = string;
+export type Note2 = string;
 export type Confidence1 = number;
 /**
  * Additive Run, Event, Device, and diagnostic models. Not a session envelope. Old initialize, session/prompt, and approval/request methods are unchanged.
@@ -1343,15 +1358,15 @@ export type Method179 =
   | "initialized";
 export type RunId14 = string | null;
 export type DeviceId1 = string;
-export type Kind3 = "desktop" | "cli" | "web";
+export type Kind4 = "desktop" | "cli" | "web";
 export type Capabilities2 = string[];
 export type Code1 = "RUN_CANCELLED" | "DEVICE_UNSUPPORTED" | "CAPABILITY_DENIED";
 export type Retryable1 = boolean;
 export type Name18 = string;
 export type TargetId = string;
 export type Version = number;
-export type CallId2 = string;
 export type CallId3 = string;
+export type CallId4 = string;
 export type Index1 = number;
 export type Text9 = string;
 export type Final = boolean;
@@ -2900,7 +2915,37 @@ export interface ProgressUpdate {
   session_id: SessionId67;
   text: Text5;
   intermediate?: Intermediate1;
+  details?: ProcessLivenessDetails | null;
   [k: string]: unknown;
+}
+/**
+ * Safe evidence from one periodic process-liveness checkpoint.
+ *
+ * The payload deliberately carries aggregate CPU/IO observations, not a
+ * command line, prompt, stdout/stderr, or any other secret-bearing content.
+ * ``action`` is the current-session model's decision for this probe; a
+ * heartbeat alone must never be rendered as that decision.
+ *
+ * 2026-10-24 user protection: without explicit user confirmation, no surface
+ * or future refactor may bypass the 5-second observation, model judgment, or
+ * per-result user feedback represented by this contract.
+ */
+export interface ProcessLivenessDetails {
+  kind: Kind1;
+  probe_id: ProbeId;
+  call_id: CallId;
+  generation: Generation;
+  pid: Pid;
+  seq: Seq1;
+  elapsed_seconds: ElapsedSeconds;
+  observation_seconds: ObservationSeconds;
+  cpu_start_percent: CpuStartPercent;
+  cpu_end_percent: CpuEndPercent;
+  io_start_bytes: IoStartBytes;
+  io_end_bytes: IoEndBytes;
+  process_count: ProcessCount;
+  action: Action4;
+  note: Note;
 }
 /**
  * SSE ``type: reasoning`` with ``snapshot: true`` from ``StreamTUI._emit_thinking_snapshot`` (api_server.py).
@@ -2949,7 +2994,7 @@ export interface TaskStarted {
 export interface ToolBegin {
   method?: Method143;
   session_id: SessionId72;
-  call_id: CallId;
+  call_id: CallId1;
   tool_name: ToolName;
   arguments?: Arguments;
   [k: string]: unknown;
@@ -2963,7 +3008,7 @@ export interface Arguments {
 export interface ToolEnd {
   method?: Method144;
   session_id: SessionId73;
-  call_id: CallId1;
+  call_id: CallId2;
   ok: Ok;
   summary: Summary;
   status?: Status1;
@@ -2976,7 +3021,7 @@ export interface ExecutionItem {
   method?: Method145;
   session_id: SessionId74;
   task_id: TaskId3;
-  kind: Kind1;
+  kind: Kind2;
   origin: Origin;
   name: Name15;
   status: Status2;
@@ -3020,7 +3065,7 @@ export interface TokenUsage {
 export interface AgentUsage {
   method?: Method148;
   session_id: SessionId77;
-  seq: Seq1;
+  seq: Seq2;
   input_tokens?: InputTokens1;
   output_tokens?: OutputTokens1;
   cache_hit_tokens?: CacheHitTokens1;
@@ -3043,7 +3088,7 @@ export interface AgentNeedsInput {
   method?: Method149;
   session_id?: SessionId78;
   request_id?: RequestId7;
-  kind?: Kind2;
+  kind?: Kind3;
   preview?: Preview;
   [k: string]: unknown;
 }
@@ -3073,7 +3118,7 @@ export interface RecoveryStarted {
   run_id: RunId3;
   recovery_id: RecoveryId;
   event_id: EventId;
-  seq: Seq2;
+  seq: Seq3;
   timestamp: Timestamp;
   method?: Method151;
   source_call_id: SourceCallId;
@@ -3090,7 +3135,7 @@ export interface RecoveryAnalyzing {
   run_id: RunId4;
   recovery_id: RecoveryId1;
   event_id: EventId1;
-  seq: Seq3;
+  seq: Seq4;
   timestamp: Timestamp1;
   method?: Method152;
   [k: string]: unknown;
@@ -3103,7 +3148,7 @@ export interface RecoveryAttempt {
   run_id: RunId5;
   recovery_id: RecoveryId2;
   event_id: EventId2;
-  seq: Seq4;
+  seq: Seq5;
   timestamp: Timestamp2;
   method?: Method153;
   attempt: Attempt;
@@ -3120,7 +3165,7 @@ export interface RecoveryResolved {
   run_id: RunId6;
   recovery_id: RecoveryId3;
   event_id: EventId3;
-  seq: Seq5;
+  seq: Seq6;
   timestamp: Timestamp3;
   method?: Method154;
   attempts: Attempts;
@@ -3135,7 +3180,7 @@ export interface RecoveryExhausted {
   run_id: RunId7;
   recovery_id: RecoveryId4;
   event_id: EventId4;
-  seq: Seq6;
+  seq: Seq7;
   timestamp: Timestamp4;
   method?: Method155;
   attempts: Attempts1;
@@ -3179,7 +3224,7 @@ export interface JobStatusUpdate {
 export interface TodoUpdatedNotification {
   method?: Method159;
   event_id: EventId5;
-  seq: Seq7;
+  seq: Seq8;
   timestamp: Timestamp5;
   snapshot: TodoSnapshot;
   [k: string]: unknown;
@@ -3229,7 +3274,7 @@ export interface InitializedNotification {
  */
 export interface ProcessStarted {
   method?: Method162;
-  pid: Pid;
+  pid: Pid1;
   started_at: StartedAt;
   instance_policy?: InstancePolicy;
   [k: string]: unknown;
@@ -3280,15 +3325,15 @@ export interface TimeoutDecisionEvent {
   session_id: SessionId90;
   run_id: RunId11;
   event_id: EventId6;
-  seq: Seq8;
+  seq: Seq9;
   timestamp: Timestamp6;
   trigger_point: TriggerPoint;
-  action: Action4;
+  action: Action5;
   extend_seconds: ExtendSeconds;
-  note: Note;
+  note: Note1;
   confidence: Confidence;
   extension_index: ExtensionIndex;
-  elapsed_seconds: ElapsedSeconds;
+  elapsed_seconds: ElapsedSeconds1;
   fail_closed: FailClosed;
   decision_model: DecisionModel;
   cost: Cost1;
@@ -3302,7 +3347,7 @@ export interface ApprovalRequest {
   session_id: SessionId91;
   request_id: RequestId8;
   risk_level: RiskLevel;
-  action: Action5;
+  action: Action6;
   details?: Details;
   [k: string]: unknown;
 }
@@ -3717,7 +3762,7 @@ export interface TimeoutEvidence {
   run_id: RunId12;
   subject_id: SubjectId;
   task_hint: TaskHint;
-  elapsed_seconds: ElapsedSeconds1;
+  elapsed_seconds: ElapsedSeconds2;
   budget_seconds: BudgetSeconds;
   extension_index: ExtensionIndex1;
   progress: Progress;
@@ -3728,9 +3773,9 @@ export interface TimeoutEvidence {
  * LLM 决策出参；也是 Policy.pre_check / 事件的同构载体。
  */
 export interface TimeoutDecisionResponse {
-  action: Action6;
+  action: Action7;
   extend_seconds: ExtendSeconds1;
-  note: Note1;
+  note: Note2;
   confidence: Confidence1;
   [k: string]: unknown;
 }
@@ -3760,7 +3805,7 @@ export interface Payload1 {
  */
 export interface DeviceRecord {
   device_id: DeviceId1;
-  kind: Kind3;
+  kind: Kind4;
   capabilities?: Capabilities2;
   [k: string]: unknown;
 }
@@ -3780,7 +3825,7 @@ export interface ToolCall {
   target_id: TargetId;
   arguments?: Arguments1;
   version: Version;
-  call_id?: CallId2;
+  call_id?: CallId3;
   [k: string]: unknown;
 }
 export interface Arguments1 {
@@ -3790,7 +3835,7 @@ export interface Arguments1 {
  * One chunk of a tool result. Generated into the schema with ToolCall.
  */
 export interface ToolChunk {
-  call_id: CallId3;
+  call_id: CallId4;
   index: Index1;
   text: Text9;
   final: Final;

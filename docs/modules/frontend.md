@@ -291,3 +291,24 @@ BYOK-only enforcement policy（前后端共同约束）：不设超级号/管理
 - **Composer**：IME 保护（compositionend 后 500ms 内 Enter 不提交、keyCode 229、repeat、dialog[open]）+ `submitInFlightRef` 同步闸门（同一任务内两次 Enter 只一个 task POST）。
 - **回归**：`tests/web/w3/test_chat_interaction_contracts.py`、`test_chat_visual_contracts.py`、`test_chat_composite_e2e.py`（共享 fixture `_chat_case.py`）；契约断言见各文件 docstring。
 - **OpenTUI 同步打磨**：`frontend/opentui-app` 侧新增 `theme.ts` SURFACES 近黑 token、`lib/displayColumns.ts`（CJK 列宽对齐）、`lib/copyFeedback.ts`、`lib/fileName.ts`（复合后缀截断）、`ToolCard` 的 `fileEditVerb`（unified edit 写全文时标 Wrote）；`e2e/ui-polish-verify.mjs` 的清理只杀本测试 spawn 的进程树（`listCliProcesses(rootPid)` 按 ParentProcessId BFS，不再命令行子串全机匹配）。
+
+### Process-liveness evidence row（2026-10-24）
+
+Web full 的 worker projection now maps typed `event/progress.details` to
+`process.liveness`, not `assistant.delta(channel=status)`. `eventReducer`
+shows every result as a compact timeline row containing elapsed time, the
+five-second observation window, CPU start/end, IO byte delta, process count,
+the model's `continue` / `stop` / `unknown` action, and its note. It never
+places this evidence in the Thought block or the final answer, and does not
+replace an unrecognized result with the generic `处理中…` placeholder.
+
+The durable projection whitelists only the typed evidence fields; command
+lines, raw stdout/stderr, prompts, and arbitrary extra payload keys are not
+copied. Replay is deduplicated by event `seq` and again by
+`(probe_id, details.seq)` in the reducer. Malformed evidence renders as
+`unknown`. Existing text-only progress, approval, question, tool, Thought, and
+final-answer behavior remains unchanged.
+
+2026-10-24 user protection: without explicit user confirmation, no Web
+consumer or future refactor may bypass the five-second observation,
+current-session model judgment, or per-result user feedback.

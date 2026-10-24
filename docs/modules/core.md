@@ -122,6 +122,26 @@ fresh process).
   outlived the root.
 - Sub-agent shells are reclaimed on **normal completion** (`ChildRuntime.release()`),
   not only on cancellation/shutdown.
+- **Process-liveness probes (2026-10-24):** one-shot, managed and Web/native
+  shell execution share the same `ProcessTreeSampler` observer. At 180/300/600s
+  and every following 300s interval, the shell observes two valid CPU intervals
+  across a real five-second async window while output streaming continues.
+  Low CPU/IO is only evidence; it never kills a command.
+- Normal `AgentV2` injects a `SessionLivenessJudge` backed by the current
+  session's already-routed `UsageTrackingLLM`. This is independent of the P6
+  timeout engine and its `enabled: false` default; it never consumes extension
+  ledger grants, changes hard budgets, or starts a second provider.
+- Each probe is bound to `call_id + pid + generation + seq`; completion or
+  cancellation invalidates the probe and cancels an in-flight judge. A late
+  `stop` cannot cancel the next command. Direct shell callers without an owner
+  LLM still receive an explicit “本次未判定” result, never a fabricated model
+  decision.
+- Probe reports use the request/child-local tool TUI context and the additive
+  `ProgressUpdate.details=process_liveness` contract. P6 `TimeoutDecisionEvent`
+  and Thought/reasoning events are not reused.
+- The retired one-shot 180s idle kill is removed. Only an explicit LLM `stop`
+  cancels the current command; the original hard timeout and user cancellation
+  retain their existing cleanup paths.
 
 ### Post-write diagnostics (`core/post_write_diagnostics.py`, 2026-10-23)
 

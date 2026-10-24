@@ -313,6 +313,40 @@
 
 ## RxyCode CLI
 
+### Shell process-liveness watchdog restoration（2026-10-24，未发版）
+
+- **根因**：managed shell 的新路由只 `wait_for(_run_locked, timeout+5)`，绕过旧
+  `ShellExecutor` 的 CPU/IO checkpoint；Web/full native 的一次性进程也没有
+  probe。旧 watchdog 的通知只是进度文案，不调用会话模型；低 CPU/IO 到 180s
+  还会机械杀进程，和“由 LLM 判活”合同冲突。
+- **修复**：`utils/shell.py` 提供唯一共享 observer，复用
+  `ProcessTreeSampler + watchdog_is_busy`。每次真实 probe 使用异步 5 秒窗口、
+  两个有效 CPU 区间（仍要求两段都热或 IO 增长），不阻塞 stdout reader；
+  180/300/600s 后按原 300s 间隔继续。短命令不额外等待，命令完成/取消立即退出。
+- **判活**：正常 `AgentV2` 注入当前会话、已绑定 provider/capability/usage 的
+  `SessionLivenessJudge`，只接受 `continue|stop|unknown + note` JSON；不依赖
+  P6 `timeout_decision.enabled`、不改 `TimeoutDecisionEngine` ledger/pre-check、
+  不创建第二 provider。无 owner LLM、超时、断网或非法 JSON 均诚实记为
+  `unknown` 并继续原 hard budget；只有明确 `stop` 才取消当前命令。
+- **接线**：one-shot、`ManagedShell._collect` 和
+  `LocalNativeBackend.run_command` 使用同一 probe sink；native 只接收 callback
+  和相对 checkpoint，不导入 harness。probe 以 `call_id+pid+generation+seq`
+  隔离，完成/取消会 cancel 并收尸迟到 judge，旧结果不能影响下一条或并发命令。
+- **反馈**：复用 additive `ProgressUpdate.details=process_liveness`，每个真实
+  probe 恰好一条证据+结论；reporter 使用 request/child 的 event-TUI ContextVar，
+  不写父会话、不写 Thought、不复用 P6 timeout event。无可用 LLM 时明确
+  “本次未判定”。
+- **兼容/安全**：持久 shell 状态、权限、sandbox、journal、输出 capture、
+  `timeout+5` 协议、原 hard timeout 与用户取消清树不变；撤回 oneshot 180s
+  idle 机械杀，不新增长墙钟或重启额度。2026-10-24 保护注释已写入
+  `utils/shell.py` 与 protocol contract。
+- **验证**：`python -m pytest tests/test_execution/test_shell_timeout_watchdog_parity.py
+  tests/test_core/test_bash_watchdog.py tests/test_core/test_lazy_import_budget.py -q`
+  → **18 passed**；邻近 managed/persistent/timeout/tool-contract/lost-evidence
+  targeted 回归通过；独立 Quality 的同两文件 fresh 运行 → **15 passed / 12.38s**。
+  Ruff focused 通过，P7 `180/181` 未抬阈值。未做全量套件、未改 Build/TTFT、
+  未提交/推送/部署。
+
 ### Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
 
 - `execution/tool_orchestrator.py::_match_hints`: hint 归一后先经 `get()` 物化懒注册内建工具（`write` 自 5ea33c9d 起只在 `get()` 内注册）——此前 `select_safe_tools(["write", ...])` 静默漏掉 write 代理，模型 write 调用被 ToolNode 判 unknown，leaf `task.evidence` 为空并被 deterministic 校验判 cancel（`tests/integration/test_agent_main_chain.py` 在 Linux CI 的 `evidence=[]` 失败即此）。

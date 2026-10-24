@@ -19,6 +19,7 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `agent_worker.py` | Isolated subprocess: bootstrap + `Session.prompt` (T1); async stdout via `write_message` (T3) |
 | `watchdog.py` | Stall detection + degraded mode (T4) |
 | `tui.py` | `ProtocolTui.write_timeout_decision` passes `event/timeout_decision` through unchanged |
+| `tui.py` process liveness | `ProtocolTui.write_progress(text, details=...)` emits one typed `ProgressUpdate`; typed evidence bypasses the text coalescer, while plain progress keeps the legacy buffered path |
 | `jsonrpc.py` | Read/write helpers; `write_message` offloads sync stdout to a thread (T3) |
 | `live_env.py` | Builds the live integration-test env (`build_live_appserver_env`) from real user config for `RXYCODE_APPSERVER_LIVE=1` |
 | `approval.py` | `JsonRpcApproval` broker (bidirectional `approval/request`) |
@@ -26,12 +27,6 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `runtime.py` | Per-prompt context vars for concurrent session isolation |
 | `tui.py` | `ProtocolTui` maps AgentV2 TUI calls to protocol notifications |
 | `runtime.py` | Per-prompt asyncio context（session/TUI 绑定）+ **委托深度追踪**（2026-09-23 P0） |
-
-**2026-09-23（P0 answer-last）**：`MessageDelta` / `ProgressUpdate` / `ReasoningSnapshot`
-新增 `intermediate` 字段。子代理执行期间（`bind_delegate_depth` 深度 ≥1）
-`ProtocolTui` 的流式输出打标 `intermediate=True`；前端 streamReducer 据此把
-中间输出挡在主聊流外，保证「最终答复是本轮最后一个面向用户的事件」。
-契约测试：`tests/test_appserver/test_answer_last_contract.py`。
 | `sessions.py` | Multi-session registry。首轮 `session/prompt` 写 `last_user_prompt` + fallback 标题；`sessions/list` 隐藏无用户对话的空窗口 |
 | `schedule_service.py` | OpenTUI `/loop` 磁盘作业 + `restore_after_restart`（UPDATE-01 U66）。boot 把 `running` 标 `recovery_required`，不复活被杀 bash |
 | `task_store.py` | Desktop/OpenTUI 会话目录 `tasks.json`。catalog 可带 `last_user_prompt` 供标题回填；transcript 是 `session/events`（tool_begin/end、`event/final` 的 thinking+text），不是 compact 摘要当 UI |
@@ -39,6 +34,19 @@ messages to **stdout**, and sends all logs to **stderr** only.
 | `stub.py` | Deterministic agent when `RXYCODE_APPSERVER_STUB=1` |
 | `emitter.py` | pydantic notification -> JSON-RPC notification |
 | `subagent_routes.py` | Subagent JSON-RPC methods (`agent/invoke`, `task/start`, `subagents/list`, `subagents/capability`) |
+
+**2026-09-23（P0 answer-last）**：`MessageDelta` / `ProgressUpdate` / `ReasoningSnapshot`
+新增 `intermediate` 字段。子代理执行期间（`bind_delegate_depth` 深度 ≥1）
+`ProtocolTui` 的流式输出打标 `intermediate=True`；前端 streamReducer 据此把
+中间输出挡在主聊流外，保证「最终答复是本轮最后一个面向用户的事件」。
+契约测试：`tests/test_appserver/test_answer_last_contract.py`。
+
+2026-10-24：`write_progress` also accepts optional `details`. A
+`ProcessLivenessDetails` row is emitted immediately, without appserver stream
+coalescing, so one real five-second CPU/IO plus model-judgment result cannot be
+folded into a status string. Callers without details are unchanged. Without
+explicit user confirmation, future adapters must not bypass that observation,
+model judgment, or per-result feedback.
 
 ## Request flow
 

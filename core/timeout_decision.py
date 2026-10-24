@@ -30,6 +30,19 @@ from RxyCode.RxyCode1_1_0.tools.todo_events import (
     todo_progress_for_session as _todo_progress_for_session,
     todo_progress_snapshot as _todo_progress_snapshot,
 )
+from RxyCode.RxyCode1_1_0.utils.shell import (
+    LivenessVerdict,
+    SessionLivenessJudge,
+    build_liveness_prompt,
+    parse_liveness_response,
+)
+
+__all__ = [
+    "LivenessVerdict",
+    "SessionLivenessJudge",
+    "build_liveness_prompt",
+    "parse_liveness_response",
+]
 
 
 def begin_decision_events():

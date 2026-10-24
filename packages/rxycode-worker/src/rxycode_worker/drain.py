@@ -1144,6 +1144,22 @@ def _projection_rows(
     elif method == "event/progress":
         # Status lines stay off the thought block. The CLI shows these on the
         # spinner, not as the model's chain of thought.
+        details = body.get("details")
+        if details is not None:
+            liveness = _safe_process_liveness(details, body.get("text"))
+            if liveness is None:
+                # A malformed or untyped liveness payload is an explicit
+                # unknown result, never a heartbeat dressed up as a model
+                # decision. 2026-10-24 protection: do not bypass the 5s
+                # observation/model-judgment feedback contract.
+                liveness = {
+                    "invalid": True,
+                    "action": "unknown",
+                    "note": "进程判活结果格式无效",
+                    "text": "进程判活结果无法解析",
+                }
+            rows.append(("process.liveness", liveness))
+            return rows
         rows.append(
             (
                 "assistant.delta",
@@ -1235,6 +1251,90 @@ def _projection_rows(
                     )
                 )
     return rows
+
+
+_PROCESS_LIVENESS_ACTIONS = frozenset({"continue", "stop", "unknown"})
+
+
+def _safe_process_liveness(
+    details: Any,
+    summary: Any,
+) -> dict[str, Any] | None:
+    """Whitelist one typed process-liveness row before durable projection."""
+    if not isinstance(details, dict) or details.get("kind") != "process_liveness":
+        return None
+    action = details.get("action")
+    if action not in _PROCESS_LIVENESS_ACTIONS:
+        return None
+
+    def _identifier(name: str) -> str | None:
+        value = details.get(name)
+        if not isinstance(value, str) or not value or len(value) > 200:
+            return None
+        return value
+
+    def _integer(name: str, minimum: int) -> int | None:
+        value = details.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            return None
+        return value
+
+    def _number(name: str) -> float | None:
+        value = details.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value < 0:
+            return None
+        return float(value)
+
+    probe_id = _identifier("probe_id")
+    call_id = _identifier("call_id")
+    generation = _integer("generation", 0)
+    pid = _integer("pid", 1)
+    probe_seq = _integer("seq", 1)
+    elapsed_seconds = _number("elapsed_seconds")
+    observation_seconds = _number("observation_seconds")
+    cpu_start_percent = _number("cpu_start_percent")
+    cpu_end_percent = _number("cpu_end_percent")
+    io_start_bytes = _integer("io_start_bytes", 0)
+    io_end_bytes = _integer("io_end_bytes", 0)
+    process_count = _integer("process_count", 0)
+    note = details.get("note")
+    if (
+        probe_id is None
+        or call_id is None
+        or generation is None
+        or pid is None
+        or probe_seq is None
+        or elapsed_seconds is None
+        or observation_seconds is None
+        or cpu_start_percent is None
+        or cpu_end_percent is None
+        or io_start_bytes is None
+        or io_end_bytes is None
+        or process_count is None
+        or not isinstance(note, str)
+        or len(note) > 2000
+    ):
+        return None
+    return {
+        "kind": "process_liveness",
+        "probe_id": probe_id,
+        "call_id": call_id,
+        "generation": generation,
+        "pid": pid,
+        "seq": probe_seq,
+        "elapsed_seconds": elapsed_seconds,
+        "observation_seconds": observation_seconds,
+        "cpu_start_percent": cpu_start_percent,
+        "cpu_end_percent": cpu_end_percent,
+        "io_start_bytes": io_start_bytes,
+        "io_end_bytes": io_end_bytes,
+        "process_count": process_count,
+        "action": action,
+        "note": note,
+        "text": str(summary or "")[:1000],
+    }
 
 
 class _RunEmit:

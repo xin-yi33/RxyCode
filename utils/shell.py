@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
+from contextvars import ContextVar, Token, copy_context
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path
@@ -15,9 +16,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable, Mapping, NamedTuple
 
 import psutil
+from langchain_core.messages import HumanMessage
 
 from ..config.settings import load_config
 from ..core.session_runtime import (
@@ -41,11 +43,190 @@ DEFAULT_SHELL_TIMEOUT = 1800
 WATCHDOG_CHECKPOINTS = (180.0, 300.0, 600.0)
 WATCHDOG_IDLE_CPU_PERCENT = 5.0
 WATCHDOG_IDLE_KILL_AFTER = 180.0
-WATCHDOG_OBSERVE_SECONDS = 3.0
+WATCHDOG_OBSERVE_SECONDS = 5.0
 # 废弃代码（2026-09-22）：内存涨过 4MB 就当成仍在工作。
 # 启动解释器本身就会涨，CPU 已经是 0% 时模型仍收到「仍在工作」。
 # WATCHDOG_BUSY_RSS_BYTES = 4 * 1024 * 1024
 WATCHDOG_BUSY_IO_BYTES = 2 * 1024 * 1024
+
+# 2026-10-24 user constraint: long-running shell commands must be observed for
+# a real five-second CPU/IO window and judged by the current session model.
+# Do not remove or bypass this path for latency, and never kill on low CPU/IO
+# alone. Only an explicit liveness "stop" may cancel the current command.
+
+
+@dataclass
+class ProcessProbeContext:
+    """Per-tool-call identity used to reject late probes after cancellation."""
+
+    call_id: str
+    generation: int
+    handler: Callable[[dict[str, Any]], Awaitable[Any]] | None
+    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
+    seq: int = 0
+    reported: set[str] | None = None
+
+
+_PROCESS_PROBE_CONTEXT: ContextVar[ProcessProbeContext | None] = ContextVar(
+    "process_liveness_probe",
+    default=None,
+)
+
+
+def bind_process_probe(
+    handler: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+    *,
+    call_id: str,
+    generation: int,
+    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+) -> Token[ProcessProbeContext | None]:
+    """Bind one tool call's liveness sink for managed/one-shot/native shells."""
+    context = ProcessProbeContext(
+        call_id=str(call_id or ""),
+        generation=max(0, int(generation)),
+        handler=handler,
+        reporter=reporter,
+        reported=set(),
+    )
+    return _PROCESS_PROBE_CONTEXT.set(context)
+
+
+def reset_process_probe(token: Token[ProcessProbeContext | None]) -> None:
+    _PROCESS_PROBE_CONTEXT.reset(token)
+
+
+def current_process_probe() -> ProcessProbeContext | None:
+    return _PROCESS_PROBE_CONTEXT.get()
+
+
+def process_probe_deadlines(
+    started: float,
+    timeout: float,
+    checkpoints: tuple[float, ...] | list[float] = WATCHDOG_CHECKPOINTS,
+) -> list[float]:
+    """Known checkpoints, then the same cadence after the final one."""
+    marks = sorted({float(mark) for mark in checkpoints if float(mark) > 0})
+    if not marks:
+        return []
+    deadline = started + max(0.0, float(timeout))
+    due = [started + mark for mark in marks if started + mark < deadline]
+    interval = marks[-1] - marks[-2] if len(marks) > 1 else marks[-1]
+    if interval <= 0:
+        interval = marks[-1]
+    following = started + marks[-1] + interval
+    while following < deadline:
+        due.append(following)
+        following += interval
+    return due
+
+
+class LivenessVerdict(NamedTuple):
+    action: str
+    note: str
+
+
+def parse_liveness_response(text: str) -> LivenessVerdict:
+    """Parse the liveness-only JSON contract; malformed output is unknown."""
+    body = str(text or "").strip()
+    if body.startswith("```"):
+        lines = body.splitlines()
+        if len(lines) < 3 or lines[0].strip() != "```json" or lines[-1].strip() != "```":
+            return LivenessVerdict("unknown", "本次未判定（判活返回格式非法）")
+        body = "\n".join(lines[1:-1]).strip()
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return LivenessVerdict("unknown", "本次未判定（判活返回非 JSON）")
+    if not isinstance(payload, dict):
+        return LivenessVerdict("unknown", "本次未判定（判活返回非对象）")
+    action = str(payload.get("action") or "").strip().lower()
+    note = str(payload.get("note") or "").strip()
+    if action not in {"continue", "stop", "unknown"}:
+        return LivenessVerdict("unknown", "本次未判定（action 非法）")
+    if not note:
+        note = {
+            "continue": "LLM 判定：继续等待",
+            "stop": "LLM 判定：停止当前命令",
+            "unknown": "本次未判定",
+        }[action]
+    return LivenessVerdict(action, note[:500])
+
+
+def build_liveness_prompt(probe: Mapping[str, Any]) -> str:
+    """Small, redacted liveness evidence. The command and output are excluded."""
+    fields = {
+        key: probe.get(key)
+        for key in (
+            "elapsed_seconds",
+            "observation_seconds",
+            "cpu_start_percent",
+            "cpu_end_percent",
+            "io_start_bytes",
+            "io_end_bytes",
+            "process_count",
+            "busy",
+            "evidence",
+        )
+    }
+    return (
+        "Decide whether this shell command process is still making progress. "
+        "Low CPU or IO alone is NOT proof it is stuck: downloads, sleeps, network "
+        "waits and blocked-on-input work may legitimately look idle. Return one "
+        "JSON object with exactly: action (continue|stop|unknown), note (short). "
+        "Use stop only with clear evidence the current command should be "
+        "cancelled. Never request extra time or change budgets.\n"
+        + json.dumps(fields, ensure_ascii=False)
+    )
+
+
+def _llm_response_text(response: Any) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+            else:
+                text = getattr(item, "text", None) or getattr(item, "content", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return str(content or "")
+
+
+class SessionLivenessJudge:
+    """Current-session model judge without the P6 decision/ledger path."""
+
+    def __init__(
+        self,
+        llm_provider: Callable[[], Any],
+        *,
+        timeout_seconds: float = 15.0,
+    ) -> None:
+        self._llm_provider = llm_provider
+        self._timeout_seconds = max(0.1, float(timeout_seconds))
+
+    async def __call__(self, probe: Mapping[str, Any]) -> LivenessVerdict:
+        llm = self._llm_provider()
+        if llm is None or not callable(getattr(llm, "ainvoke", None)):
+            return LivenessVerdict("unknown", "本次未判定（无可用会话 LLM）")
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke([HumanMessage(content=build_liveness_prompt(probe))]),
+                timeout=self._timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return LivenessVerdict("unknown", "本次未判定（判活超时）")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return LivenessVerdict(
+                "unknown",
+                f"本次未判定（判活失败：{type(exc).__name__}）",
+            )
+        return parse_liveness_response(_llm_response_text(response))
 
 # POSIX heredoc: `python - <<'PY'` ... `PY`. The `head` group keeps any
 # leading command prefix (e.g. `cd /d X && python - <<'PY'`), the `prog`
@@ -231,6 +412,272 @@ def watchdog_is_busy(
     if cpu_hot or io_moved:
         return True
     return False
+
+
+@dataclass(frozen=True)
+class ProcessProbeResult:
+    action: str
+    note: str
+    details: dict[str, Any]
+
+
+def _probe_completion_done(completion: Any) -> bool:
+    if completion is None:
+        return False
+    if isinstance(completion, asyncio.Event):
+        return completion.is_set()
+    done = getattr(completion, "done", None)
+    return bool(done()) if callable(done) else False
+
+
+async def _wait_probe_slice(completion: Any, seconds: float) -> bool:
+    """Wait for a probe slice; True means command/work completed first."""
+    if seconds <= 0:
+        return _probe_completion_done(completion)
+    if completion is None:
+        await asyncio.sleep(seconds)
+        return False
+    if isinstance(completion, asyncio.Event):
+        try:
+            await asyncio.wait_for(completion.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            return False
+        return True
+    if hasattr(completion, "__await__"):
+        done, _ = await asyncio.wait({completion}, timeout=seconds)
+        return bool(done)
+    await asyncio.sleep(seconds)
+    return False
+
+
+async def emit_process_liveness_to_tui(
+    tui: Any,
+    text: str,
+    details: dict[str, Any],
+) -> None:
+    """Write one probe result to an explicitly owned TUI/reporter."""
+    if tui is None:
+        return
+    writer = getattr(tui, "write_progress", None)
+    if callable(writer):
+        try:
+            writer(text, details=details)
+            return
+        except TypeError:
+            pass
+        except Exception:
+            pass
+        try:
+            writer(text)
+            return
+        except Exception:
+            pass
+    fallback = getattr(tui, "write_turn_liveness", None)
+    if callable(fallback):
+        try:
+            fallback(text)
+        except Exception:
+            pass
+
+
+async def _emit_process_liveness(
+    text: str,
+    details: dict[str, Any],
+    *,
+    reporter: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    allow_global_tui: bool = True,
+) -> None:
+    """Emit one real probe result through the existing progress channel."""
+    if reporter is not None:
+        await reporter(text, details)
+        return
+    if not allow_global_tui:
+        return
+    try:
+        from .tui import get_tui
+
+        tui = get_tui()
+    except Exception:
+        _emit_bash_watchdog(text)
+        return
+    if tui is None:
+        _emit_bash_watchdog(text)
+        return
+    await emit_process_liveness_to_tui(tui, text, details)
+
+
+async def run_process_probe(
+    pid: int | None,
+    *,
+    elapsed_seconds: float,
+    completion: Any = None,
+    observe_seconds: float | None = None,
+    idle_cpu_percent: float | None = None,
+) -> ProcessProbeResult | None:
+    """Observe one five-second window, judge it, and report exactly once.
+
+    The caller keeps reading stdout while this coroutine yields. A short
+    command that completes before or during the observation produces no
+    synthetic result. Low CPU/IO is evidence, never a kill decision.
+    """
+    if not pid or _probe_completion_done(completion):
+        return None
+    bound_context = current_process_probe()
+    context = bound_context
+    if context is None:
+        context = ProcessProbeContext(
+            call_id="direct",
+            generation=0,
+            handler=None,
+            reported=set(),
+        )
+    context.seq += 1
+    seq = context.seq
+    if observe_seconds is None:
+        observe_seconds = getattr(
+            shell_executor,
+            "watchdog_observe_seconds",
+            WATCHDOG_OBSERVE_SECONDS,
+        )
+    observe_seconds = max(0.05, float(observe_seconds))
+    sampler = ProcessTreeSampler(pid)
+    # Prime psutil, then use two real interval samples for the CPU verdict.
+    # Never use the immediate post-prime reading: it is approximately zero and
+    # would falsely classify a CPU-busy command as idle.
+    sampler.sample()
+    first_slice = observe_seconds / 2.0
+    if await _wait_probe_slice(completion, first_slice):
+        return None
+    cpu1, _rss1, live1, io1 = sampler.sample()
+    if await _wait_probe_slice(completion, observe_seconds - first_slice):
+        return None
+    cpu2, _rss2, live2, io2 = sampler.sample()
+    busy = watchdog_is_busy(
+        cpu=cpu2,
+        rss=0,
+        last_rss=0,
+        io_bytes=io2,
+        last_io=io1,
+        live=live2,
+        last_live=live1,
+        idle_cpu_percent=float(
+            idle_cpu_percent
+            if idle_cpu_percent is not None
+            else getattr(
+                shell_executor,
+                "watchdog_idle_cpu_percent",
+                WATCHDOG_IDLE_CPU_PERCENT,
+            )
+        ),
+        prev_cpu=cpu1,
+    )
+    evidence = (
+        f"观察 {observe_seconds:.1f}s：CPU {cpu1:.1f}%→{cpu2:.1f}%，"
+        f"IO {io1 // 1024}KB→{io2 // 1024}KB，"
+        f"进程 {live1}→{live2}；"
+        f"本窗口{'有活动' if busy else 'CPU/IO 偏低'}"
+    )
+    action = "unknown"
+    note = "本次未判定（无可用会话 LLM）"
+    if context.handler is not None:
+        payload = {
+            "kind": "process_liveness",
+            "call_id": context.call_id,
+            "generation": context.generation,
+            "pid": int(pid),
+            "seq": seq,
+            "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
+            "observation_seconds": round(observe_seconds, 3),
+            "cpu_start_percent": round(max(0.0, cpu1), 3),
+            "cpu_end_percent": round(max(0.0, cpu2), 3),
+            "io_start_bytes": max(0, int(io1)),
+            "io_end_bytes": max(0, int(io2)),
+            "process_count": max(0, int(live2)),
+            "busy": bool(busy),
+            "evidence": evidence,
+        }
+        verdict_task = asyncio.create_task(context.handler(payload))
+        completion_waiter = completion
+        owned_completion_waiter: asyncio.Task[bool] | None = None
+        if isinstance(completion, asyncio.Event):
+            owned_completion_waiter = asyncio.create_task(completion.wait())
+            completion_waiter = owned_completion_waiter
+        try:
+            if completion_waiter is not None and hasattr(completion_waiter, "__await__"):
+                done, _ = await asyncio.wait(
+                    {verdict_task, completion_waiter},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if completion_waiter in done:
+                    if not verdict_task.done():
+                        verdict_task.cancel()
+                    await asyncio.gather(verdict_task, return_exceptions=True)
+                    return None
+            verdict = await verdict_task
+        except asyncio.CancelledError:
+            if not verdict_task.done():
+                verdict_task.cancel()
+            await asyncio.gather(verdict_task, return_exceptions=True)
+            raise
+        except Exception as exc:
+            action = "unknown"
+            note = f"本次未判定（判活失败：{type(exc).__name__}）"
+        else:
+            if isinstance(verdict, str):
+                action = verdict
+            elif isinstance(verdict, dict):
+                action = str(verdict.get("action") or "unknown")
+                note = str(verdict.get("note") or "").strip()
+            if action not in {"continue", "stop", "unknown"}:
+                action = "unknown"
+                note = "本次未判定（非法判活结果）"
+            elif not note:
+                note = {
+                    "continue": "LLM 判定：继续等待",
+                    "stop": "LLM 判定：停止当前命令",
+                    "unknown": "本次未判定",
+                }[action]
+        finally:
+            if owned_completion_waiter is not None and not owned_completion_waiter.done():
+                owned_completion_waiter.cancel()
+                await asyncio.gather(
+                    owned_completion_waiter,
+                    return_exceptions=True,
+                )
+    probe_id = (
+        f"{context.call_id}:{context.generation}:{int(pid)}:{seq}"
+        if context.call_id
+        else f"direct:{int(pid)}:{seq}"
+    )
+    details = {
+        "kind": "process_liveness",
+        "probe_id": probe_id,
+        "call_id": context.call_id,
+        "generation": context.generation,
+        "pid": int(pid),
+        "seq": seq,
+        "elapsed_seconds": round(max(0.0, float(elapsed_seconds)), 3),
+        "observation_seconds": round(observe_seconds, 3),
+        "cpu_start_percent": round(max(0.0, cpu1), 3),
+        "cpu_end_percent": round(max(0.0, cpu2), 3),
+        "io_start_bytes": max(0, int(io1)),
+        "io_end_bytes": max(0, int(io2)),
+        "process_count": max(0, int(live2)),
+        "action": action,
+        "note": note[:500],
+    }
+    if context.reported is None:
+        context.reported = set()
+    if probe_id not in context.reported:
+        context.reported.add(probe_id)
+        if bound_context is None or current_process_probe() is context:
+            await _emit_process_liveness(
+                f"{evidence}；{note}",
+                details,
+                reporter=context.reporter,
+                allow_global_tui=bound_context is None,
+            )
+    return ProcessProbeResult(action=action, note=note, details=details)
 
 
 def _emit_bash_watchdog(message: str) -> None:
@@ -1491,37 +1938,12 @@ class ShellExecutor:
             checkpoint_marks = getattr(
                 self, "watchdog_checkpoints", WATCHDOG_CHECKPOINTS
             )
-            checkpoints = [
-                started + float(mark)
-                for mark in checkpoint_marks
-                if started + float(mark) < deadline
-            ]
-            idle_kill_at = started + float(
-                getattr(
-                    self,
-                    "watchdog_idle_kill_after",
-                    WATCHDOG_IDLE_KILL_AFTER,
-                )
+            checkpoints = process_probe_deadlines(
+                started,
+                timeout,
+                checkpoint_marks,
             )
-            idle_cpu_percent = float(
-                getattr(
-                    self,
-                    "watchdog_idle_cpu_percent",
-                    WATCHDOG_IDLE_CPU_PERCENT,
-                )
-            )
-            sampler: ProcessTreeSampler | None = None
-            # 废弃代码（2026-09-22）：last_rss / last_live 参与忙闲判断。
-            # last_rss = last_live = last_io = 0
-            last_io = 0
             probes: list[str] = []
-            observe_seconds = float(
-                getattr(
-                    self,
-                    "watchdog_observe_seconds",
-                    WATCHDOG_OBSERVE_SECONDS,
-                )
-            )
             # A completed StreamReader-backed mock needs one scheduling turn
             # per pipe before gather becomes done; avoid probing psutil for a
             # process that has already exited during pipe startup.
@@ -1529,12 +1951,6 @@ class ShellExecutor:
                 if capture_task.done():
                     break
                 await asyncio.sleep(0)
-            if checkpoints and not capture_task.done():
-                sampler = ProcessTreeSampler(process.pid)
-                sampler.sample()
-                # 废弃代码（2026-09-22）：把启动时的内存和进程数当作仍在工作的基线。
-                # _, last_rss, last_live, last_io = sampler.sample()
-                _, _, _, last_io = sampler.sample()
 
             while True:
                 now = time.monotonic()
@@ -1570,75 +1986,38 @@ class ShellExecutor:
                 if capture_task in done:
                     break
                 now = time.monotonic()
-                if checkpoints and sampler is not None and now + 0.05 >= checkpoints[0]:
+                if checkpoints and now + 0.05 >= checkpoints[0]:
                     checkpoints.pop(0)
-                    cpu1, rss1, live1, io1 = sampler.sample()
-                    if (
-                        observe_seconds > 0
-                        and not capture_task.done()
-                    ):
-                        await asyncio.wait(
-                            {capture_task},
-                            timeout=observe_seconds,
-                        )
-                    if capture_task.done():
+                    probe = await run_process_probe(
+                        process.pid,
+                        elapsed_seconds=time.monotonic() - started,
+                        completion=capture_task,
+                        observe_seconds=float(
+                            getattr(
+                                self,
+                                "watchdog_observe_seconds",
+                                WATCHDOG_OBSERVE_SECONDS,
+                            )
+                        ),
+                        idle_cpu_percent=float(
+                            getattr(
+                                self,
+                                "watchdog_idle_cpu_percent",
+                                WATCHDOG_IDLE_CPU_PERCENT,
+                            )
+                        ),
+                    )
+                    if probe is None:
                         break
-                    cpu2, rss2, live2, io2 = sampler.sample()
-                    elapsed = int(time.monotonic() - started)
-                    # 忙闲只走 watchdog_is_busy。IO 对比上一检查点，CPU 用这 3 秒两次读数。
-                    # 废弃代码（2026-09-22）：检查点内再写一套 io_moved / sustained，
-                    # 和 watchdog_is_busy 各判一次。
-                    # io_moved = io2 >= last_io + WATCHDOG_BUSY_IO_BYTES
-                    # sustained = cpu1 >= idle_cpu_percent and cpu2 >= idle_cpu_percent
-                    # busy = bool(sustained or io_moved)
-                    # last_rss = max(last_rss, rss2)
-                    # last_live = max(last_live, live2)
-                    busy = watchdog_is_busy(
-                        cpu=cpu2,
-                        rss=rss2,
-                        last_rss=rss1,
-                        io_bytes=io2,
-                        last_io=last_io,
-                        live=live2,
-                        last_live=live1,
-                        idle_cpu_percent=idle_cpu_percent,
-                        prev_cpu=cpu1,
-                    )
-                    last_io = max(last_io, io2)
-                    line = (
-                        f"bash {elapsed}s: cpu={cpu1:.1f}%->{cpu2:.1f}% "
-                        f"rss={rss2 // 1024}KB io={io2 // 1024}KB procs={live2} "
-                        f"{'working' if busy else 'idle-cpu'}"
-                    )
-                    probes.append(line)
-                    note = (
-                        f"bash 已运行 {elapsed}s。先观察 {observe_seconds:.0f} 秒："
-                        f"CPU {cpu1:.1f}% → {cpu2:.1f}%，"
-                        f"IO {io1 // 1024}KB → {io2 // 1024}KB，"
-                        f"进程 {live1} → {live2}。"
-                        "单次 CPU 冲高且 IO 不涨是震荡，不要据此当成还在工作。"
-                    )
-                    if busy:
-                        _emit_bash_watchdog(
-                            note
-                            + "这 3 秒里 CPU 持续偏高或 IO 在涨，未杀死。"
-                            "若这是编译、下载、测试等长进程，就留到硬超时。"
-                        )
-                        continue
-                    if time.monotonic() + 0.05 >= idle_kill_at:
+                    probes.append(probe.note)
+                    if probe.action == "stop":
                         await self._cleanup_process(process, cidfile)
                         await self._cancel_task(capture_task)
                         return _failure(
-                            "[watchdog idle after "
-                            f"{elapsed}s] {note}"
-                            "两次都接近空闲。由你判断：长进程就用更大的 timeout 再跑；"
-                            "已经卡住就换更窄的命令或跳过。"
-                            "这不是解释器损坏。",
+                            f"[liveness stop after {int(time.monotonic() - started)}s] "
+                            f"{probe.note}",
                             error_type="timeout",
                         )
-                    _emit_bash_watchdog(
-                        note + "还没到交回模型的检查点，先继续等。"
-                    )
 
             await capture_task
             captured = capture.finish()

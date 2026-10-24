@@ -38,6 +38,7 @@ from RxyCode.RxyCode1_1_0.config.timeouts import resolve_timeout, with_legacy_fa
 from RxyCode.RxyCode1_1_0.tools.secret_text import redact_secrets
 from RxyCode.RxyCode1_1_0.tools.todo_events import todo_progress_for_session
 from RxyCode.RxyCode1_1_0.tools.write import write_tool
+from RxyCode.RxyCode1_1_0.utils import shell as shell_runtime
 
 from RxyCode.RxyCode1_1_0.core.governance import PolicyOutcome, SensitiveActionPolicy
 from RxyCode.RxyCode1_1_0.core.safety.approval import (
@@ -275,6 +276,7 @@ class ToolOrchestrator:
         max_workers: int | None = None,
         tool_registry: Any | None = None,
         timeout_engine: Any | None = None,
+        liveness_judge: Any | None = None,
     ):
         if tool_registry is None:
             from RxyCode.RxyCode1_1_0.tools.registry import default_registry
@@ -330,7 +332,42 @@ class ToolOrchestrator:
         self._atexit_handle = atexit.register(self.shutdown_sync_executor)
         # None keeps the historical wait_for path: a timeout cancels the call.
         self._timeout_engine = timeout_engine
+        self._liveness_judge = liveness_judge
+        self._probe_generation = 0
         self._active_invocation: asyncio.Task | None = None
+
+    async def _judge_process_liveness(self, payload: dict[str, Any]) -> dict[str, str]:
+        judge = self._liveness_judge
+        if judge is None:
+            owner = getattr(self, "_owner_agent", None)
+            judge = getattr(owner, "_liveness_judge", None)
+        if judge is None:
+            return {
+                "action": "unknown",
+                "note": "本次未判定（无可用会话 LLM）",
+            }
+        verdict = await judge(payload)
+        if isinstance(verdict, dict):
+            return {
+                "action": str(verdict.get("action") or "unknown"),
+                "note": str(verdict.get("note") or ""),
+            }
+        return {
+            "action": str(getattr(verdict, "action", "unknown")),
+            "note": str(getattr(verdict, "note", "")),
+        }
+
+    async def _report_process_liveness(
+        self,
+        text: str,
+        details: dict[str, Any],
+    ) -> None:
+        """Report through this call's request-context TUI, never a global one."""
+        await shell_runtime.emit_process_liveness_to_tui(
+            self.get_event_tui(),
+            text,
+            details,
+        )
 
     def expose_invocation_for_test(self):
         """Read-only handle for the in-flight tool task. None before any call."""
@@ -1172,6 +1209,14 @@ class ToolOrchestrator:
                 )
             return await self._invoke_async(tool, args)
 
+        self._probe_generation += 1
+        probe_call_id = str(call_id or f"tool-{name}-{uuid.uuid4().hex[:12]}")
+        probe_token = shell_runtime.bind_process_probe(
+            self._judge_process_liveness,
+            call_id=probe_call_id,
+            generation=self._probe_generation,
+            reporter=self._report_process_liveness,
+        )
         try:
             if self._timeout_engine is None:
                 invocation = invoke()
@@ -1230,6 +1275,8 @@ class ToolOrchestrator:
                 config=config,
                 duration_ms=elapsed_ms(),
             )
+        finally:
+            shell_runtime.reset_process_probe(probe_token)
         finished = self._finish(
             name,
             args,
@@ -1401,6 +1448,11 @@ class ToolOrchestrator:
                                 pass
 
             liveness_task = asyncio.create_task(_refresh_tool_wait())
+            event_tui_token = (
+                self.bind_event_tui(tui)
+                if event_tui is not None
+                else None
+            )
             try:
                 result = await self._execute_tool_gated(
                     name,
@@ -1411,6 +1463,8 @@ class ToolOrchestrator:
                     call_id=resolved_call_id,
                 )
             finally:
+                if event_tui_token is not None:
+                    self.reset_event_tui(event_tui_token)
                 live = _inflight_tools.get() or {}
                 live.pop(resolved_call_id, None)
                 remaining = list(dict.fromkeys(live.values()))
@@ -2040,11 +2094,49 @@ class ToolOrchestrator:
                         _format_result = None
                     # WEB-W7-C02：与常规执行面同一 argv 构造——full_auto
                     # 在 Windows 也走 PowerShell，不再退化 create_subprocess_shell。
+                    probe_offsets = tuple(
+                        shell_runtime.process_probe_deadlines(
+                            0.0,
+                            timeout,
+                            getattr(
+                                shell_runtime.shell_executor,
+                                "watchdog_checkpoints",
+                                shell_runtime.WATCHDOG_CHECKPOINTS,
+                            ),
+                        )
+                    )
+
+                    async def probe_native(
+                        pid: int,
+                        elapsed_seconds: float,
+                        completion: asyncio.Future[Any] | None = None,
+                    ) -> dict[str, str]:
+                        probe = await shell_runtime.run_process_probe(
+                            pid,
+                            elapsed_seconds=elapsed_seconds,
+                            completion=completion,
+                        )
+                        if probe is None:
+                            return {"action": "continue"}
+                        return {
+                            "action": probe.action,
+                            "note": probe.note,
+                        }
+
                     result = await backend.run_command(
-                        shell_executor.build_argv(command), cwd, timeout=timeout
+                        shell_executor.build_argv(command),
+                        cwd,
+                        timeout=timeout,
+                        probe_callback=probe_native,
+                        probe_offsets=probe_offsets,
                     )
                     if not result.started:
                         return "[error executing bash: command did not start]"
+                    if result.stopped_by_liveness:
+                        return (
+                            "[error executing bash: stopped by process "
+                            "liveness decision]"
+                        )
                     stderr = result.stderr or ""
                     if result.timed_out:
                         stderr = (

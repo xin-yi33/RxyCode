@@ -136,7 +136,7 @@ from RxyCode.RxyCode1_1_0.execution.evidence import (
     deterministic_issues,
 )
 from RxyCode.RxyCode1_1_0.tools.git_tool import git_invocation_is_readonly
-from RxyCode.RxyCode1_1_0.utils.shell import shell_executor
+from RxyCode.RxyCode1_1_0.utils.shell import SessionLivenessJudge, shell_executor
 from RxyCode.RxyCode1_1_0.execution.tool_journal import (
     ToolExecutionJournal,
     new_attempt_id,
@@ -2597,6 +2597,20 @@ class AgentV2:
         except Exception:
             _logger.exception("timeout decision engine failed to build")
             raise
+        # 2026-10-24 user constraint: shell liveness is independent of the
+        # optional P6 timeout engine (default disabled). Reuse this session's
+        # already-routed, usage-tracked LLM so BYOK/model switching is honored.
+        try:
+            timeout_section = self._cfg.get("timeout_decision") or {}
+            liveness_timeout = float(
+                timeout_section.get("decision_timeout_seconds", 15.0)
+            )
+        except Exception:
+            liveness_timeout = 15.0
+        self._liveness_judge = SessionLivenessJudge(
+            lambda: getattr(self, "_llm", None),
+            timeout_seconds=liveness_timeout,
+        )
 
         # Tell token_stats which model is active so billing_amount can look
         # up its per-model price from the config ``pricing`` section.
@@ -2678,6 +2692,7 @@ class AgentV2:
         self._tool_orchestrator = ToolOrchestrator(
             tool_registry=None,
             timeout_engine=getattr(self, "_timeout_engine", None),
+            liveness_judge=getattr(self, "_liveness_judge", None),
         )
         self._tool_orchestrator._owner_agent = self
         self._mcp_lock = threading.RLock()

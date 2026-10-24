@@ -6,8 +6,10 @@ import asyncio
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 _logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class NativeResult:
     stdout: str = ""
     stderr: str = ""
     timed_out: bool = False
+    stopped_by_liveness: bool = False
 
 
 @dataclass
@@ -102,7 +105,16 @@ class LocalNativeBackend:
         )
 
     async def run_command(
-        self, argv: list[str] | str, cwd: Path, *, timeout: float = 1800
+        self,
+        argv: list[str] | str,
+        cwd: Path,
+        *,
+        timeout: float = 1800,
+        probe_callback: Callable[
+            [int, float, asyncio.Future[Any]],
+            Awaitable[Any],
+        ] | None = None,
+        probe_offsets: tuple[float, ...] = (),
     ) -> NativeResult:
         """Run the exact command the policy already checked.
 
@@ -159,8 +171,69 @@ class LocalNativeBackend:
                 # 死亡时 kill-on-close 仍生效。
         self._live.add(proc.pid)
         timed_out = False
+        stopped_by_liveness = False
         try:
-            out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if probe_callback is None:
+                out_b, err_b = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=timeout,
+                )
+            else:
+                started = time.monotonic()
+                deadline = started + max(0.0, float(timeout))
+                due = [
+                    started + float(offset)
+                    for offset in sorted(set(probe_offsets))
+                    if float(offset) > 0 and started + float(offset) < deadline
+                ]
+                communicate = asyncio.create_task(proc.communicate())
+                try:
+                    while True:
+                        now = time.monotonic()
+                        if now >= deadline:
+                            _kill_tree(proc.pid)
+                            timed_out = True
+                            break
+                        next_wake = deadline
+                        if due:
+                            next_wake = min(next_wake, due[0])
+                        done, _ = await asyncio.wait(
+                            {communicate},
+                            timeout=max(0.0, next_wake - now),
+                        )
+                        if communicate in done:
+                            break
+                        now = time.monotonic()
+                        if due and now + 0.05 >= due[0]:
+                            due.pop(0)
+                            verdict = await probe_callback(
+                                proc.pid,
+                                now - started,
+                                communicate,
+                            )
+                            action = (
+                                verdict.get("action")
+                                if isinstance(verdict, dict)
+                                else getattr(verdict, "action", None)
+                            )
+                            if action == "stop":
+                                _kill_tree(proc.pid)
+                                stopped_by_liveness = True
+                                break
+                    if communicate.done():
+                        out_b, err_b = communicate.result()
+                    else:
+                        try:
+                            out_b, err_b = await asyncio.wait_for(
+                                communicate,
+                                timeout=5,
+                            )
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            out_b, err_b = await communicate
+                except asyncio.CancelledError:
+                    _kill_tree(proc.pid)
+                    raise
         except asyncio.TimeoutError:
             _kill_tree(proc.pid)
             timed_out = True
@@ -186,6 +259,7 @@ class LocalNativeBackend:
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
+            stopped_by_liveness=stopped_by_liveness,
         )
         self.audit.append(
             {
@@ -194,6 +268,7 @@ class LocalNativeBackend:
                 "approval": "skipped",
                 "started": True,
                 "wrapped": False,
+                "stopped_by_liveness": stopped_by_liveness,
             }
         )
         return result

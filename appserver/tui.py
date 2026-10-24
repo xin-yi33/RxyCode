@@ -15,6 +15,7 @@ try:
     from ..protocol.notifications import (
         MessageDelta,
         PlanUpdate,
+        ProcessLivenessDetails,
         ProgressUpdate,
         RecoveryAnalyzing,
         RecoveryAttempt,
@@ -30,6 +31,7 @@ except ImportError:
     from protocol.notifications import (
         MessageDelta,
         PlanUpdate,
+        ProcessLivenessDetails,
         ProgressUpdate,
         RecoveryAnalyzing,
         RecoveryAttempt,
@@ -295,7 +297,30 @@ class ProtocolTui:
         """Pass a TimeoutDecisionEvent through. No rewrite and no policy."""
         self._emit(event)
 
-    def write_progress(self, text: str) -> None:
+    def write_progress(
+        self,
+        text: str,
+        details: dict[str, Any] | ProcessLivenessDetails | None = None,
+    ) -> None:
+        # A process-liveness result is a complete evidence row, not a text
+        # fragment. Bypass the coalescer so its typed details cannot be merged
+        # away. Plain progress keeps the legacy buffered path unchanged.
+        if details is not None:
+            typed = (
+                details
+                if isinstance(details, ProcessLivenessDetails)
+                else ProcessLivenessDetails.model_validate(details)
+            )
+            self._flush_pending_stream()
+            self._emit(
+                ProgressUpdate(
+                    session_id=self.session_id,
+                    text=_user_safe_text(text, limit=1000),
+                    intermediate=_current_delegate_depth() > 0,
+                    details=typed,
+                )
+            )
+            return
         # Progress is a replacement status line. StreamCoalescer does not
         # concatenate progress segments, so "思考中（第 N 轮）…" cannot glue
         # onto "等待模型返回…". Flushing here would raise a barrier before

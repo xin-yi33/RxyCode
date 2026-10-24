@@ -12,6 +12,7 @@ import type { RunView } from "../runs/eventReducer"
 import { ThinkingBlock } from "./ThinkingBlock"
 import { TasksBlock } from "./TasksBlock"
 import { ToolRow } from "./ToolRow"
+import { ProcessLivenessRow } from "./ProcessLivenessRow"
 import "./timeline.css"
 
 const chipClass: Record<string, string> = {
@@ -140,6 +141,12 @@ export function Timeline({
               return (
                 <li key={key}>
                   <QuestionItem runId={view.runId} item={item} />
+                </li>
+              )
+            case "liveness":
+              return (
+                <li key={key}>
+                  <ProcessLivenessRow item={item} />
                 </li>
               )
             case "final":

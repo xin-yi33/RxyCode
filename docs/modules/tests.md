@@ -124,6 +124,23 @@ npm run build
 npm test
 ```
 
+Process-liveness typed-progress focused gate（2026-10-24）：
+
+```powershell
+python -m pytest tests/test_protocol_process_liveness.py tests/test_appserver/test_process_liveness_progress.py tests/contract/test_process_liveness_stream.py tests/web/w3/test_process_liveness_reducer.py tests/web/w9/test_process_liveness_projection.py -q
+Set-Location frontend/protocol-client
+bun run generate
+bun run typecheck
+Set-Location ../../apps/web
+npm run typecheck
+```
+
+This gate covers the additive `ProgressUpdate.details` schema, the complete
+five-second observation contract, appserver/SSE forwarding without Thought
+coalescing, text compatibility for older clients, worker-only projection,
+malformed-result fallback to `unknown`, replay deduplication, and Web timeline
+visibility outside the final answer.
+
 Windows ConPTY E2E 必须在真实 Windows runner/终端执行：
 
 ```powershell

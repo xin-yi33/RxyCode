@@ -62,7 +62,7 @@ StreamTUI was split out of `api_server.py` into `api_server_stream.py`. The
 | SSE `type` | Source (file:line) | Payload fields | Protocol model |
 |------------|-------------------|----------------|----------------|
 | `token` | `api_server_stream.py:299` (`_put`; buffer key `token`; `flush_stream_buffers` :306) | `text` | `event/message_delta` (`MessageDelta`) |
-| `progress` | `api_server_stream.py:327` (`write_progress`; buffer key `progress`) | `text` | `event/progress` (`ProgressUpdate`) |
+| `progress` | `api_server_stream.py:327` (`write_progress`; buffer key `progress`) | `text`, optional typed `details` | `event/progress` (`ProgressUpdate`) |
 | `reasoning` | `api_server_stream.py:420` (`_emit_thinking_snapshot`) | `text`, optional `snapshot: true` | `event/reasoning_snapshot` (`ReasoningSnapshot`) |
 | `plan` | `api_server_stream.py:349` (`write_plan`; `_put` :299) | `steps` | `event/plan` (`PlanUpdate`) |
 | `step` | `api_server_stream.py:354` (`write_step`) | `index`, `total`, `text` | `event/step` (`StepProgress`) |
@@ -90,6 +90,32 @@ HTTP replies today: `POST /approve` and `POST /question/respond` in `api_server.
 `JobStatusUpdate` and `ServerHeartbeat` are **already emitted on the wire** by
 `appserver/server.py` (`_emit_job_state()` at :112-115 emits `submitted`/
 `running`/`failed`; `ServerHeartbeat` at :484).
+
+### Process-liveness progress details (2026-10-24)
+
+`ProgressUpdate.details` is an optional, additive
+`ProcessLivenessDetails` object. It represents exactly one real process probe
+whose observation window was at least five seconds and whose result was judged
+by the current session model. It is not a heartbeat and must not be synthesized
+from an idle server timer.
+
+The typed fields are `kind="process_liveness"`, `probe_id`, `call_id`,
+`generation`, `pid`, `seq`, `elapsed_seconds`, `observation_seconds`,
+`cpu_start_percent`, `cpu_end_percent`, `io_start_bytes`, `io_end_bytes`,
+`process_count`, `action` (`continue` / `stop` / `unknown`), and `note`. The
+object forbids extra fields, so a command line, raw stdout/stderr, prompt, or
+other untyped secret-bearing field cannot ride along.
+
+Plain progress notifications omit `details` and keep their old text-only wire
+shape. The appserver and HTTP/SSE adapters forward a complete typed result as
+one progress notification; they do not coalesce or relabel it as reasoning.
+The Web projection stores it as a dedicated evidence row and deduplicates SSE
+replay by event `seq` plus `(probe_id, details.seq)`. A malformed result is
+shown as `unknown`, never as evidence of a successful judgment.
+
+2026-10-24 user protection: without explicit user confirmation, no protocol,
+adapter, worker projection, or future refactor may bypass the 5-second
+observation, current-session model judgment, or per-result user feedback.
 
 ### Subagent JSON-RPC methods (appserver)
 

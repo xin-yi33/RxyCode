@@ -7,6 +7,11 @@ import asyncio as _asyncio
 import time as _time
 import uuid as _uuid
 
+try:
+    from .protocol.notifications import ProcessLivenessDetails
+except ImportError:
+    from protocol.notifications import ProcessLivenessDetails
+
 
 class APIProxyTUI:
     """Proxy TUI that captures output for the API."""
@@ -87,7 +92,7 @@ class APIProxyTUI:
     def write_info(self, msg):
         self._last_output.append(f"  {msg}")
 
-    def write_progress(self, text):
+    def write_progress(self, text, details=None):
         self._last_output.append(f"  {text}")
 
     def stream_token(self, tok):
@@ -324,8 +329,35 @@ class StreamTUI:
     )
 
     # progress / plan / steps / tools / streamed tokens
-    def write_progress(self, text, *, record_thinking: bool = True):
+    def write_progress(
+        self,
+        text,
+        details=None,
+        *,
+        record_thinking: bool = True,
+    ):
         text = str(text)
+        if details is not None:
+            typed = (
+                details
+                if isinstance(details, ProcessLivenessDetails)
+                else ProcessLivenessDetails.model_validate(details)
+            )
+            # One real probe produces one complete SSE row. Do not coalesce
+            # this with text fragments, record it as thinking, or lose its
+            # typed evidence in the status-line gate. 2026-10-24 protection:
+            # this surface may not bypass the backend's 5s observation/model
+            # judgment flow without explicit user confirmation.
+            self.flush_stream_buffers()
+            self._put(
+                {
+                    "type": "progress",
+                    "text": text[:1000],
+                    "intermediate": True,
+                    "details": typed.model_dump(mode="json"),
+                }
+            )
+            return
         if record_thinking and self.recorder:
             self.recorder.add_thinking(text)
         # Gating (B2, 问题5/6): with thinking off, only short single-line

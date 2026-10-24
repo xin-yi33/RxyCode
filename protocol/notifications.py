@@ -5,7 +5,7 @@ from __future__ import annotations
 import typing
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, Strict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, Strict, field_validator, model_validator
 
 from .timeout_decision import TimeoutDecisionEvent
 from .todo import TodoSnapshot
@@ -150,6 +150,42 @@ class MessageDelta(BaseModel):
     intermediate: bool = False
 
 
+class ProcessLivenessDetails(BaseModel):
+    """Safe evidence from one periodic process-liveness checkpoint.
+
+    The payload deliberately carries aggregate CPU/IO observations, not a
+    command line, prompt, stdout/stderr, or any other secret-bearing content.
+    ``action`` is the current-session model's decision for this probe; a
+    heartbeat alone must never be rendered as that decision.
+
+    2026-10-24 user protection: without explicit user confirmation, no surface
+    or future refactor may bypass the 5-second observation, model judgment, or
+    per-result user feedback represented by this contract.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        allow_inf_nan=False,
+    )
+
+    kind: Literal["process_liveness"]
+    probe_id: str = Field(min_length=1, max_length=200)
+    call_id: str = Field(min_length=1, max_length=200)
+    generation: Annotated[int, Strict()] = Field(ge=0)
+    pid: Annotated[int, Strict()] = Field(ge=1)
+    seq: Annotated[int, Strict()] = Field(ge=1)
+    elapsed_seconds: float = Field(ge=0)
+    observation_seconds: float = Field(ge=0)
+    cpu_start_percent: float = Field(ge=0)
+    cpu_end_percent: float = Field(ge=0)
+    io_start_bytes: Annotated[int, Strict()] = Field(ge=0)
+    io_end_bytes: Annotated[int, Strict()] = Field(ge=0)
+    process_count: Annotated[int, Strict()] = Field(ge=0)
+    action: Literal["continue", "stop", "unknown"]
+    note: str = Field(max_length=2000)
+
+
 class ProgressUpdate(BaseModel):
     """SSE ``type: progress`` from ``StreamTUI.write_progress`` (api_server.py)."""
 
@@ -158,6 +194,9 @@ class ProgressUpdate(BaseModel):
     text: str
     #: 2026-09-23（P0 answer-last）：同 MessageDelta.intermediate。
     intermediate: bool = False
+    #: 2026-10-24: one real process-liveness probe/result. Optional keeps old
+    #: progress notifications and consumers wire-compatible.
+    details: ProcessLivenessDetails | None = None
 
 
 class ReasoningSnapshot(BaseModel):
