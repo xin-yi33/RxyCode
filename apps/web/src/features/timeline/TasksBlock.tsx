@@ -1,5 +1,6 @@
 import { useState } from "react"
 
+import { Collapse } from "../../components/Collapse"
 import {
   IconChevronDown,
   IconCheck,
@@ -9,7 +10,7 @@ import {
 import type { TaskEntry } from "../runs/eventReducer"
 
 // 「任务清单」块：plan.updated/todo.updated 合并出的实时待办列表。
-// 默认展开——长任务必须看得见进度；点击标题可收起。
+// 默认展开——长任务必须看得见进度；点击标题可收起（共享 Collapse）。
 function statusIcon(status: string) {
   switch (status) {
     case "completed":
@@ -56,7 +57,7 @@ export function TasksBlock({ items }: { items: TaskEntry[] }) {
           }
         />
       </button>
-      {open ? (
+      <Collapse open={open}>
         <ul className="space-y-1 border-t border-border px-3 py-2">
           {items.map((item) => (
             <li key={item.id} className="flex items-start gap-2">
@@ -76,7 +77,7 @@ export function TasksBlock({ items }: { items: TaskEntry[] }) {
             </li>
           ))}
         </ul>
-      ) : null}
+      </Collapse>
     </div>
   )
 }

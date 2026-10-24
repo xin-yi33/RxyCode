@@ -72,10 +72,10 @@ export function QuestionDialog({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.bg,
+        backgroundColor: C.panel,
       }}
     >
-      <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.bg }}>
+      <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.panel }}>
         <box style={{ flexDirection: "row", width: "100%" }}>
           <text fg={ACCENT} attributes={1}>
             {"  "}

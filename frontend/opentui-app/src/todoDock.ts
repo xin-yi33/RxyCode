@@ -1,4 +1,5 @@
 /** Read-only OpenTUI view of one TodoSnapshot. Not a second store. */
+import { formatCountSummary } from "./lib/displayColumns.ts";
 
 export interface TodoDockItem {
   id: string;
@@ -49,12 +50,13 @@ export function todoDockLines(snapshot: TodoDockSnapshot | null | undefined): st
   const done = items.filter((item) => item.status === "completed").length;
   const dropped = items.filter((item) => item.status === "cancelled").length;
   if (done || dropped) {
-    const parts = [
-      done ? `${done} completed` : "",
-      dropped ? `${dropped} cancelled` : "",
-    ].filter(Boolean);
     // 汇总行仅作补充，绝不取代上面受保护的逐条条目。
-    lines.push(`(${parts.join(", ")})`);
+    // 计数按显示列对齐（1 completed / 12 completed 不抖动）。
+    const summary = formatCountSummary([
+      { count: done, label: "completed" },
+      { count: dropped, label: "cancelled" },
+    ]);
+    lines.push(`(${summary})`);
   }
   return lines;
 }

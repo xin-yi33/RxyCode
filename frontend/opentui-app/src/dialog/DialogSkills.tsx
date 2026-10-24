@@ -115,7 +115,7 @@ export function DialogSkills({
           borderColor: C.borderDim,
           borderStyle: "rounded",
           paddingLeft: 1,
-          backgroundColor: C.bg,
+          backgroundColor: C.panel,
         }}
       >
         <text fg={C.text} attributes={1}>
