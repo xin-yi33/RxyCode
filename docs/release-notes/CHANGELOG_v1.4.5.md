@@ -383,6 +383,12 @@
   py3.11/py3.12。五红均为本次新增 `probe_callback/probe_offsets` 与旧
   `test_full_auto_bash_format` fake 签名不兼容，业务层 13568 passed；
   本文不宣称 CI 全绿。真实付费 provider smoke 未执行。
+- CI 五红修复（2026-10-24）：`test_full_auto_bash_format.py` 的测试替身跟随
+  真实 `LocalNativeBackend.run_command` 接口接收并断言 `probe_callback` /
+  `probe_offsets`，原 5 项格式、失败、截断、未启动和超时断言全部保留。
+  Windows fresh `5 passed in 1.53s`；worker r4 的 Linux 隔离容器 fresh
+  `5 passed in 1.48s`（无生产镜像重建、无卷/env 挂载）。GitHub CI 重跑结果
+  以新一轮实际状态为准，完成前不宣称 CI 全绿；本条为开发验证结果，不等于发版。
 
 ### Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
 

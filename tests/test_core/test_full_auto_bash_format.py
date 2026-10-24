@@ -38,9 +38,33 @@ def queued_results(monkeypatch: pytest.MonkeyPatch):
     """
     from rxycode_core.runtime import execution_port as port_module
 
-    queue: list[NativeResult] = []
+    class _Queue(list[NativeResult]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[dict] = []
 
-    async def fake_run(self, argv, cwd, *, timeout=1800):
+    queue = _Queue()
+
+    async def fake_run(
+        self,
+        argv,
+        cwd,
+        *,
+        timeout=1800,
+        probe_callback=None,
+        probe_offsets=(),
+    ):
+        assert callable(probe_callback)
+        assert tuple(probe_offsets) == tuple(sorted(set(probe_offsets)))
+        queue.calls.append(
+            {
+                "argv": list(argv),
+                "cwd": cwd,
+                "timeout": timeout,
+                "probe_callback": probe_callback,
+                "probe_offsets": tuple(probe_offsets),
+            }
+        )
         return queue.pop(0)
 
     monkeypatch.setattr(LocalNativeBackend, "run_command", fake_run)
@@ -82,6 +106,16 @@ async def test_h1_full_auto_success_without_output_returns_no_output(queued_resu
     queued_results.append(_result())
     out = await _orchestrator().execute_tool("bash", {"command": "true"}, config=_CFG)
     assert out == "[no output]"
+    call = queued_results.calls[0]
+    assert callable(call["probe_callback"])
+    assert call["probe_offsets"] == (
+        180.0,
+        300.0,
+        600.0,
+        900.0,
+        1200.0,
+        1500.0,
+    )
 
 
 @pytest.mark.asyncio
