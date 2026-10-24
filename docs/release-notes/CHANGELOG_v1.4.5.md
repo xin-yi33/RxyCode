@@ -606,6 +606,16 @@
 
 **边界**：只模型 stream 与 `_CtlApproval` 的 AF_UNIX worker channel hop 被脚本化/进程内 `_PostgresChannel` 替代；审批 service、production parent control handlers、真实 tool、journal 和 AgentV2 恢复均走生产实现。测试不启动浏览器、不访问公网；fixture 使用 `isolated_runtime`，并显式关闭 `execution.build_workflow.enabled`。质量子代理独立实测本文件 **2 passed**，邻近 pause 单测 **3 passed**。
 
+## 2026-10-24 · 最终本地验证收口（Windows）
+
+在合并提交 `b1cb0139` 的 Windows 工作树上完成指定 suite 重验；结论只覆盖下列范围，不宣称全仓库或 Linux 已验收。
+
+- `tests/test_core + tests/test_execution + tests/test_tools + tests/test_subagents`：两 worker/loadscope 非 serial lane **9839 passed / 4 skipped / 0 failed**；`serial` marker lane 无选中项（9843 deselected），因此四目录全部 9843 项均已覆盖。4 个 skip 为两个 POSIX FIFO 条件项与本机缺少 eslint、tsc。
+- 指定 Web 非 DB 契约：`test_w1_c03_unit.py`、`test_w6_c01_unit.py`、`test_w8_s3_harness_pause_resume_unit.py`、`test_w8_s3_harness_checkpoint_unit.py` 合计 **12 passed / 0 failed / 0 skipped**。
+- 模块身份、fast startup、fast import boundary、P7 lazy budget：**27 passed / 0 failed / 0 skipped**；P7 仍为 **180 / 181**。
+- Quality 有效 workflow 合同对照：同一 Agent 与 new Agent 两组 **2 passed**，相邻 pause 单测 **3 passed**。此前“分类器空/无效 → missing contract → 204 次 `_raw_stream`”来自不完整 fixture；有效合同对照未复现该循环，因此本轮不把它记为生产 bug，也未修改 workflow 或默认开关。
+- 收口 5 个测试代码无用绑定后，三文件目标复跑 **21 passed**，ruff 通过；未修改任何断言或生产源码。
+
 ## 云端 Web 事故修复批：附件读取 / question 卡渲染与单选 / question 恢复崩溃（2026-10-24，本地已验证，待部署）
 
 线上会话 `0e7dab8474874bbaadc443e4d99fd18f`（run `211f0165ba014f3dae77dac8e5626491`，2026-10-23 23:08 CST）暴露四个连在一起的严重问题，用户报告为“上传文件后所有工具调用全部失败 / question 选项应该竖排编号但顺序乱 / 选择后像是所有选项都被提交 / 随后直接异常结束”。逐条取证后确认是**三条独立根因叠加**，均已修复。

@@ -86,14 +86,13 @@ async def test_p1_output_without_trailing_newline_hangs():
         started = time.perf_counter()
         try:
             if WINDOWS:
-                r = await sh.run("Write-Host -NoNewline 'partial'", timeout=6)
+                await sh.run("Write-Host -NoNewline 'partial'", timeout=6)
                 timed_out = False
             else:
-                r = await sh.run("printf 'partial'", timeout=6)
+                await sh.run("printf 'partial'", timeout=6)
                 timed_out = False
-        except ps.ShellLostError as exc:
+        except ps.ShellLostError:
             timed_out = True
-            r = None
         elapsed = time.perf_counter() - started
         show(
             "output without trailing newline makes the command hang",
@@ -145,7 +144,6 @@ async def test_p1_cancel_leaves_child_process_tree():
     sh = await ps.acquire_shell(identity="cancel-tree", cwd=os.getcwd())
     marker = Path(os.getcwd()) / "_cancel_probe_marker.txt"
     marker.unlink(missing_ok=True)
-    child: asyncio.subprocess.Process | None = None
     try:
         if WINDOWS:
             # Start a detached python child that writes the marker after 4s.

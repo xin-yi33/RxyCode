@@ -106,7 +106,7 @@ class TestShellStateEdgeCases:
         from RxyCode.RxyCode1_1_0.utils.shell import BoundedOutputCapture
 
         capture = BoundedOutputCapture()
-        r = await sh.run(cmd, timeout=180, capture=capture)
+        await sh.run(cmd, timeout=180, capture=capture)
         capture.end_stream("stdout")
         capture.end_stream("stderr")
         finished = capture.finish()

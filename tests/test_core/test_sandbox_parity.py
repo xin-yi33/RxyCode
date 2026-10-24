@@ -22,7 +22,6 @@ pytestmark = pytest.mark.asyncio
 async def test_same_policy_both_paths(monkeypatch):
     """Both paths must reach the same sandbox decision."""
     one_shot_wrapped = {}
-    managed_wrapped = {}
 
     real_wrap = shell_executor._wrap_os_sandbox
 
