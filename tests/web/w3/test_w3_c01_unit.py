@@ -54,14 +54,21 @@ def _dist_dir() -> Path:
 
 
 def _source_digest() -> str:
+    # os.walk prunes directories before descending — rglob would still scandir
+    # into a sibling worker's dist-* right as that worker rmtrees it.
     digest = hashlib.sha256()
-    for path in sorted(WEB.rglob("*")):
-        if not path.is_file() or "node_modules" in path.parts:
-            continue
-        if any(part == "dist" or part.startswith("dist-") for part in path.parts):
-            continue
-        digest.update(str(path.relative_to(WEB)).encode())
-        digest.update(path.read_bytes())
+    for root, dirs, files in os.walk(WEB):
+        dirs[:] = [
+            d
+            for d in dirs
+            if d != "node_modules" and d != "dist" and not d.startswith("dist-")
+        ]
+        for name in sorted(files):
+            if name == ".install.lock":
+                continue
+            path = Path(root) / name
+            digest.update(str(path.relative_to(WEB)).encode())
+            digest.update(path.read_bytes())
     return digest.hexdigest()
 
 
