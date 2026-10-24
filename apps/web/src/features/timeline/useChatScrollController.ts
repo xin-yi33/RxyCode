@@ -3,7 +3,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type RefObject,
+  type RefCallback,
 } from "react"
 
 // Single chat scroll controller (task-6 UI-04). The SessionPage owns exactly one
@@ -29,8 +29,8 @@ export function distanceToBottom(el: HTMLElement): number {
 export type ScrollAnchor = { scrollTop: number; scrollHeight: number }
 
 export type ChatScrollController = {
-  scrollRef: RefObject<HTMLDivElement | null>
-  contentRef: RefObject<HTMLDivElement | null>
+  scrollRef: RefCallback<HTMLDivElement>
+  contentRef: RefCallback<HTMLDivElement>
   showJumpToLatest: boolean
   isFollowing: () => boolean
   scrollToLatest: () => void
@@ -60,8 +60,23 @@ function findNestedScroller(
 }
 
 export function useChatScrollController(sessionKey: string): ChatScrollController {
-  const scrollRef = useRef<HTMLDivElement | null>(null)
-  const contentRef = useRef<HTMLDivElement | null>(null)
+  const scrollElRef = useRef<HTMLDivElement | null>(null)
+  const contentElRef = useRef<HTMLDivElement | null>(null)
+  // Callback refs + node state: when SessionPage remounts the chat subtree
+  // (error view → successful retry on the same session) React re-invokes the
+  // refs, the state bumps re-run the listener/observer effect below, and the
+  // controller re-binds to the live DOM nodes instead of staying attached to
+  // detached ones.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
+  const scrollRef = useCallback((node: HTMLDivElement | null) => {
+    scrollElRef.current = node
+    setScrollEl(node)
+  }, [])
+  const contentRef = useCallback((node: HTMLDivElement | null) => {
+    contentElRef.current = node
+    setContentEl(node)
+  }, [])
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
 
   const followingRef = useRef(true)
@@ -89,7 +104,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   // Every scrollTop write goes through here and is tagged as expected so the
   // resulting scroll event can never be mistaken for a user scroll-up.
   const writeScrollTop = useCallback((top: number) => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     if (!el) return
     if (Math.abs(el.scrollTop - top) <= 0.5) return
     expectedTopRef.current = top
@@ -106,8 +121,8 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   // Pick the run/list item currently at the top of the viewport — the visual
   // anchor a reader expects to stay still while older history streams in above.
   const captureVisibleAnchor = useCallback(() => {
-    const el = scrollRef.current
-    const content = contentRef.current
+    const el = scrollElRef.current
+    const content = contentElRef.current
     if (!el || !content) {
       readingAnchorRef.current = null
       return
@@ -119,8 +134,18 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
     for (const node of candidates) {
       const rect = node.getBoundingClientRect()
       if (rect.bottom <= containerTop + 1) continue
-      best = node
-      bestTop = rect.top
+      if (rect.top <= containerTop + 1) {
+        // Spans the top edge — keep scanning so a nested candidate (a message
+        // or block inside the enclosing run <li>) wins over the container;
+        // anchoring to the run's top would teleport the reader on resize.
+        best = node
+        bestTop = rect.top
+        continue
+      }
+      if (!best) {
+        best = node
+        bestTop = rect.top
+      }
       break
     }
     readingAnchorRef.current = best ? { element: best, top: bestTop } : null
@@ -143,7 +168,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   )
 
   const sync = useCallback(() => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     if (!el) return
     lastContentSyncRef.current = performance.now()
     if (followingRef.current) {
@@ -157,7 +182,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   }, [writeScrollTop, restoreReadingAnchor])
 
   const onScroll = useCallback(() => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     if (!el) return
     const distance = distanceToBottom(el)
     const previousTop = lastScrollTopRef.current
@@ -190,7 +215,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   }, [clearExpected, captureVisibleAnchor])
 
   const pauseFollow = useCallback(() => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     followingRef.current = false
     captureVisibleAnchor()
     if (el) setShowJumpToLatest(distanceToBottom(el) > JUMP_DISTANCE)
@@ -198,7 +223,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
 
   const onWheel = useCallback(
     (event: WheelEvent) => {
-      if (findNestedScroller(event.target, scrollRef.current)) return
+      if (findNestedScroller(event.target, scrollElRef.current)) return
       lastUserInputRef.current = performance.now()
       if (event.deltaY < 0) pauseFollow()
     },
@@ -227,7 +252,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   )
 
   const scrollToLatest = useCallback(() => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     if (!el) return
     followingRef.current = true
     readingAnchorRef.current = null
@@ -236,14 +261,14 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   }, [writeScrollTop])
 
   const captureAnchor = useCallback((): ScrollAnchor | null => {
-    const el = scrollRef.current
+    const el = scrollElRef.current
     if (!el) return null
     return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }
   }, [])
 
   const restoreAnchor = useCallback(
     (anchor: ScrollAnchor) => {
-      const el = scrollRef.current
+      const el = scrollElRef.current
       if (!el) return
       // The user was paused mid-history, so we already recorded the element at
       // the top of the viewport. Older-run event replays land asynchronously and
@@ -269,8 +294,8 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   const isFollowing = useCallback(() => followingRef.current, [])
 
   useLayoutEffect(() => {
-    const el = scrollRef.current
-    const content = contentRef.current
+    const el = scrollEl
+    const content = contentEl
     followingRef.current = true
     readingAnchorRef.current = null
     setShowJumpToLatest(false)
@@ -291,7 +316,7 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
         lastUserInputRef.current = performance.now()
       }
       if (y - touchStartY <= 4) return
-      if (findNestedScroller(event.target, scrollRef.current)) return
+      if (findNestedScroller(event.target, el)) return
       pauseFollow()
     }
     const onResize = () => sync()
@@ -322,7 +347,10 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
       observer?.disconnect()
       clearExpected()
     }
-  }, [sessionKey, clearExpected, onKeyDown, onScroll, onWheel, pauseFollow, sync])
+    // scrollEl/contentEl are state (not stable refs): a remount of the chat
+    // subtree re-runs this effect and re-binds every listener/observer to the
+    // live nodes.
+  }, [sessionKey, scrollEl, contentEl, clearExpected, onKeyDown, onScroll, onWheel, pauseFollow, sync])
 
   return {
     scrollRef,

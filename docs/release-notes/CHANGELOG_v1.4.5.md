@@ -477,3 +477,6 @@
 - **P1 e2e 误杀旁路进程**：`ui-polish-verify.mjs` 的 `listCliProcesses(rootPid)` 由命令行子串全机匹配改为按 `ParentProcessId` BFS 收集本测试 spawn 的进程树，清理不再 `taskkill /T /F` 到无关 CLI 会话。
 - **docs**：`docs/modules/frontend.md` 新增「聊天前端打磨与产物归属」节——SplitWorkspace/scroll-controller/产物列表/思考任务块/共享小件/Composer 闸门/OpenTUI 同步项的归属与契约。
 - 验证：双 `tsc --noEmit` 0 error；`node --check` e2e 脚本；本地栈 Playwright 实测产物列表 8 类图标/tooltip/归属分区全过（390px 无横向溢出）；`test_chat_visual_contracts.py` split 3/3、`test_chat_interaction_contracts.py` scroll/IME/send 19/19 通过。
+- **P2 阅读锚点选中外层 run 容器**：`captureVisibleAnchor` 首个「bottom 越过视口顶」的候选是外层 run `<li>`（祖先先于子孙返回）——同 run 内上方内容长高会把视口拽回 run 顶部。改为持续扫描：跨过顶边界的候选记录后继续深入，让最内层的可见条目胜出（首个 top 低于边界的候选做兜底）。
+- **P2 滚动控制器在 DOM 重挂载后失效**：SessionPage 错误→重试替换 chat 子树后，effect 依赖仅 `sessionKey`+稳定回调不重跑，监听器/ResizeObserver 留在已分离节点上——恢复后的聊天失去自动跟随/滚动意图追踪。`scrollRef`/`contentRef` 改为 callback ref + 节点 state（`scrollEl`/`contentEl`），DOM 节点身份变化即重跑绑定 effect；公开类型 `RefObject` → `RefCallback`（消费方仅 `ref={}` 传递，无 `.current` 读取）。
+- **w7_c02 复合外键间歇违例**：FastAPI yield 依赖 teardown 在响应发送后才 `db.commit()`——sessions POST 已返回 id 而行未提交，紧随的 `create_run` 经另一连接做 `fk_runs_session_tenant` 检查偶发失败。测试改为先轮询 session 行在新连接上可见再 `create_run`。
