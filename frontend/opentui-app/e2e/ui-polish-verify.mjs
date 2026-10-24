@@ -90,18 +90,37 @@ function killProcessTree(pid) {
   }
 }
 
-/** bun CLI processes that belong to this opentui-app checkout (leftover check). */
-function listCliProcesses() {
-  if (process.platform !== 'win32') return [];
-  const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' -and $_.CommandLine -like '*opentui-app*' -and $_.CommandLine -like '*src/index.tsx*' } | ForEach-Object { $_.ProcessId }";
+/**
+ * Descendant processes of the PTY this test spawned. Matching by command-line
+ * substrings machine-wide (the old listCliProcesses) would report — and
+ * taskkill /T /F would kill — an unrelated CLI session that happens to run the
+ * same entry file, so leftover detection and cleanup both scope to our tree.
+ */
+function listCliProcesses(rootPid) {
+  if (process.platform !== 'win32' || !rootPid) return [];
+  const script =
+    "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId)\" }";
   const probe = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     encoding: 'utf8',
     timeout: 15000,
   });
-  return String(probe.stdout || '')
-    .split(/\r?\n/)
-    .map((line) => Number.parseInt(line.trim(), 10))
-    .filter((pid) => Number.isInteger(pid) && pid > 0);
+  const childrenOf = new Map();
+  for (const line of String(probe.stdout || '').split(/\r?\n/)) {
+    const [pid, ppid] = line.trim().split(/\s+/).map((v) => Number.parseInt(v, 10));
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+    if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
+    childrenOf.get(ppid).push(pid);
+  }
+  const descendants = [];
+  const queue = [rootPid];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const child of childrenOf.get(current) || []) {
+      descendants.push(child);
+      queue.push(child);
+    }
+  }
+  return descendants;
 }
 
 /* ── Minimal ANSI screen model ─────────────────────────────────────────────
@@ -963,7 +982,7 @@ async function main() {
       'pid=' + pty.pid,
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const leftoverPids = listCliProcesses();
+    const leftoverPids = pty ? listCliProcesses(pty.pid) : [];
     check(
       'No leftover bun CLI process after exit',
       leftoverPids.length === 0,
@@ -994,7 +1013,7 @@ async function main() {
       }
       try { pty._socket?.destroy(); } catch { /* already closed */ }
     }
-    for (const leftoverPid of listCliProcesses()) killProcessTree(leftoverPid);
+    if (pty) for (const leftoverPid of listCliProcesses(pty.pid)) killProcessTree(leftoverPid);
     await api.close();
   }
 

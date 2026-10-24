@@ -69,6 +69,10 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
   const expectedTimerRef = useRef<number | null>(null)
   const lastScrollTopRef = useRef(0)
   const lastContentSyncRef = useRef(0)
+  // 最近一次真实用户输入（滚轮/触摸/翻页键）的时间戳。浏览器 scroll
+  // anchoring 也会在内容上方长高时让 scrollTop 变化——方向上同样是"向下"，
+  // 仅靠方向无法区分；有用户输入时间戳才能把用户的下滚从锚定位移里拆出来。
+  const lastUserInputRef = useRef(Number.NEGATIVE_INFINITY)
   // 阅读锚点：用户上滚后记录"视口顶部附近的条目 + 它的屏幕位置"，此后内容在
   // 上方异步长高（历史任务的事件回放、图片加载、折叠展开）时按差值补 scrollTop，
   // 保证阅读位置漂移 <= 2px。程序化滚动/跟随底部时清空。
@@ -169,10 +173,14 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
       if (!followingRef.current) captureVisibleAnchor()
     } else if (
       el.scrollTop > previousTop &&
-      now - lastContentSyncRef.current < CONTENT_SYNC_GRACE_MS
+      now - lastContentSyncRef.current < CONTENT_SYNC_GRACE_MS &&
+      now - lastUserInputRef.current > CONTENT_SYNC_GRACE_MS
     ) {
       // Content grew above the viewport and the browser kept the visual anchor;
-      // this is not a user scroll. Let the ResizeObserver settle it.
+      // this is not a user scroll. Let the ResizeObserver settle it. The user
+      // input window is checked too: a wheel-down arriving inside the grace
+      // period is a real scroll — it must update the reading anchor, not be
+      // silently undone by the next restoreReadingAnchor.
     } else {
       followingRef.current = distance <= FOLLOW_DISTANCE
       if (!followingRef.current) captureVisibleAnchor()
@@ -190,19 +198,30 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
 
   const onWheel = useCallback(
     (event: WheelEvent) => {
-      if (event.deltaY >= 0) return
       if (findNestedScroller(event.target, scrollRef.current)) return
-      pauseFollow()
+      lastUserInputRef.current = performance.now()
+      if (event.deltaY < 0) pauseFollow()
     },
     [pauseFollow],
   )
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent) => {
-      if (event.key !== "ArrowUp" && event.key !== "PageUp" && event.key !== "Home") {
-        return
+      const scrollKeys = new Set([
+        "ArrowUp",
+        "PageUp",
+        "Home",
+        "ArrowDown",
+        "PageDown",
+        "End",
+      ])
+      if (!scrollKeys.has(event.key)) return
+      lastUserInputRef.current = performance.now()
+      // Only upward intent pauses follow; downward keys land in onScroll and
+      // resume following once the bottom threshold is reached.
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") {
+        pauseFollow()
       }
-      pauseFollow()
     },
     [pauseFollow],
   )
@@ -268,6 +287,9 @@ export function useChatScrollController(sessionKey: string): ChatScrollControlle
     }
     const onTouchMove = (event: TouchEvent) => {
       const y = event.touches[0]?.clientY ?? 0
+      if (Math.abs(y - touchStartY) > 4) {
+        lastUserInputRef.current = performance.now()
+      }
       if (y - touchStartY <= 4) return
       if (findNestedScroller(event.target, scrollRef.current)) return
       pauseFollow()

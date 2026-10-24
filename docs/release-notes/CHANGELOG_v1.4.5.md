@@ -467,3 +467,13 @@
 - **测试**：`bun test` → **422 pass / 0 fail / 1677 expect（76 文件，39.26s；新增 25 条 uiPolish 测试）**；`bunx tsc --noEmit` exit 0；`node e2e/ui-polish-verify.mjs` → **27/27 PASS**（真实默认 CLI 经 node-pty/ConPTY 启动 + 本地确定性 HTTP stub：中文输入、两轮 exactly-once 无重复发送、真实鼠标展开/收起 Tool 与 Thought、滚轮看历史再回最新、OSC52 复制载荷解码 + 2500ms 恢复、宽/中/窄 resize 保持单层外壳与焦点、Ctrl+C 二次退出、无残留 bun 进程）。
 - **诚实边界**：Node 24 + ConPTY 下 node-pty 不投递 `onExit`，退出**码**不可验，已验 OS 进程消失/光标恢复/无残留；复制失败路径由 bun 测试覆盖（PTY 只证明真实 OSC52 载荷与计时）；e2e 回复来自本地确定性 stub，transport/renderer/按键处理为真实路径。TUI 无 artifact/session-file 面板，文件名拆分用于所有真实附件/文件行。
 - **涉及文件（CLI）**：`frontend/opentui-app/src/{theme,App,statusBar,ToolCard,todoDock,brand,scroll,clipboard}.ts(x)`、`dialog/*.tsx`、`lib/{displayColumns,fileName,copyFeedback}.ts`、`uiPolish.test.tsx`、`e2e/ui-polish-verify.mjs`、`statusBar.test.ts`/`brand.test.ts`/`scroll.test.ts`（仅同步新 token/列宽期望）。
+
+### Codex/Devin review 修复（PR #26 回滚后，2026-10-24）
+
+- **P1 SplitWorkspace 预览开关重挂载**：`!hasPreview` 早退返回 fragment → 开关预览切换了 chat 子树层级，Composer 附件与 `useChatScrollController` 监听器丢失。改为两层包装**永驻**、无预览时 `display:contents`（布局与改造前一致）；预览 pane 按需挂载。
+- **P2 折叠 pane 不可重开**：预览数据在而 `previewOpen=false` 时再次点击 artifact 无效——`SessionPage` 增加 `previewNonce`，`openPreview` 递增并传入 `openSignal`，SplitWorkspace effect 依赖新增 `openSignal`。
+- **P2 rigid spring 低帧率发散**：`runSpring` 单步 dt 上限 33ms(30FPS) 时 k=1200 的 Euler 不稳——改为 ≤4ms(`MAX_SUBSTEP=1/240`) 定长子步积分。
+- **P2 用户下滚被误当锚定**：`useChatScrollController` 新增 `lastUserInputRef`（wheel/touchmove/上下翻页键打戳），`onScroll` 的"内容长高浏览器锚定"分支要求**两**个静默窗口（无用户输入且无内容同步）同时成立——用户 wheel-down 在 grace 内也会更新阅读锚点，不再被 `restoreReadingAnchor` 拉回。
+- **P1 e2e 误杀旁路进程**：`ui-polish-verify.mjs` 的 `listCliProcesses(rootPid)` 由命令行子串全机匹配改为按 `ParentProcessId` BFS 收集本测试 spawn 的进程树，清理不再 `taskkill /T /F` 到无关 CLI 会话。
+- **docs**：`docs/modules/frontend.md` 新增「聊天前端打磨与产物归属」节——SplitWorkspace/scroll-controller/产物列表/思考任务块/共享小件/Composer 闸门/OpenTUI 同步项的归属与契约。
+- 验证：双 `tsc --noEmit` 0 error；`node --check` e2e 脚本；本地栈 Playwright 实测产物列表 8 类图标/tooltip/归属分区全过（390px 无横向溢出）；`test_chat_visual_contracts.py` split 3/3、`test_chat_interaction_contracts.py` scroll/IME/send 19/19 通过。

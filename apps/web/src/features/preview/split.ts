@@ -78,9 +78,15 @@ export type SpringRunOptions = {
 const REST_DISTANCE = 0.0005
 const REST_VELOCITY = 0.005
 
-// Real rAF spring integrator (semi-implicit Euler, clamped dt). Callers pass
-// one of the SPRING presets; returning a cancel handle lets pointerdown,
+// Real rAF spring integrator (semi-implicit Euler, fixed substeps). Callers
+// pass one of the SPRING presets; returning a cancel handle lets pointerdown,
 // unmount and Esc abort an in-flight animation cleanly.
+//
+// The frame dt is subdivided into <=4 ms slices: at 30 FPS a single 33 ms
+// Euler step is unstable for the rigid preset (k=1200, ω≈34.6 rad/s needs
+// dt ≲ 1/ω) and the divider would oscillate between clamps forever.
+const MAX_SUBSTEP = 1 / 240 // seconds
+
 export function runSpring(options: SpringRunOptions): SpringHandle {
   const { config, from, to, onUpdate, onSettled, reducedMotion } = options
   if (reducedMotion || from === to) {
@@ -98,10 +104,14 @@ export function runSpring(options: SpringRunOptions): SpringHandle {
     // Backgrounded tabs deliver huge deltas; clamp so the integration stays stable.
     const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000))
     last = now
-    const acceleration =
-      (-config.stiffness * (value - to) - config.damping * velocity) / config.mass
-    velocity += acceleration * dt
-    value += velocity * dt
+    const substeps = Math.ceil(dt / MAX_SUBSTEP)
+    const h = dt / substeps
+    for (let i = 0; i < substeps; i++) {
+      const acceleration =
+        (-config.stiffness * (value - to) - config.damping * velocity) / config.mass
+      velocity += acceleration * h
+      value += velocity * h
+    }
     if (
       Math.abs(value - to) <= REST_DISTANCE &&
       Math.abs(velocity) <= REST_VELOCITY

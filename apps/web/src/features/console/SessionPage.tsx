@@ -68,6 +68,9 @@ export function SessionPage() {
   const { sessionId = "" } = useParams()
   const [olderPage, setOlderPage] = useState<OlderPage | null>(null)
   const [preview, setPreview] = useState<{ title: string; job: PreviewJob | null } | null>(null)
+  // Preview data alone must not reopen a user-collapsed pane, but clicking an
+  // artifact again must — this nonce is that explicit open signal.
+  const [previewNonce, setPreviewNonce] = useState(0)
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null)
 
   // 整个会话页只有这一个滚动容器（chat-scroll）：跟随底部、用户上滚暂停、
@@ -87,6 +90,7 @@ export function SessionPage() {
   const liveJob = (previewPoll.data as PreviewJob | undefined) ?? preview?.job ?? null
   const openPreview = (artifact: ArtifactItem) => {
     const title = artifact.filename || artifact.relative_path
+    setPreviewNonce((n) => n + 1)
     setPreview({ title, job: null })
     void api
       .createPreview(artifact.artifact_id)
@@ -163,6 +167,7 @@ export function SessionPage() {
         ) : null
       }
       onPreviewClose={() => setPreview(null)}
+      openSignal={previewNonce}
     >
       <div className="rxy-session relative flex h-full min-h-0 w-full flex-col">
         <div className="relative min-h-0 flex-1">

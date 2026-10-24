@@ -65,6 +65,12 @@ export type SplitWorkspaceProps = {
   preview?: ReactNode | null
   /** Dismiss the preview (close button / Esc without a drag snapshot). */
   onPreviewClose: () => void
+  /**
+   * Bump this whenever the user explicitly (re)selects an artifact preview.
+   * preview data arriving after a drag-collapse keeps previewOpen=false, so a
+   * data-only change cannot reopen the pane — an explicit signal can.
+   */
+  openSignal?: number
   /** Chat column (scroll container + composer) supplied by the page. */
   children: ReactNode
 }
@@ -89,7 +95,12 @@ function useSmallViewport(): boolean {
 // Desktop gets a width-based split (the chat area actually narrows); phones
 // keep the chat full-width and show the preview as a fullscreen overlay.
 // The drag itself is direct-follow; only reset/confirm transitions animate.
-export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorkspaceProps) {
+export function SplitWorkspace({
+  preview,
+  onPreviewClose,
+  openSignal = 0,
+  children,
+}: SplitWorkspaceProps) {
   const small = useSmallViewport()
   const mode: PreviewPaneMode = small ? "overlay" : "pane"
   const hasPreview = preview !== null && preview !== undefined
@@ -150,8 +161,10 @@ export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorks
     animateTo(SNAP_LEFT_RATIO, SPRING.rigid)
   }, [animateTo])
 
-  // Data availability drives previewOpen; a drag can collapse the pane without
-  // clearing the preview data, which is what makes Esc able to restore it.
+  // Data availability plus the explicit open signal drive previewOpen; a drag
+  // can collapse the pane without clearing the preview data, which is what
+  // makes Esc able to restore it — and a fresh openSignal (artifact reselected)
+  // is what reopens a collapsed pane even while hasPreview stayed true.
   useEffect(() => {
     if (hasPreview) {
       setSplit((current) => (current.previewOpen ? current : { ...current, previewOpen: true }))
@@ -163,7 +176,7 @@ export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorks
         ? { leftRatio: DEFAULT_LEFT_RATIO, previewOpen: true }
         : current,
     )
-  }, [hasPreview])
+  }, [hasPreview, openSignal])
 
   // Desktop -> phone resize must not leave a collapsed preview invisible.
   useEffect(() => {
@@ -345,13 +358,13 @@ export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorks
     [mode, resetSplit],
   )
 
-  const showSplit = mode === "pane" && split.previewOpen
+  const showSplit = hasPreview && mode === "pane" && split.previewOpen
 
-  // Inactive behaviour: with no preview present the workspace is layout
-  // transparent — children render exactly as the page did before the split was
-  // introduced (no extra wrapper sizing, no narrowing, no persisted ratio).
-  if (!hasPreview) return <>{children}</>
-
+  // The chat subtree must never remount when a preview opens/closes — a
+  // fragment->wrapper switch would discard Composer's pending attachments and
+  // strand useChatScrollController's listeners on detached nodes. Both wrapper
+  // divs therefore stay mounted permanently and degrade to display:contents
+  // while inactive (layout-identical to the page before the split existed).
   return (
     <div
       ref={rootRef}
@@ -362,11 +375,18 @@ export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorks
         "relative flex h-full min-h-0 w-full overflow-hidden",
         dragging && "cursor-col-resize select-none",
       )}
+      style={hasPreview ? undefined : { display: "contents" }}
     >
       <div
         data-preview-chat-pane
-        className="flex h-full min-h-0 min-w-0 flex-col"
-        style={showSplit ? { width: `${split.leftRatio * 100}%` } : { width: "100%" }}
+        className={clsx("flex h-full min-h-0 min-w-0 flex-col")}
+        style={
+          !hasPreview
+            ? { display: "contents" }
+            : showSplit
+              ? { width: `${split.leftRatio * 100}%` }
+              : { width: "100%" }
+        }
       >
         {children}
       </div>
@@ -408,7 +428,7 @@ export function SplitWorkspace({ preview, onPreviewClose, children }: SplitWorks
           </div>
         </div>
       ) : null}
-      {mode === "overlay" ? (
+      {hasPreview && mode === "overlay" ? (
         <PreviewPaneContext.Provider value={paneControls}>{preview}</PreviewPaneContext.Provider>
       ) : null}
       {dragging ? (
