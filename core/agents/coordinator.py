@@ -18,6 +18,7 @@ F8 MechanicalVerifier 是默认机械门；F9 BudgetGuard 仍可注入（缺省 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -410,8 +411,6 @@ class Coordinator:
         rate = self._cache_hit_rate()
         root.cache_hit_rate = rate
         if rate is not None and rate < 0.85:
-            import logging
-
             logging.getLogger(__name__).warning("team cache_hit_rate %s < 0.85", rate)
             self._seq += 1
             self._emit(

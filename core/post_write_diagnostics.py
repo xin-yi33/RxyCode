@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..config import settings as _settings
+
 #: Machine-readable status.  Only ``pass`` counts as a successful check.
 DiagnosticStatus = Literal[
     "pass",
@@ -315,9 +317,7 @@ def project_config_execution_allowed(config: dict | None = None) -> bool:
         if isinstance(config, dict) and isinstance(config.get("safety"), dict):
             cfg = config
         else:
-            from ..config.settings import load_config
-
-            cfg = load_config() or {}
+            cfg = _settings.load_config() or {}
     except Exception:
         cfg = {}
     diagnostics_cfg = cfg.get("diagnostics") or {}
@@ -376,15 +376,80 @@ def _resolve_eslint_extends(config_path: Path, spec: str) -> Path | None:
     return None
 
 
+def _eslint_module_spec_may_execute(
+    config_path: Path, spec: object, _depth: int
+) -> bool:
+    """Does one parser/extends spec load project code relative to the config?"""
+    if not isinstance(spec, str):
+        return True
+    text = spec.strip()
+    if not text:
+        return False
+    if text.startswith(("eslint:", "plugin:")):
+        return False
+    if not (text.startswith(".") or Path(text).is_absolute()):
+        # Package parsers and shareable configs are dependency code.  Keep the
+        # existing policy that those presets do not require project trust.
+        return False
+    resolved = _resolve_eslint_extends(config_path, text)
+    if resolved is None:
+        # An unresolved relative entry is still an executable-load path: ESLint
+        # fails only after trying to resolve it.  Never infer "safe" from that.
+        return True
+    return _eslint_config_may_execute(resolved, _depth + 1)
+
+
+def _eslint_options_may_execute(
+    config_path: Path, options: object, _depth: int
+) -> bool:
+    """Inspect the code-loading entries in a config or one ``overrides`` entry."""
+    if not isinstance(options, dict):
+        return True
+
+    extends = options.get("extends")
+    if isinstance(extends, str):
+        specs: list[object] = [extends]
+    elif isinstance(extends, list):
+        specs = extends
+    elif extends is None:
+        specs = []
+    else:
+        return True
+    if any(
+        _eslint_module_spec_may_execute(config_path, spec, _depth) for spec in specs
+    ):
+        return True
+
+    parser = options.get("parser")
+    if parser is not None and _eslint_module_spec_may_execute(
+        config_path, parser, _depth
+    ):
+        return True
+
+    overrides = options.get("overrides")
+    if overrides is None:
+        return False
+    if not isinstance(overrides, list):
+        return True
+    for override in overrides:
+        if not isinstance(override, dict):
+            return True
+        if _eslint_options_may_execute(config_path, override, _depth + 1):
+            return True
+    return False
+
+
 def _eslint_config_may_execute(config_path: Path, _depth: int = 0) -> bool:
     """True when this ESLint config can end up loading executable code.
 
     Audit P1 (round 5): a JSON config is not automatically safe -- its
     ``extends`` can point at a project file (``./payload.cjs``) that ESLint will
-    ``require``.  Relative/absolute ``extends`` targets are resolved and
-    inspected recursively; an unresolvable one is treated as executable
-    ("cannot prove safe -> require trust").  Package extends and the built-in
-    ``eslint:``/``plugin:`` presets are dependency code, not project code.
+    ``require``.  Audit 2026-10-24: legacy configs can do the same through a
+    top-level or per-override ``parser``, and ``overrides`` can carry their own
+    ``extends``.  Relative/absolute entries are resolved and inspected
+    recursively; an unresolvable one is treated as executable ("cannot prove
+    safe -> require trust").  Package entries and the built-in
+    ``eslint:``/``plugin:`` presets remain dependency code, not project code.
     """
     suffix = config_path.suffix.lower()
     if suffix in _EXECUTABLE_CONFIG_SUFFIXES:
@@ -399,22 +464,7 @@ def _eslint_config_may_execute(config_path: Path, _depth: int = 0) -> bool:
         payload = payload.get("eslintConfig")
         if not isinstance(payload, dict):
             return False
-    extends = payload.get("extends")
-    specs = extends if isinstance(extends, list) else ([extends] if extends else [])
-    for spec in specs:
-        text = str(spec).strip()
-        if not text:
-            continue
-        if text.startswith(("eslint:", "plugin:")):
-            continue
-        if not (text.startswith(".") or Path(text).is_absolute()):
-            continue
-        resolved = _resolve_eslint_extends(config_path, text)
-        if resolved is None:
-            return True
-        if _eslint_config_may_execute(resolved, _depth + 1):
-            return True
-    return False
+    return _eslint_options_may_execute(config_path, payload, _depth)
 
 
 def find_executable_eslint_config(start: Path) -> Path | None:

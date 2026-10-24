@@ -29,6 +29,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+from RxyCode.RxyCode1_1_0.config import settings as settings_module
 from RxyCode.RxyCode1_1_0.config.settings import get_data_dir
 from RxyCode.RxyCode1_1_0.core.session_runtime import current_session_id
 from RxyCode.RxyCode1_1_0.core.tool_search import current_disclosure_context_id
@@ -1559,14 +1560,12 @@ class ToolOrchestrator:
                 )
         agent = getattr(self, "_owner_agent", None)
         try:
-            from RxyCode.RxyCode1_1_0.config.settings import load_config, save_config
-
-            cfg = load_config()
+            cfg = settings_module.load_config()
             section = dict(cfg.get("computer_use") or {})
             section["enabled"] = True
             section["approved"] = True
             cfg["computer_use"] = section
-            save_config(cfg)
+            settings_module.save_config(cfg)
             if agent is not None:
                 agent._cfg = cfg
                 from RxyCode.RxyCode1_1_0.core.cu.bind import sync_agent_computer_use

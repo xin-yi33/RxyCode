@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .safety.audit import AuditLogger, get_audit_logger, sanitize_args
 from .safety.policy import (
     RiskLevel,
+    canonical_tool_name,
     classify_tool_risk,
     is_dry_run,
     is_write_allowed,
@@ -43,8 +44,6 @@ def _is_shell_action(action: str) -> bool:
     apply to it -- otherwise auto_edit's "bash always asks" rule is bypassed
     by phrasing the command read-only.
     """
-    from .safety.policy import canonical_tool_name
-
     return canonical_tool_name(str(action or "")) == "bash"
 
 

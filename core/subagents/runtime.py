@@ -20,6 +20,9 @@ Hard constraints:
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,10 +58,22 @@ from .prompt import (
 from ..safety.policy import canonical_tool_name
 
 try:
-    from RxyCode.RxyCode1_1_0.core.session_runtime import bind_session, reset_session_binding
+    from RxyCode.RxyCode1_1_0.core.session_runtime import (
+        bind_session,
+        current_working_directory,
+        initial_working_directory,
+        reset_session_binding,
+        set_working_directory,
+    )
     from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
 except ImportError:
-    from ..session_runtime import bind_session, reset_session_binding
+    from ..session_runtime import (
+        bind_session,
+        current_working_directory,
+        initial_working_directory,
+        reset_session_binding,
+        set_working_directory,
+    )
     from ..utils.streaming import token_stats
 from .sessions import ChildSession
 from .workspace import LeaseManager, WorkspaceValidator
@@ -250,7 +265,6 @@ class ScopedToolRegistry:
         callable_ = self._callables[name]
         result = callable_(**kwargs)
         # Support both sync and async callables
-        import inspect
         if inspect.iscoroutine(result):
             return await result
         return result
@@ -280,7 +294,6 @@ class AuditScope:
 
     def record(self, event_type: str, **kwargs: Any) -> None:
         """Record an audit entry."""
-        import time
         self.entries.append({
             "event": event_type,
             "timestamp": time.time(),
@@ -788,8 +801,6 @@ class ChildRuntime:
     def _inherited_working_directory(self):
         """The parent's cwd, captured while its session binding is still active."""
         try:
-            from ..session_runtime import current_working_directory
-
             return current_working_directory()
         except Exception:
             return None
@@ -806,12 +817,6 @@ class ChildRuntime:
         approved start directory without sharing the parent's mutable state.
         """
         try:
-            from ..session_runtime import (
-                current_working_directory,
-                initial_working_directory,
-                set_working_directory,
-            )
-
             start = self._runtime.workspace_root
             if start is None:
                 # Inherit the parent's current directory, which is the approved
@@ -830,17 +835,15 @@ class ChildRuntime:
     def _release_child_shell(self) -> None:
         """Drop this child session's managed shell.  Never raises."""
         try:
-            import asyncio as _asyncio
-
             from ..persistent_shell import close_shells, invalidate_session_sync
 
             doomed = invalidate_session_sync(self.session_id)
             if not doomed:
                 return
             try:
-                loop = _asyncio.get_running_loop()
+                loop = asyncio.get_running_loop()
             except RuntimeError:
-                _asyncio.run(close_shells(doomed))
+                asyncio.run(close_shells(doomed))
                 return
             loop.create_task(close_shells(doomed))
         except Exception:

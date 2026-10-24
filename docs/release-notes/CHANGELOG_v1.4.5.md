@@ -580,3 +580,19 @@
 - **发现但未改（父提交 Web 沙箱行为，非本轮审计条目）**：Windows 受限令牌启动器（`core/sandbox/tokenlaunch.py`）在部分环境向子进程 stderr 注入 `Failed to find real location of <python>`；测试已隔离（`os_sandbox.enabled: false`），产品路径需 Web 侧确认。
 
 产品版本仍为 1.4.4（4.5 未发版）；本条为 v1.4.5 开发期记录。历次改动已提交本地 master（HEAD 见 git log），未推送、未部署。
+
+## 2026-10-24 · legacy ESLint 本地 parser 绕过诊断信任门
+
+**真实原因**：`_eslint_config_may_execute()` 只枚举顶层 `extends`，把可解析的 `.eslintrc.json` 其余内容视为数据。在 `ESLINT_USE_FLAT_CONFIG=false` 兼容模式下，`parser: "./payload.cjs"` 会在 ESLint 开始解析目标文件前加载该 CJS；即便随后解析失败，模块副作用已发生。`overrides` 内的 `parser` / `extends` 同样可达，之前均未进入信任门。生产调用链为 `tools/write.py::post_write_report_async()` → `post_write_diagnostics.diagnose()` → `check_js_ts()`，不是孤立 helper。
+
+**改法**：对可解析的数据配置同时检查顶层与各层 `overrides` 的 `extends`、`parser`。相对/绝对本地目标逐项解析并递归判定；缺失、非预期类型或无法证明 data-only 时要求执行信任。`eslint:`、`plugin:` 与包名入口维持既有依赖代码允许取舍。未增加依赖、解析框架、超时或看门狗改动；未授权的 ESLint 仍只跳过自身，保留 `node --check`、无插件 `tsc` 和 Python `compile()`。
+
+**验证**：新增参数化回归覆盖顶层 parser、`overrides.parser`、`overrides.extends`、普通无代码 JSON，以及经真实 `post_write_report_async` 的未授权零副作用、显式 `diagnostics.run_project_config_checkers` 与 Full 授权执行。修复前新增用例显示 3 个判定与 3 个生产链组合失败；修复后本组 7 passed。产品版本仍为 1.4.4。
+
+## 2026-10-24 · P7 懒导入预算归因纠正与 20 处收敛
+
+**纠正此前归因**：上文“排除的 3+1 个文件为既有基线失败”把 `test_lazy_import_budget` 也算作父提交既有债务，这不准确；旧记录保留，但不能再据此泛化。以 `scripts/count_lazy_imports.py` 完全相同的正则逐文件读取 Git 对象，`37b22e88` 为 180，`9ecda539` 为 200，新增恰为 20：`governance +1`、`persistent_shell +10`、`post_write_diagnostics +3`、`session_runtime +1`、`subagents/runtime +4`、`tool_orchestrator +1`。测试阈值 181 与统计器正则均未修改。
+
+**改法（20 处）**：合并 `governance` 已加载的 policy 导入；`post_write_diagnostics` 以 settings 模块别名保留运行时 `load_config` mock；`persistent_shell` 上移 `base64`/`subprocess`、`sandbox.manager` 模块别名和纯数据 `JobPlan`，并以单一专用 helper 保留可选 `psutil` 懒加载；`subagents/runtime` 上移 `asyncio`/`inspect`/`time` 并合并已有 `session_runtime` try/except 导入布局；`tool_orchestrator` 改用 settings 模块别名；`cache_policy` 上移 `hashlib`/`json`/`time`；`bridge/acp` 合并两处 `subprocess`；`agents/coordinator` 合并重复 `logging` 导入。`session_runtime → persistent_shell`、`AgentV2`、appserver delegate state、Windows `windll` 与每命令 sandbox manager 调用接缝均保持懒加载/可替换。
+
+**验证**：同正则 `lazy_import_total=180 budget=181`；P7/fast boundary/startup **8 passed**；目录/session/子代理上下文 **75 passed**；受影响模块目标回归 **218 passed**；父代理指出的 Job ownership 两项复审后 **2 passed**；诊断/3–6 轮审计 **178 passed / 2 skipped**（仅缺本机 eslint/tsc）。独立首次 183 项中曾出现的两项 manager 注入退化已由模块别名修复，未修改对应测试或预算。产品版本仍为 1.4.4。

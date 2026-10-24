@@ -385,6 +385,123 @@ class TestJsonEslintConfigChain:
         assert report.status == "not_checked"
         assert not marker.exists(), "the JSON config's extends script was executed"
 
+    @pytest.mark.parametrize(
+        ("config", "needs_trust"),
+        [
+            ({"root": True, "parser": "./payload.cjs"}, True),
+            (
+                {"overrides": [{"files": ["*.js"], "parser": "./payload.cjs"}]},
+                True,
+            ),
+            (
+                {"overrides": [{"files": ["*.js"], "extends": ["./payload.cjs"]}]},
+                True,
+            ),
+            (
+                {
+                    "root": True,
+                    "parser": "espree",
+                    "extends": ["eslint:recommended"],
+                    "overrides": [
+                        {
+                            "files": ["*.ts"],
+                            "parser": "@typescript-eslint/parser",
+                            "extends": ["plugin:@typescript-eslint/recommended"],
+                        }
+                    ],
+                },
+                False,
+            ),
+        ],
+    )
+    def test_local_parser_and_override_entries_require_trust(
+        self, tmp_path: Path, config: dict, needs_trust: bool
+    ):
+        cfg = tmp_path / ".eslintrc.json"
+        cfg.write_text(json.dumps(config), encoding="utf-8")
+        if needs_trust:
+            (tmp_path / "payload.cjs").write_text(
+                "module.exports = {};\n", encoding="utf-8"
+            )
+        assert diag._eslint_config_may_execute(cfg) is needs_trust
+
+    @pytest.mark.parametrize(
+        ("config", "trust_config"),
+        [
+            (
+                {"root": True, "parser": "./payload.cjs"},
+                {
+                    "safety": {"permission_mode": "auto_edit"},
+                    "diagnostics": {"run_project_config_checkers": True},
+                },
+            ),
+            (
+                {"overrides": [{"files": ["*.js"], "parser": "./payload.cjs"}]},
+                {"safety": {"permission_mode": "full_auto"}},
+            ),
+            (
+                {"overrides": [{"files": ["*.js"], "extends": ["./payload.cjs"]}]},
+                {
+                    "safety": {"permission_mode": "auto_edit"},
+                    "diagnostics": {"run_project_config_checkers": True},
+                },
+            ),
+        ],
+    )
+    async def test_post_write_gate_covers_local_parser_entries(
+        self, monkeypatch, ws_dir: Path, config: dict, trust_config: dict
+    ):
+        from RxyCode.RxyCode1_1_0.tools import write as write_tool
+
+        root = ws_dir / f"parser-{uuid.uuid4().hex[:8]}"
+        bin_dir = root / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        marker = root / "parser-ran.txt"
+        (root / "package.json").write_text("{}", encoding="utf-8")
+        (root / ".eslintrc.json").write_text(json.dumps(config), encoding="utf-8")
+        (root / "payload.cjs").write_text(
+            "require('fs').writeFileSync(%s, 'parser-loaded');\n"
+            "module.exports = { parse() { return { type: 'Program', body: [] }; } };\n"
+            % json.dumps(str(marker).replace("\\", "/")),
+            encoding="utf-8",
+        )
+        fake = root / "fake-eslint.js"
+        fake.write_text(
+            "require(process.cwd() + '/payload.cjs');\n"
+            "process.stdout.write('[]');\n",
+            encoding="utf-8",
+        )
+        if WINDOWS:
+            (bin_dir / "eslint.cmd").write_text(
+                '@echo off\r\nnode "%~dp0..\\..\\fake-eslint.js" %*\r\n',
+                encoding="ascii",
+            )
+        else:
+            shim = bin_dir / "eslint"
+            shim.write_text(
+                "#!/usr/bin/env node\n" + fake.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            shim.chmod(0o755)
+        target = root / "a.js"
+        target.write_text("const x = 1;\n", encoding="utf-8")
+        content = target.read_text(encoding="utf-8")
+
+        assert diag.project_config_execution_allowed(trust_config) is True
+        monkeypatch.setattr(diag, "project_config_execution_allowed", lambda: False)
+        untrusted = await write_tool.post_write_report_async(
+            target, content, operation="edit"
+        )
+        assert "syntax check:" in untrusted
+        assert not marker.exists(), "the local ESLint parser executed without trust"
+
+        monkeypatch.setattr(diag, "project_config_execution_allowed", lambda: True)
+        trusted = await write_tool.post_write_report_async(
+            target, content, operation="edit"
+        )
+        assert "OK (eslint)" in trusted
+        assert marker.exists(), "the trusted post-write path never ran ESLint"
+
 
 # ---------------------------------------------------------------------------
 # P2 · sync tools keep their session context (contextvars)

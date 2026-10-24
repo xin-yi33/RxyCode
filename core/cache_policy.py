@@ -9,7 +9,10 @@ TTL 5m/1h 双档由 config.cache.ttl 控制（默认 5m）。
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import time
 from types import SimpleNamespace
 from typing import Optional
 
@@ -321,9 +324,6 @@ def build_prewarm_signature(
     模型/cwd/MCP 任一变化 → 签名变化 → 预热缓存失效 → 重建。
     确定性序列化（sort_keys）保证同配置同签名。
     """
-    import hashlib
-    import json
-
     norm = json.dumps(
         {
             "model": model,
@@ -421,8 +421,6 @@ class PrewarmState:
 
     def warm(self, signature: str, now: Optional[float] = None) -> None:
         """记录一次预热（同签名有效）。"""
-        import time
-
         self._signature = signature
         self._warmed_at = now if now is not None else time.time()
 

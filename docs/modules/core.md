@@ -159,8 +159,12 @@ Single checker used by `write`, `edit` and `patch` through
     must not inherit a global `full_auto` trust.
   - The ESLint config is resolved the way ESLint resolves it
     (`find_executable_eslint_config()` walks up), so a nested package cannot
-    execute the parent directory's config unnoticed. Data-only configs
-    (`.eslintrc.json`) are not executable.
+    execute the parent directory's config unnoticed. A data config such as
+    `.eslintrc.json` is safe only when its top-level and `overrides` entries do
+    not load project code. Local `parser` and `extends` entries are inspected
+    recursively (including inside `overrides`); an unresolved local entry also
+    requires trust. Built-in presets and package presets keep the existing
+    dependency-code policy.
   - `tsconfig.json` is parsed as JSONC and its `extends` chain is merged;
     `composite` decides whether `--incremental false` may be added (TS6379),
     and `plugins` is read from the effective config. An unreadable config is
@@ -414,12 +418,15 @@ and `tests/test_core/test_request_routing.py`.
 ### P7 intentional lazy imports
 
 P7 tracks function-scoped imports under `core/`, `execution/`, `planning/`,
-`validation/`, and `synthesis/` via `scripts/count_lazy_imports.py` (budget **70**).
+`validation/`, and `synthesis/` with the unchanged regex in
+`scripts/count_lazy_imports.py`. The active release ratchet is
+`tests/test_core/test_lazy_import_budget.py` at **181**.
 
-Current total: **72 / 70** (`python scripts/count_lazy_imports.py --by-file`).
-The budget is currently **over budget** and must be reduced; the table below is
-**non-exhaustive** (representative) since Phase B/C subagent modules and new
-providers added several entries.
+Current total: **180 / 181** (`python scripts/count_lazy_imports.py --by-file --budget 181`).
+The table below is **non-exhaustive** (representative) since Phase B/C subagent
+modules and new providers add entries. Genuine import-time boundaries remain
+lazy: optional `psutil`, Windows `ctypes.windll`, `AgentV2`, appserver delegate
+state, and `session_runtime → persistent_shell`.
 
 | Module | Count | Reason |
 |--------|------:|--------|
@@ -444,7 +451,7 @@ providers added several entries.
 now use module-scope absolute imports (config reads go through `config.settings`).
 
 Regression guard: `tests/test_core/test_lazy_import_budget.py` (milestone & final budget)
-and `python scripts/count_lazy_imports.py` (must stay `< 70`).
+and `python scripts/count_lazy_imports.py --budget 181` (must stay `< 181`).
 
 ### Isolated Subagents (`core/subagents/`, Phase B/C/D)
 

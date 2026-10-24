@@ -33,17 +33,21 @@ State lives in memory only (env can hold credentials); nothing is serialized.
 from __future__ import annotations
 
 import asyncio
+import base64
 import codecs
 import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .sandbox import manager as sandbox_manager
+from .sandbox.types import JobPlan
 from .session_runtime import current_session_id
 
 _logger = logging.getLogger(__name__)
@@ -343,8 +347,6 @@ def _build_wrapped_command(
         # definitions, heredoc-ish blocks).  Embedding them literally would
         # split them across the parser's command boundaries again, so the user
         # text travels as base64 and is rebuilt into a ScriptBlock.
-        import base64
-
         user_b64 = base64.b64encode(command.encode("utf-8", errors="replace")).decode("ascii")
         rc_file = protocol.rc_file_path
         err_file = protocol.err_file_path
@@ -621,9 +623,7 @@ class ManagedShell:
         wrapped = plan.wrapped
         if wrapped is not None and getattr(wrapped, "job_plan", None) is not None:
             try:
-                from .sandbox.manager import open_sandbox_job
-
-                job_handle = open_sandbox_job(wrapped)
+                job_handle = sandbox_manager.open_sandbox_job(wrapped)
             except Exception as exc:
                 raise ShellStartupError(
                     f"sandbox job could not be created: {exc}",
@@ -637,7 +637,6 @@ class ManagedShell:
             # already exited (Windows drops the parent link on exit, so
             # ppid-walking and `taskkill /T` both miss orphans).
             try:
-                from .sandbox.types import JobPlan
                 from .sandbox.windows import _create_job
 
                 job_handle = _create_job(JobPlan(kill_on_close=True))
@@ -668,9 +667,9 @@ class ManagedShell:
 
             if job_handle:
                 try:
-                    from .sandbox.manager import bind_spawned_process
-
-                    bind_spawned_process(job_handle, self._process.pid)
+                    sandbox_manager.bind_spawned_process(
+                        job_handle, self._process.pid
+                    )
                 except Exception as exc:
                     # Fail closed: the suspended root never ran, so killing it
                     # reaps the whole (still empty) tree.
@@ -720,8 +719,6 @@ class ManagedShell:
     def _process_kwargs() -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            import subprocess
-
             kwargs["creationflags"] = getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
@@ -1037,6 +1034,15 @@ class ManagedShell:
 # Process tree termination (shared with lifecycle)
 # ---------------------------------------------------------------------------
 
+def _optional_psutil():
+    """Load the optional process dependency only when tree inspection runs."""
+    try:
+        import psutil
+    except Exception:  # pragma: no cover - psutil is a hard dependency
+        return None
+    return psutil
+
+
 def _collect_descendants(root_pid: int) -> list[int]:
     """Every live descendant of ``root_pid``, found by walking parent links.
 
@@ -1044,9 +1050,8 @@ def _collect_descendants(root_pid: int) -> list[int]:
     after the parent exits, so this also finds children orphaned when the root
     died first (audit P1-06) -- ``taskkill /T`` alone cannot.
     """
-    try:
-        import psutil
-    except Exception:  # pragma: no cover - psutil is a hard dependency
+    psutil = _optional_psutil()
+    if psutil is None:
         return []
     try:
         pairs = [
@@ -1137,9 +1142,8 @@ def _kill_pids(pids: list[int]) -> None:
     """Best-effort kill of already-identified descendant PIDs."""
     if not pids:
         return
-    try:
-        import psutil
-    except Exception:  # pragma: no cover
+    psutil = _optional_psutil()
+    if psutil is None:
         return
     for target in pids:
         try:

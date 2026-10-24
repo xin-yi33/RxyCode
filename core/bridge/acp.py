@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from typing import AsyncIterator
 
 _logger = logging.getLogger(__name__)
@@ -67,8 +68,6 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
     pid = getattr(proc, "pid", None)
     if os.name == "nt":
         try:
-            import subprocess
-
             subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
@@ -115,10 +114,8 @@ class ACPBridge(AgentBridge):
         if os.name != "nt":
             kwargs["start_new_session"] = True
         else:  # pragma: no cover - Windows 分支
-            import subprocess as _sp
-
             kwargs["creationflags"] = getattr(
-                _sp, "CREATE_NEW_PROCESS_GROUP", 0
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
         self._proc = await asyncio.create_subprocess_exec(
             *self._cmd,

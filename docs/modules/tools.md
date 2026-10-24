@@ -347,6 +347,12 @@ broker is installed and stdin is not a TTY (worker pipes), the tool returns
   `find_executable_eslint_config()` walks parent directories because ESLint
   does; a nested package without its own config would otherwise execute the
   parent's `eslint.config.js` unnoticed.
+- **Data configs are checked for local code-loading entries** (2026-10-24):
+  legacy `.eslintrc.json` is not assumed safe from its extension. A local
+  top-level `parser`, or a local `parser`/`extends` inside `overrides`, can load
+  project JavaScript before ESLint reports a parse error. These entries are
+  resolved and inspected recursively; when the target is missing or cannot be
+  proven data-only, ESLint alone is skipped without explicit trust.
 - **tsconfig is read as JSONC with `extends`** (round-5 audit): comments and
   trailing commas no longer break parsing, and `composite`/`plugins` come from
   the merged effective config (`--incremental false` is omitted for composite
