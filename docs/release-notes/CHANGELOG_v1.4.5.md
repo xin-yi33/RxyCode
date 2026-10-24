@@ -848,3 +848,18 @@
 
 - CI `40104203266` 的 py3.12 job 为 `13570 passed / 112 skipped / 3 errors`；3 个 setup error 均来自 W11 c08/c09 在 session PostgreSQL fixture 的 `127.0.0.1:55441` 首次 `worker_url()` 建连失败，py3.11 与其余 lane 通过。
 - `tests/support/pgurl.py` 移除 `ensure_container()` 的 Unix-socket `pg_isready` 成功快返回：socket ready 不能代替 host TCP readiness，统一复用既有 60 秒 bounded `SELECT 1` 循环。新增 `tests/unit/test_pgurl.py` 确定性覆盖“socket ready、host TCP 尚未可用”的交错，本地 `1 passed`；真实 PostgreSQL CI 待复跑，不宣称已证 OOM 或必然由 init 窗口引起。
+
+### 真实 BYOK 长进程验收：执行前合同门阻塞（2026-10-24）
+
+- 正常网页 ALTCHA 显示验证通过后，仅用用户截图确认的本人账号提交一次密码登录：`POST /api/v1/auth/login` 200，`GET /api/v1/me` 200、身份匹配、角色 `owner`，无额外 MFA。没有伪造 cookie、重置密码、修改权限或读取平台模型密钥；用户自己的公开模型目录只有一个可用 BYOK 模型，本次显式选择 `opencode-go / deepseek-flash`，run 快照确认 `credential_source=byok`。这证明正常鉴权与真实 Provider 调用已走通，不代表已完成活性判定。
+- 唯一正式诊断 run 于 `2026-10-24T15:33:41Z` 提交（任务接口 202），使用新建独立诊断项目、`confirm` 权限；请求仅执行一次 Python 打印开始标记、睡眠 225 秒、打印结束标记的命令，显式请求工具 timeout 300。未加速生产 180/300/600 检查点，未更改 observer、预算、续期 ledger、权限、沙箱或已上线镜像。
+- **验收阻塞，不能计为 PASS**：命令在执行前被工作流合同门拒绝，真实 SSE seq 42/44 包含 `bash was not executed`、`current contract is read_only` 与 `Upgrade was refused: dif…`。状态文本在此截断；模型最终解释称 difficulty 解析失败，但不能据模型解释替代完整错误回执。59 个唯一 SSE 事件中，`tool.started`、审批请求和 `process.liveness` 均为 0；没有进程开始/结束标记或退出码，因此默认 180 秒检查点、真实 5 秒 CPU/IO 观察、owner LLM 的 continue/stop/unknown 判定以及低 CPU 睡眠正常结束仍全部 **未验证**，没有静默重试第二条正式任务。
+- 完成口径：正常 Web 会话确实收到了 SSE，最终 seq 52 为 `[evidence failed: requested side effect has no verified WRITE/DANGER tool execution]`；API 终态及 UI 标签却为 `succeeded` / 已完成。该终态不能作为进程运行成功的证明。安全证据保存在 `tests/fixtures/process_liveness/provider225-20261024-blocked.json`，不含密码、cookie、API key 或其它用户任务内容。
+- 清理与边界：仅将本次自建 session 经正常 archive API 归档（200，暂停定时任务数 0）；诊断项目与归档 trace 保留供定位，没有触碰用户其它会话/文件。未依赖用户删除中的 staging 目录，未安装依赖、部署或修改生产代码。本条为真实执行记录及失败边界，不是一次新的业务镜像发布。
+
+### Session 终态真值修复与第二次真实合同门复验（2026-10-25）
+
+- `Session.prompt()` 此前在任意 `streamed > 0` 时把 `classify_agent_result()` 的 `failed` 无条件改成 `succeeded`。现仅在“确有流式内容且最终 answer 为空”的 legacy stream-only 情形保留兼容成功；非空权威失败（包括 `[evidence failed: ...]`）保持 `failed`，不再发出成功 `FinalAnswer`。`PromptResult.detail` 保留内部原文供 trace，`ErrorNotification` 继续统一经 `to_user_facing_error()`，未增加协议字段、Web 正则、状态存储或错误格式。
+- 回归覆盖：`tests/test_core/test_session.py` 保留旧 `[error: ... Detail: boom]` 输入并与新 evidence-failure 参数化；新增 `tests/acceptance/test_session_terminal_truth.py` 覆盖显式失败、legacy stream-only 空答案、正常成功及 cancel/timeout 不变，同时断言已显示的 `MessageDelta`、`ToolBegin`/`ToolEnd` 不被终态错误抹除。Windows fresh 结果：两文件 `31 passed`，ruff 绿。
+- 第二次真实 225 秒诊断仍使用本人 BYOK `opencode-go / deepseek-flash`，由模型自行分类，未手塞合同。初始合同为 `read_only` 且 `required_checks=[]`；模型按既有 question 流程请求重建开发合同，用户批准后 classifier 返回 `classifier did not return JSON`，同一 `bash` 再次在执行前被拒。全程无子进程启动、无开始/结束标记、无退出码、无 180 秒后 probe；因此仍不能把 225 秒 liveness 计为 PASS。
+- 该次 run 的 API 终态仍标成 `succeeded`，而 SSE 最终文本明确写“命令未能执行”；这由当时运行中的旧 Session 镜像复现了上述误升级，本地修复尚未部署，不能用它证明线上已修复。旧 CI `40107843139`（`2d421314`）已完成且 6 lane 全绿；本 Session 修复尚待一次新普通 push 触发的新 CI，不升版本、不发 tag/release。
