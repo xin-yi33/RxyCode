@@ -4,6 +4,12 @@
 >
 > 1.4.5 尚未发版；本文件记录的部署不代表产品版本升级。此后新增先记在本文件。
 
+## master Linux 回归修复部署（2026-10-24，PR #28 → `web-584b8c28`）
+
+- PR #28（`fix/master-linux-regressions` → squash `584b8c28`）修复并行 WIP 流合入 master 后引入的 Linux 回归：managed-shell 测试平台分派（POSIX 不再发 `Write-Output`）、中文输出 round-trip、`( exit 7 )` 子 shell 退出语义、跨事件循环 shell 复用（`_loop` 归属 + `threading.Lock` 注册表 + `ShellLostError`）、`__init__.py` `sys.modules` 快照竞态（`_modules_snapshot` 重试）、`tools/patch.py` context/removal 行严格校验、w6_c03 chrome-error 重试、`test_agent_main_chain` 证据 fixture、pg conftest 断连重试。Codex review 两轮零发现；PR CI 与 master CI（`584b8c28`）全绿。
+- 部署 `web-584b8c28`：源 = master `584b8c28` + 现行 WIP overlay（80 文件，其中 `__init__.py` overlay 已并入 `_modules_snapshot` 与 `_sanitize_proxy_env` 两者）；三镜像 `RXYCODE_BUILD_COMMIT=584b8c28…` 重建；栈目录 `compose.prod.yaml` 恢复 repo `${RXYCODE_IMAGE_TAG}` 变量版（此前被并行部署硬编码 pin 覆盖）；migrate alembic head 幂等；api/3×worker/gateway 全 healthy，`/api/v1/version`（本机与公网）均报 `584b8c28…`，公网 `https://rxycode.xyz` 200。
+- 部署过程修复：build 不再传 `HTTP(S)_PROXY`（mihomo 上游 502、容器内 `127.0.0.1` 不可达，VM 直连 tuna/npmmirror/debian 均通）；checkout 前先 `git clean`（旧 overlay 未跟踪文件在新 SHA 已被跟踪会挡 checkout）；compose 必须 `-p rxyprod -f compose.yaml -f compose.prod.yaml`（缺 `-p` 会按目录名派生 `rxycode` 项目起平行空栈，已即建即拆、卷全清，无数据影响）。详见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。
+
 ## 思考过程与 BYOK 额度（2026-10-22 已部署）
 
 - Web 思考块的标题是 `thoughts`。它不再拼接 `Analyzing your request...`、`Thinking... (round N)`、`思考中...` 这类进度文案。这些仍只做活动状态。模型的 `event/reasoning_snapshot` 按 CLI 的方式拼进这块。

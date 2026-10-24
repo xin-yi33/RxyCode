@@ -8,6 +8,15 @@
 
 ## 2026-10-24
 
+### 20:10 CST 🐧📦📁 master Linux 回归修复上线（web-584b8c28，PR #28 正规 merge→CI→deploy）
+- 代码：master squash merge `584b8c2805faa991e967a43f2dc35ac825b968f1`（PR #28 `fix/master-linux-regressions`，修复并行 WIP 流引入的 Linux 回归：managed-shell 平台分派/编码/退出语义、跨事件循环 shell 归属、`sys.modules` 快照竞态、patch context 严格校验、w6_c03 重试、agent_main_chain fixture、pg conftest 重试）。Codex 零发现，PR CI + master CI 全绿后部署。
+- 部署源：VM `/opt/rxycode/src` `git clean` → `checkout -f 584b8c28`（bundle 全量推送）+ WIP overlay tar（80 文件；`__init__.py` overlay 已先并入 `_modules_snapshot` + `_sanitize_proxy_env`，避免盖回竞态修复）。
+- 构建：`rxycode-{api,worker,web}:web-584b8c28`，`RXYCODE_BUILD_COMMIT=584b8c28…`。**不传 proxy build-arg**——mihomo 上游 502 且容器内 `127.0.0.1`≠宿主，实测 VM 直连 tuna（pip 2.4s）/deb.debian.org（apt 59s）/npmmirror 均通；web 镜像走全层缓存。
+- 栈切换：栈目录 `compose.prod.yaml` 恢复 repo `${RXYCODE_IMAGE_TAG}` 变量版（此前被 preview 部署硬编码 pin）；`.env` `RXYCODE_IMAGE_TAG=web-584b8c28`；命令形态 `docker compose -p rxyprod -f compose.yaml -f compose.prod.yaml`。
+- **踩坑记录**：首轮 `up -d migrate` 缺 `-p rxyprod` 且只给 `-f compose.prod.yaml`——按目录名派生 `rxycode` 项目起了一套平行空栈（新 pg/redis/minio + migrate 跑在空库）；`compose -p rxycode down -v` 已整体拆除，卷全清，生产数据零接触。prod 实际结构 = `compose.yaml`（基础服务+卷）+ `compose.prod.yaml`（image pin 覆盖层）。
+- 上线核验：migrate `alembic upgrade head complete`（exit 0）；`rxyprod-{api,gateway,worker-1..3}` 全 `web-584b8c28` healthy（worker 恰 3，≤3 上限保持）；`/api/v1/version` 本机与公网均报 `584b8c28…` built_at `2026-10-24T11:57:45Z`；公网 `https://rxycode.xyz` 5/5 × 200（Windows 外部视角）。VM 侧 curl 公网偶发 20s 超时系其隧道出口抖动，非站点故障。
+- 部署脚本：`C:\Users\Administrator\.rxycode\ops\deploy_584b8c28.py`（stdout `errors=replace` 兼容 GBK 控制台的 ✓ 字符）。
+
 ### 17:10 CST 🐧📦📁 全类型产物预览 + 三档权限 + build-workflow 死锁修复上线（preview-f7564062-01）+ 线上验收
 - 代码：`feat/rxycode-web` 提交 `f7564062`（31 files, +4486/-231；共享 preview-kinds 全类型预览、三档权限前后端打通、build-workflow 只读契约升级死锁修复、Caddy 预览路径 `X-Frame-Options: SAMEORIGIN`、changelog/docs），已 push GitHub `origin/feat/rxycode-web`（在其之上的并行 worker 提交一并包含）。
 - 前置故障与恢复：13:31–13:57 CST `cloudflared` 与 Cloudflare 边缘连接掉线（浏览器 1033 / curl 530；rxyprod 容器全部 health、本地 gateway 8080 一直 200），`systemctl restart cloudflared` 后 4 条连接恢复、连续探测 12/12 200；16:33 CST VM 被挂起（用户忘记开机），`vmrun -T ws start "D:\python study\Linux\CentOS 7 64 位.vmx" nogui` 恢复，SSH/公网 200。
