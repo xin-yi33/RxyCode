@@ -691,3 +691,10 @@
 **本地验证**：`tsc --noEmit` 通过；Playwright 实测（拦截 artifacts manifest 喂 8 种类型 mock）——8 行各带正确 `data-file-category` 与 ≥6 种差异化描边色，下载锚点全部含 `title=下载…`、预览含 `title=预览…`，分区标题「产出文件 (8)」渲染，390px 窄视口无横向溢出，console 零 error。截图 `~/.rxycode/ops/verify-artifacts{,-mobile}.png`。
 
 **涉及文件**：`apps/web/src/components/FileTypeIcon.tsx`（新）、`apps/web/src/components/FileName.tsx`、`apps/web/src/features/runs/ArtifactRows.tsx`。
+
+## 2026-10-24 · Linux worker 候选协议复验（0eabd667）
+
+- 基于 actual worker image `sha256:0d32d537...`（tag `rxycode-worker:polish-0fa28c46-01`）制作 12-file allowlist overlay 候选 `rxycode-worker:candidate-audit-0eabd667` / `sha256:c0bd538d...`；候选内 12 文件 SHA-256 与 source `0eabd667` 逐项一致。P7 `cache_policy.py`、`bridge/acp.py`、`agents/coordinator.py`、tests/docs 未进入 overlay。
+- Linux disposable container 真实进程矩阵 **11/11 passed**：持久变量/函数/cwd/venv、两会话隔离、ToolOrchestrator Plan 拒写、edit Python 诊断、取消树清理均通过。
+- POSIX 协议回归通过：read-only host cwd `/` + writable workspace 下 one-shot 与 managed 均成功；含空格和单引号的 host path 成功；`exit 7` 为 `failed / exit_code=7` 并保留 partial，once 文件只写一次，下一条在新 shell 运行且状态不重放；`exit 0` 缺 END 仍为 failed，未假成功。
+- 边界：测试容器使用 `network none`、read-only rootfs、512 MB/0.5 CPU、默认 `os_sandbox.enabled=false`；不宣称 macOS、完整浏览器或公网端到端验收，未修改版本号、默认 workflow、权限、watchdog、drain 或生产配置。
