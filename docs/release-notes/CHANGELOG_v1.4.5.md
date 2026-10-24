@@ -429,3 +429,4 @@
 **本地验证**：`tsc --noEmit` 通过；Playwright 实测（拦截 artifacts manifest 喂 8 种类型 mock）——8 行各带正确 `data-file-category` 与 ≥6 种差异化描边色，下载锚点全部含 `title=下载…`、预览含 `title=预览…`，分区标题「产出文件 (8)」渲染，390px 窄视口无横向溢出，console 零 error。截图 `~/.rxycode/ops/verify-artifacts{,-mobile}.png`。
 
 **涉及文件**：`apps/web/src/components/FileTypeIcon.tsx`（新）、`apps/web/src/components/FileName.tsx`、`apps/web/src/features/runs/ArtifactRows.tsx`。
+- **PR #25 CI flake 追加修复**：`w9_b1_rate_limit` 注册块硬编码 `same@example.com` 撞共享 worker DB 残留账号 → EMAIL_TAKEN(409) 先于限流分支返回，改用 `uuid` 唯一邮箱；`w6_c03` 外网导航重试放宽到任意非 ok（chrome-error 打断类）；`w3_c01` `_source_digest` 从 `rglob` 改 `os.walk` 目录级 prune——rglob 会 scandir 下沉进兄弟 worker 正 rmtree 的 `dist-gwN`。
