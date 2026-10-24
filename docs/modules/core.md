@@ -17,6 +17,15 @@ The core module is the brain of RxyCode. It contains the main agent logic, the L
 `api_server.py` (HTTP/SSE adapter). It owns no UI or transport I/O — surfaces
 map `emit()` protocol events; SSE adapters use `notification_to_sse_event()`.
 
+**Terminal truth (2026-10-24):** `Session.prompt()` takes the terminal status
+from `classify_agent_result()`. Already-streamed text does not upgrade a
+non-empty authoritative failure (for example `[evidence failed: ...]`) to
+success; only the legacy case with streamed output and an empty terminal answer
+retains the compatibility fallback. `PromptResult.detail` keeps the internal
+classification text for tracing, while `ErrorNotification` continues through
+`to_user_facing_error()`. Regression coverage: `tests/test_core/test_session.py`
+and `tests/acceptance/test_session_terminal_truth.py`.
+
 ### Prompt attachments
 
 `Session.prompt(..., attachments=[])` is the shared attachment seam for both

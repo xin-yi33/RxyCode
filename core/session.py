@@ -415,9 +415,11 @@ class Session:
                 )
             )
 
-            if status == "failed" and streamed > 0:
-                # Tokens already reached the TUI (HTML/files already shown).
-                # A trailing [error]/empty classify must not paint MSG_DEFAULT.
+            if status == "failed" and streamed > 0 and not answer.strip():
+                # 2026-10-24 legacy compatibility: keep the turn successful only
+                # when streamed output is the entire visible result. A
+                # non-empty authoritative failure (for example
+                # "[evidence failed: ...]") must keep its failed status.
                 status = "succeeded"
 
             if status == "succeeded":

@@ -11,6 +11,7 @@ from core.session import (
 )
 from protocol.notifications import ErrorNotification, FinalAnswer, TokenUsage
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
 
 
 @pytest.fixture
@@ -508,7 +509,20 @@ async def test_session_prompt_occupancy_ignores_cached_prompt_tokens(session_wor
 
 
 @pytest.mark.asyncio
-async def test_session_prompt_skips_default_error_after_streamed_answer(session_workspace):
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "[error: execution stopped after a side-effecting tool was attempted. Detail: boom]",
+        (
+            "[evidence failed: requested side effect has no verified "
+            "WRITE/DANGER tool execution]"
+        ),
+    ],
+)
+async def test_session_prompt_nonempty_streamed_failure_keeps_failed_status(
+    session_workspace,
+    answer,
+):
     emitted: list[BaseModel] = []
     session = Session(
         session_id="s-stream",
@@ -523,16 +537,18 @@ async def test_session_prompt_skips_default_error_after_streamed_answer(session_
             return self._answer
 
     result = await session.prompt(
-        _StreamAgent(
-            "[error: execution stopped after a side-effecting tool was attempted. Detail: boom]"
-        ),
+        _StreamAgent(answer),
         "hi",
         mode="build",
         run_id="run-stream",
         tui=tui,
     )
-    assert result.status == "succeeded"
-    assert not any(isinstance(item, ErrorNotification) for item in emitted)
+    assert result.status == "failed"
+    assert not any(isinstance(item, FinalAnswer) for item in emitted)
+    errors = [item for item in emitted if isinstance(item, ErrorNotification)]
+    assert len(errors) == 1
+    assert result.detail == result.answer
+    assert errors[0].message == to_user_facing_error(result.detail)
 
 
 @pytest.mark.asyncio
