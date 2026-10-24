@@ -291,3 +291,9 @@ BYOK-only enforcement policy（前后端共同约束）：不设超级号/管理
 - **Composer**：IME 保护（compositionend 后 500ms 内 Enter 不提交、keyCode 229、repeat、dialog[open]）+ `submitInFlightRef` 同步闸门（同一任务内两次 Enter 只一个 task POST）。
 - **回归**：`tests/web/w3/test_chat_interaction_contracts.py`、`test_chat_visual_contracts.py`、`test_chat_composite_e2e.py`（共享 fixture `_chat_case.py`）；契约断言见各文件 docstring。
 - **OpenTUI 同步打磨**：`frontend/opentui-app` 侧新增 `theme.ts` SURFACES 近黑 token、`lib/displayColumns.ts`（CJK 列宽对齐）、`lib/copyFeedback.ts`、`lib/fileName.ts`（复合后缀截断）、`ToolCard` 的 `fileEditVerb`（unified edit 写全文时标 Wrote）；`e2e/ui-polish-verify.mjs` 的清理只杀本测试 spawn 的进程树（`listCliProcesses(rootPid)` 按 ParentProcessId BFS，不再命令行子串全机匹配）。
+
+### 全类型产物预览与三档权限（2026-10-24）
+
+- **预览类型面**：`components/FileTypeIcon.tsx`/`ArtifactRows.tsx` 的预览按钮只看 manifest 的 `preview_kind`（非空即显示），种类由共享分类 `rxycode_server.previews.kinds` 决定：`frontend_static` / `image` / `pdf` / `office` / `media` / `archive` / `binary`——worker 对每个产物登记 kind，服务端按 kind 转换或流原字节，**每种产物都有可打开的预览**（未知二进制给元数据+hexdump 页）。
+- **预览抽屉**：`PreviewDrawer.tsx` 的 ready 条件仍是 `status==="ready" && preview_url`；`failed|expired|cancelled` 一律显示终态文案并带 `data-preview-kind`；iframe 保持 `sandbox="allow-scripts"` + `no-referrer`。同源 iframe 由网关放行（`/api/v1/previews/*` 的 `X-Frame-Options: SAMEORIGIN`，其余路径 `DENY`）。
+- **权限三档**：`sdk/client.ts` 的 `PermissionProfile = "confirm" | "auto_edit" | "full"`（→ `confirm_all` / `auto_edit` / `full_auto`）；Composer 选择器、ConsolePanel 运行卡片、SchedulesPage 定时任务三处标签一致——`需要确认` / `自动编辑`（写代码免批，其它有风险操作仍询问）/ `完全自动`。

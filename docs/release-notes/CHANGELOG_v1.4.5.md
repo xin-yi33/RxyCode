@@ -486,3 +486,50 @@
 - **P2 阅读锚点选中外层 run 容器**：`captureVisibleAnchor` 首个「bottom 越过视口顶」的候选是外层 run `<li>`（祖先先于子孙返回）——同 run 内上方内容长高会把视口拽回 run 顶部。改为持续扫描：跨过顶边界的候选记录后继续深入，让最内层的可见条目胜出（首个 top 低于边界的候选做兜底）。
 - **P2 滚动控制器在 DOM 重挂载后失效**：SessionPage 错误→重试替换 chat 子树后，effect 依赖仅 `sessionKey`+稳定回调不重跑，监听器/ResizeObserver 留在已分离节点上——恢复后的聊天失去自动跟随/滚动意图追踪。`scrollRef`/`contentRef` 改为 callback ref + 节点 state（`scrollEl`/`contentEl`），DOM 节点身份变化即重跑绑定 effect；公开类型 `RefObject` → `RefCallback`（消费方仅 `ref={}` 传递，无 `.current` 读取）。
 - **w7_c02 复合外键间歇违例**：FastAPI yield 依赖 teardown 在响应发送后才 `db.commit()`——sessions POST 已返回 id 而行未提交，紧随的 `create_run` 经另一连接做 `fk_runs_session_tenant` 检查偶发失败。测试改为先轮询 session 行在新连接上可见再 `create_run`。
+
+## RxyCode Web：全类型产物预览与分栏修复（2026-10-24）
+
+### 线上缺陷与根因
+
+- **预览面板显示 “rxycode.xyz 拒绝连接”**：网关对全部响应设置 `X-Frame-Options: DENY`，`/api/v1/previews/*/content` 也在其中；API 日志实际返回 200，但浏览器拒绝把响应渲染进同源 iframe。修复 [Caddyfile.prod](../../infra/compose/Caddyfile.prod)：`/api/v1/previews/*` 改为 `SAMEORIGIN`（产物预览内容与 sandbox 端口代理都是同源 iframe），其余路径保持 `DENY`；VM 网关已 `caddy validate` + `caddy reload` 热更新。
+- **只有 HTML 能预览**：worker 只给 `.html/.htm` 写 `preview_kind`，导致图片/PDF/Office/文本等产物连预览按钮都不出现；服务端预览服务也只实现 html/文本/图片，其余直接 `preview_unsupported`。
+
+### 实现
+
+- 新增共享分类 [previews/kinds.py](../../packages/rxycode-server/src/rxycode_server/previews/kinds.py)：`frontend_static` / `image` / `pdf` / `office` / `media` / `archive` / `binary`，manifest 与预览 job 使用同一函数，不再各写一套。
+- worker（[drain.py](../../packages/rxycode-worker/src/rxycode_worker/drain.py)）对每个登记产物按 content-type + 扩展名写 `preview_kind`；分类失败兜底 `binary`（永不为 null，预览按钮不会消失）。
+- 服务端预览管线（新增 [previews/converters.py](../../packages/rxycode-server/src/rxycode_server/previews/converters.py)，重写 [previews/service.py](../../packages/rxycode-server/src/rxycode_server/previews/service.py)）：
+  - `image` / `media`：原字节流（content-type 缺失时按文件名补全，避免 `octet-stream` 触发下载）；
+  - `frontend_static`：HTML 原样伺服，文本族转义进 `<pre>`；
+  - `pdf`：pypdfium2 逐页渲染 PNG 内嵌 data URI（≤30 页；scale 2.0→1.5→1.2；文档 25MB / 单页 4MP 上限；超限诚实截断）；
+  - `office`：docx/xlsx/pptx/odt/ods/odp 用标准库解析为 HTML（标题/段落/表格/幻灯片；sheet≤5、行≤200、列≤30）；损坏容器回退元数据页；
+  - `archive`：zip/tar/tar.gz/tgz/gz 列目录（≤300 条；7z/rar 无解压依赖，回退元数据页）；
+  - `binary`：元数据 + 前 4KB 十六进制页——**每个产物都有预览**，不再有死 spinner；
+  - 所有转换页面自包含、文本全量转义、仅 `data:` 图片，与既有 CSP sandbox 双墙一致；转换失败落 `failed` + `preview_failed` 原因。
+- 依赖：`infra/docker/requirements-web.txt` 新增 `pypdfium2==5.14.0`（BSD-3/Apache-2.0，非 AGPL）；api/worker 镜像构建时安装。
+- Web：`PreviewKind` 扩展 `media|archive|binary`；[PreviewDrawer](../../apps/web/src/features/preview/PreviewDrawer.tsx) 对 failed/expired/cancelled 显示终态（cancelled 不再永远“生成中…”），并加 `data-preview-kind` 供验收。
+- 能力矩阵：`/api/v1/me` 的 `preview.kinds` 七类全 true（`frontend_build` 仍随 `preview_root`）。
+- 测试：新增 preview 转换/服务/任务流程单元测试 51 条、worker 映射 19 条；更新 w11 c07/c08/c09（binary 由 `preview_unsupported` 改为 ready 元数据页，保留 404/403/匿名负例）；`npm --prefix apps/web run typecheck` / `build` 0。
+- 本地渲染实测：验收用 PNG/PDF/DOCX/XLSX/PPTX/ZIP/MD/WAV/BIN 各一份经真实转换器输出，PDF 页图与 DOCX 表格在浏览器渲染正常，无外链、无脚本错误。
+
+## RxyCode Web：三档权限前后端打通（2026-10-24）
+
+- **问题**：agent 内核有三档 `confirm_all` / `auto_edit`（写代码免批）/ `full_auto`；Web 只有“需要确认 / 完全自动”两档，server 建 run/定时任务只接受 `("confirm","full")`，approval broker 只认字面量 `full_auto`，而 Web 发送的是 `full` —— 页面挡位与后端不一致。
+- **Web**：`PermissionProfile = "confirm" | "auto_edit" | "full"`；Composer 选择器新增中间档“自动编辑”（提示“写代码不再询问，其它有风险操作仍需确认”）；ConsolePanel 运行卡片、SchedulesPage 定时任务选择器与默认映射、sdk 类型统一。
+- **Server**：`api/runs.py` 与 `api/schedules.py` 校验接受 `auto_edit`；`approvals/service.py` 的 no-approval 集合改为 `{full, full_auto}`（硬黑名单/写白名单不变）；`notifications/service.py` 定时任务 firing 不再把 `auto_edit` 静默降级为 `confirm`。
+- **映射**（worker 未改）：`confirm` → 运行默认 `confirm_all`；`auto_edit` → `auto_edit`；`full` → `full_auto`。
+- **测试**：新增 `tests/web/w10/test_permission_tiers_unit.py` 18 条纯单元（run/schedule 校验接受三档并拒绝 `confirm_all`/`full_auto`/大小写变体；approval 语义；定时任务 gate 保留 auto_edit）；typecheck/build 0。
+
+## RxyCode CLI / 内核：build-workflow 只读契约升级死锁修复（2026-10-24）
+
+- **线上现象**：即使选择“完全自动”，写入仍被只读契约拦截；按提示用 question 回答“是，按计划实现”后再次写入依旧被拦截，模型只能把代码作为文本输出。
+- **根因**（生产 run `ee62e05b…`，contract `wf-6e9329791576` read_only）：① 升级合同 prompt 未列全必填字段，模型回复缺 `difficulty` → `validate_decision` 拒绝；② 回退 `promote_to_development` 因无 required check 再次拒绝；③ 每轮只允许一次升级尝试，用户回答后不会重试（blocked 文案却声称会重试）；④ 短续写输入（“开始啊”）被重新分类成只读契约，未继承会话中未完成的 development 契约。
+- **修复**（[core/agent_v2.py](../../core/agent_v2.py)、[core/build_workflow.py](../../core/build_workflow.py)）：
+  - 升级 prompt 补全完整 schema + 当前契约 + 一个合法检查示例，失败时携带拒绝原因重试一次；
+  - 仅缺 `difficulty/acceptance/revisions/stage_actions/reason` 等可默认元数据时用当前契约补齐（`repair_upgrade_decision`，不凭空造检查）；
+  - 仍拿不到可用检查时，按被拦写入目标派生确定性检查 `test -s <path> && echo PASS`（`develop_with_auto_check`，仅 workspace 内 write/edit/patch；bash/git 无目标仍拒绝）；
+  - question 回答后解锁一次升级重试（每轮上限 2 次；`_workflow_blocked_mutation_result` 文案与真实行为一致）；
+  - “开始/开始啊/继续/做吧/go on”等短续写输入采用会话最新未完成的 development 契约（校验失败即丢弃，不放大写权限）；
+  - 保持“非法合同永不落盘/恢复不崩”的既有不变量。
+- **测试**：`tests/test_core/test_build_workflow.py` 扩至 **63 条**（新增缺 `difficulty` 修复、无检查派生、回答后重试、续写恢复、外部路径拒绝、非法不落盘等）；本机全量 **63 passed**。
+- CLI 共用同一内核：三档权限与上述升级修复对 OpenTUI 同样生效，命令仍为 `/permission confirm_all|auto_edit|full_auto`。

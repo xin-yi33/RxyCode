@@ -626,6 +626,21 @@ def cancel_approval(
     return {"status": "cancelled", "http_status": 200}
 
 
+#: The no-approval permission tier has two spellings on the wire: the web
+#: routes send ``full`` (worker maps it to agent ``full_auto``), while a
+#: recovery/resume path may carry the agent vocabulary itself. Both mean the
+#: run is already fully authorized for approval purposes — never ask. Hard
+#: denies (system-command blacklist / write-path gate) are decided in core and
+#: the worker BEFORE an approval is ever requested, so this set cannot widen
+#: them.
+_NO_APPROVAL_PROFILES = frozenset({"full", "full_auto"})
+
+
+def _is_no_approval_profile(value: object) -> bool:
+    """True when the durable run profile already authorizes tools without asking."""
+    return str(value or "") in _NO_APPROVAL_PROFILES
+
+
 def pause_under_lock(
     database_url: str,
     *,
@@ -660,7 +675,7 @@ def pause_under_lock(
             event = db.scalars(
                 select(RunEvent).where(RunEvent.run_id == run_id, RunEvent.seq == 1)
             ).one()
-            if str(event.payload.get("permission_profile") or "") == "full_auto":
+            if _is_no_approval_profile(event.payload.get("permission_profile")):
                 return {"asked": False, "approval_id": None, "executed": False}
             session_id = str(event.payload["session_id"])
         approval_id = uuid.uuid4().hex

@@ -1,9 +1,13 @@
-"""WEB-W11-C09. Preview jobs: real conversion, honest failure, sandboxed serve.
+"""WEB-W11-C09. Preview jobs: every kind renders, honest failure, sandboxed serve.
 
-Contract (UI-2026-10-22 §07 API-PREVIEW-01/02): POST /previews dedupes on the
-artifact's sha; text converts to an escaped static page; images stream their
-original bytes; unsupported types fail with a reason instead of hanging in
-queued forever; converted HTML is served under a CSP sandbox.
+Contract (UI-2026-10-22 §07 API-PREVIEW-01/02, extended for
+``所有类型的文件都可以预览``): POST /previews dedupes on the artifact's sha;
+HTML is served as-is and text converts to an escaped static page; images and
+media stream their original bytes; pdf/office/archive/binary convert to a
+self-contained sandboxed HTML page (binary is the honest metadata fallback, so
+no artifact is ever left without a preview); converted HTML is served under a
+CSP sandbox; a converter failure is a ``failed`` job with a real reason
+instead of a stuck queued spinner.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import hashlib
 import io
 import sys
 import uuid
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -141,6 +146,43 @@ def _seed_artifact(
     return artifact_id
 
 
+def _bucket_bytes(
+    postgres_url: str, fake: "_FakeS3", artifact_id: str, body: bytes, content_type: str
+) -> None:
+    """Put the seeded artifact's bytes where the preview service will read them."""
+    from rxycode_server.persistence.models import Artifact
+
+    engine = create_engine(postgres_url, poolclass=NullPool)
+    try:
+        with Session(engine) as db:
+            row = db.get(Artifact, artifact_id)
+            fake.objects[row.object_key] = (body, content_type)
+    finally:
+        engine.dispose()
+
+
+def _zip_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("readme.txt", "hello from the archive")
+    return buffer.getvalue()
+
+
+def _docx_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr(
+            "word/document.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+            'wordprocessingml/2006/main"><w:body>'
+            "<w:p><w:r><w:t>Office preview works</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>escaped &lt;b&gt;tag&lt;/b&gt;</w:t></w:r></w:p>"
+            "</w:body></w:document>",
+        )
+    return buffer.getvalue()
+
+
 def _stack(postgres_url: str, tmp_path: Path, monkeypatch, github_id: int):
     """App + logged-in owner + a run + a fake bucket with the artifact bytes."""
     from rxycode_server.previews import service as preview_service
@@ -205,7 +247,7 @@ def test_w11_c09_contract(postgres_url: str, tmp_path: Path, monkeypatch) -> Non
     )
     assert created.status_code == 201, created.text
     job = created.json()
-    assert job["kind"] == "frontend"
+    assert job["kind"] == "frontend_static"
     assert job["status"] == "ready"
     assert job["preview_url"].endswith(f"/previews/{job['preview_id']}/content")
 
@@ -250,6 +292,73 @@ def test_w11_c09_contract(postgres_url: str, tmp_path: Path, monkeypatch) -> Non
     assert body2.status_code == 200
     assert body2.content == png
 
+    # Media kind also streams the original bytes with the artifact content
+    # type — the iframe's native player renders audio/video.
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"0" * 24
+    media_id = _seed_artifact(
+        postgres_url, run_id, tenant_id,
+        filename="clip.mp4", content_type="video/mp4", body=mp4,
+    )
+    _bucket_bytes(postgres_url, fake, media_id, mp4, "video/mp4")
+    job_media = owner.post(
+        "/api/v1/previews", json={"artifact_id": media_id}, headers=headers
+    ).json()
+    assert job_media["kind"] == "media"
+    assert job_media["status"] == "ready"
+    media = owner.get(f"/api/v1/previews/{job_media['preview_id']}/content")
+    assert media.status_code == 200
+    assert media.content == mp4
+    assert media.headers["content-type"].startswith("video/mp4")
+    # Streamed bytes are not an HTML document, so no sandbox CSP is applied.
+    assert "content-security-policy" not in media.headers
+
+    # Archive kind converts to a sandboxed member listing.
+    archive_body = _zip_bytes()
+    archive_id = _seed_artifact(
+        postgres_url, run_id, tenant_id,
+        filename="bundle.zip", content_type="application/zip", body=archive_body,
+    )
+    _bucket_bytes(postgres_url, fake, archive_id, archive_body, "application/zip")
+    job_zip = owner.post(
+        "/api/v1/previews", json={"artifact_id": archive_id}, headers=headers
+    ).json()
+    assert job_zip["kind"] == "archive"
+    assert job_zip["status"] == "ready"
+    zip_page = owner.get(f"/api/v1/previews/{job_zip['preview_id']}/content")
+    assert zip_page.status_code == 200
+    assert "readme.txt" in zip_page.text
+    assert "sandbox" in zip_page.headers.get("content-security-policy", "")
+
+    # Office kind converts to escaped HTML text extraction.
+    docx_body = _docx_bytes()
+    docx_id = _seed_artifact(
+        postgres_url, run_id, tenant_id,
+        filename="报告.docx",
+        content_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+        body=docx_body,
+    )
+    _bucket_bytes(
+        postgres_url,
+        fake,
+        docx_id,
+        docx_body,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    job_docx = owner.post(
+        "/api/v1/previews", json={"artifact_id": docx_id}, headers=headers
+    ).json()
+    assert job_docx["kind"] == "office"
+    assert job_docx["status"] == "ready"
+    docx_page = owner.get(f"/api/v1/previews/{job_docx['preview_id']}/content")
+    assert docx_page.status_code == 200
+    assert "Office preview works" in docx_page.text
+    # Extracted text stays escaped, never injected raw.
+    assert "escaped <b>tag</b>" not in docx_page.text
+    assert "escaped &lt;b&gt;tag&lt;/b&gt;" in docx_page.text
+
 
 def test_w11_c09_negative(postgres_url: str, tmp_path: Path, monkeypatch) -> None:
     app, owner, headers, tenant_id, run_id, fake = _stack(
@@ -261,14 +370,24 @@ def test_w11_c09_negative(postgres_url: str, tmp_path: Path, monkeypatch) -> Non
         filename="firmware.bin", content_type="application/octet-stream",
         body=blob,
     )
+    _bucket_bytes(postgres_url, fake, artifact_id, blob, "application/octet-stream")
 
-    # Unsupported type → honest failure, not a stuck spinner.
+    # Binary is no longer "unsupported": the honest metadata + hexdump page is
+    # ready, so every artifact kind has a preview.
     job = owner.post(
         "/api/v1/previews", json={"artifact_id": artifact_id}, headers=headers
     ).json()
-    assert job["status"] == "failed"
-    assert job["error_code"] == "preview_unsupported"
-    assert job["reason"]
+    assert job["kind"] == "binary"
+    assert job["status"] == "ready"
+    assert job["error_code"] is None
+    page = owner.get(f"/api/v1/previews/{job['preview_id']}/content")
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert "sandbox" in page.headers.get("content-security-policy", "")
+    assert "SHA-256" in page.text
+    assert "00000000" in page.text  # hexdump offset column
+    assert "00 01 02" in page.text  # bytes rendered as hex, not raw
+    assert job["preview_url"]
 
     # Missing artifact / foreign ids → 404.
     missing = owner.post(

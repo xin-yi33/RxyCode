@@ -16,6 +16,10 @@
 #     below 17 — uvicorn[standard] accepts 16.x for the api's WS surface.
 #   - pywinpty stays out: it is Windows-only (requirements.txt env marker) and
 #     these images are Linux.
+#   - pypdfium2==5.14.0 is a new server-side PDF rasteriser for the preview
+#     pipeline (API-PREVIEW-02); it is not part of the 2026-10-20 container
+#     freeze, so it is pinned here explicitly instead of being resolved from
+#     the old `pip freeze` union.
 
 aiosqlite==0.22.1
 alembic==1.20.0
@@ -96,6 +100,7 @@ pyee==14.0.0
 Pygments==2.21.0
 pyOpenSSL==26.4.0
 pyotp==2.10.0
+pypdfium2==5.14.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.4
 PyYAML==6.0.3

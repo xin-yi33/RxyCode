@@ -4544,6 +4544,11 @@ _ARTIFACT_EXCLUDED_PREFIXES = (
 _ARTIFACT_MAX_FILES = 50
 _ARTIFACT_MAX_BYTES = 50 * 1024 * 1024
 
+#: Manifest preview kind when the shared classifier cannot be imported. Never
+#: ``None``: a null kind hides the web preview affordance entirely, while the
+#: ``binary`` kind still gets the honest metadata/hex page.
+_ARTIFACT_PREVIEW_KIND_FALLBACK = "binary"
+
 
 def _workspace_snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
     """{relpath: (size, mtime_ns)} for every real file under the workspace."""
@@ -4565,6 +4570,33 @@ def _workspace_snapshot(workdir: Path) -> dict[str, tuple[int, int]]:
             continue
         snapshot[rel] = (stat.st_size, stat.st_mtime_ns)
     return snapshot
+
+
+def _artifact_preview_kind(relative_path: str, content_type: str | None) -> str:
+    """Preview kind for one run deliverable, from the Lead-owned taxonomy.
+
+    The web app only renders a preview affordance when the artifact manifest's
+    ``preview_kind`` is non-null, so every registered deliverable must carry
+    one. ``rxycode_server.previews.kinds.preview_kind_for`` is the single
+    source of truth shared with the preview service — never re-derive the
+    kind here, or the manifest and the conversion job could disagree about
+    what a file is.
+
+    Classification must never abort artifact registration: when the classifier
+    cannot be imported the deliverable is still registered with the honest
+    ``binary`` fallback (a metadata/hex page) instead of no kind at all.
+    """
+    try:
+        from rxycode_server.previews.kinds import preview_kind_for
+
+        return preview_kind_for(relative_path, content_type)
+    except Exception:
+        _LOG.warning(
+            "artifact preview-kind classification failed for %s",
+            relative_path,
+            exc_info=True,
+        )
+        return _ARTIFACT_PREVIEW_KIND_FALLBACK
 
 
 def _register_run_artifacts(
@@ -4599,7 +4631,9 @@ def _register_run_artifacts(
         except OSError:
             continue
         content_type = mimetypes.guess_type(rel)[0] or "application/octet-stream"
-        preview_kind = "frontend_static" if rel.lower().endswith((".html", ".htm")) else None
+        # Every deliverable declares a kind so the web preview affordance is
+        # never silently missing; the shared classifier owns the taxonomy.
+        preview_kind = _artifact_preview_kind(rel.rsplit("/", 1)[-1], content_type)
         try:
             store_artifact(
                 cfg.database_url,

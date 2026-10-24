@@ -1651,7 +1651,7 @@ def _read_only_decision():
     )
 
 
-def test_read_only_code_edit_does_not_finish_without_a_development_check():
+def test_read_only_contract_refuses_an_opaque_mutation_and_keeps_its_identity():
     from types import SimpleNamespace
 
     from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
@@ -1682,17 +1682,14 @@ def test_read_only_code_edit_does_not_finish_without_a_development_check():
         return "wrote"
 
     host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
-    edit = {
-        "filePath": "parser.py",
-        "oldString": "x = 1\n",
-        "newString": "def parse():\n    return []\n",
-    }
+    # No derivable workspace target: only the explicit refusal path applies.
+    opaque = {"command": "rm -rf build"}
 
     import asyncio
-    blocked = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    blocked = asyncio.run(AgentV2._execute_tool(host, "bash", opaque))
     assert blocked.startswith("[blocked")
     assert seen == []
-    assert calls["n"] == 1
+    assert calls["n"] == 2, "an unusable upgrade reply is retried exactly once"
     assert host._build_workflow.workflow_id == "wf-ro"
     assert host._build_workflow.task_kind == "read_only", (
         "a refused upgrade must keep the non-development contract: a forced "
@@ -1700,14 +1697,14 @@ def test_read_only_code_edit_does_not_finish_without_a_development_check():
     )
     assert AgentV2._workflow_completion_feedback(host) is None
     assert "question tool" in blocked
-    retried = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    retried = asyncio.run(AgentV2._execute_tool(host, "bash", opaque))
     assert retried.startswith("[blocked")
-    assert calls["n"] == 1
+    assert calls["n"] == 2, "the retry gate is bounded, not a second classifier loop"
     prose = asyncio.run(AgentV2._execute_tool(
         host, "write", {"filePath": "notes.txt", "content": "hello\n"}
     ))
     assert prose == "wrote"
-    assert calls["n"] == 1
+    assert calls["n"] == 2
 
 
 def test_one_upgrade_supplies_checks_and_then_the_code_edit_runs():
@@ -2103,27 +2100,24 @@ def test_failed_upgrade_never_persists_an_invalid_development_contract(tmp_path)
         return "wrote"
 
     host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
-    edit = {
-        "filePath": "parser.py",
-        "oldString": "x = 1\n",
-        "newString": "def parse():\n    return []\n",
-    }
+    # No derivable workspace target: the write-existence fallback cannot apply.
+    opaque = {"command": "rm -rf build"}
 
     import asyncio
-    blocked = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    blocked = asyncio.run(AgentV2._execute_tool(host, "bash", opaque))
     assert blocked.startswith("[blocked")
     assert "question tool" in blocked
     assert seen == []
-    assert calls["n"] == 1
+    assert calls["n"] == 2, "one upgrade reply and its single protocol retry"
     assert host._build_workflow.workflow_id == "wf-ro"
     assert host._build_workflow.task_kind == "read_only"
     # The in-memory contract stays valid and nothing invalid reached the disk.
     validate_decision(decision_to_jsonable(host._build_workflow), goal="fix parser")
     assert store.load(store.checkpoint_id("sess-upgrade", "fix parser", "build")) is None
     # A second write in the same turn is refused without another classifier call.
-    again = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    again = asyncio.run(AgentV2._execute_tool(host, "bash", opaque))
     assert again.startswith("[blocked")
-    assert calls["n"] == 1
+    assert calls["n"] == 2
     assert seen == []
 
 
@@ -2150,20 +2144,16 @@ def test_blocked_upgrade_is_actionable_and_the_turn_continues():
     host._build_workflow = _read_only_decision()
     rounds = [
         {
-            "tool": "edit",
-            "id": "edit-1",
-            "args": {
-                "filePath": "parser.py",
-                "oldString": "x = 1\n",
-                "newString": "def parse():\n    return []\n",
-            },
+            "tool": "bash",
+            "id": "bash-1",
+            "args": {"command": "rm -rf build"},
         },
         {"content": "Final Answer: 这份文件只读，未改动代码。"},
     ]
     result, snapshots, seen = _run_scripted_loop(host, rounds, [], goal="fix parser")
     assert "未改动代码" in result
     assert seen == [], "a blocked write never reaches the orchestrator"
-    assert calls["n"] == 1
+    assert calls["n"] == 2
     history = "\n".join(
         str(getattr(message, "content", ""))
         for messages in snapshots
@@ -2277,3 +2267,442 @@ def test_prepare_graph_state_does_not_raise_on_an_invalid_contract(tmp_path):
     assert state.get("_resume_exhausted") is not True
     assert host._build_workflow is not None
     assert host._build_workflow.task_kind == "read_only"
+
+
+# ---------------------------------------------------------------------------
+# Read-only -> development upgrade deadlock (task-5)
+# ---------------------------------------------------------------------------
+
+
+def _json_decision_for_goal(goal: str, **overrides):
+    return validate_decision(json.loads(_json_decision(**overrides)), goal=goal)
+
+
+def _save_workflow_checkpoint(store, session_id: str, goal: str, decision) -> None:
+    from RxyCode.RxyCode1_1_0.core.build_workflow import checkpoint_payload
+
+    store.save(
+        session_id,
+        goal,
+        "build",
+        {
+            "phase": "executing",
+            "user_input": goal,
+            "build_workflow": checkpoint_payload(decision, {}, plan_goal=goal),
+        },
+    )
+
+
+def _all_skip_stages() -> dict:
+    return {
+        stage: "skip"
+        for stage in ("project_docs", "clarify", "design", "build_verify", "doc_sync")
+    }
+
+
+def test_repair_upgrade_decision_fills_defaultable_fields_but_never_invents_checks():
+    from RxyCode.RxyCode1_1_0.core.build_workflow import (
+        decision_to_jsonable,
+        repair_upgrade_decision,
+    )
+
+    current = _read_only_decision()
+    check = {
+        "check_id": "target-tests",
+        "command": "python -m pytest tests/test_parser.py -q",
+        "cwd": ".",
+        "success_predicate": "tests_passed_nonempty",
+    }
+    repaired = repair_upgrade_decision(
+        {"required_checks": [check]}, current=current, goal="fix parser"
+    )
+    assert repaired is not None
+    assert repaired.task_kind == "development"
+    assert repaired.difficulty == current.difficulty == "simple"
+    assert repaired.acceptance == current.acceptance
+    assert repaired.workflow_id == current.workflow_id
+    assert repaired.goal_revision == current.goal_revision
+    assert repaired.contract_revision == current.contract_revision
+    assert repaired.stage_actions["build_verify"] == "run"
+    assert [item.check_id for item in repaired.required_checks] == ["target-tests"]
+    validate_decision(decision_to_jsonable(repaired), goal="fix parser")
+
+    # Checks are evidence: a reply with none is never "repaired" into a
+    # development contract (the explicit write-existence fallback is separate).
+    assert repair_upgrade_decision(
+        {"required_checks": []}, current=current, goal="fix parser"
+    ) is None
+    assert repair_upgrade_decision({}, current=None, goal="") is None
+
+
+def test_auto_write_check_is_deterministic_and_honest():
+    from RxyCode.RxyCode1_1_0.core.build_workflow import (
+        auto_write_check,
+        decision_to_jsonable,
+        develop_with_auto_check,
+    )
+
+    check = auto_write_check("src/mod.py")
+    assert check.check_id == "auto-write-mod-py"
+    assert check.command == "test -s src/mod.py && echo PASS"
+    assert check.cwd == "."
+    assert check.success_predicate == "exit_zero"
+    assert check.required is True
+    assert auto_write_check("my file.py").command == "test -s 'my file.py' && echo PASS"
+
+    current = _read_only_decision()
+    decision = develop_with_auto_check(current, goal="fix parser", path="src/mod.py")
+    assert decision.task_kind == "development"
+    assert decision.workflow_id == current.workflow_id
+    assert decision.contract_revision == current.contract_revision + 1
+    assert decision.required_checks[0].contract_revision == decision.contract_revision
+    assert decision.stage_actions["build_verify"] == "run"
+    assert any(item.required for item in decision.required_checks)
+    assert "automatic write-existence check" in decision.reason
+    validate_decision(decision_to_jsonable(decision), goal="fix parser")
+
+
+def test_is_short_workflow_continuation_only_matches_bare_continuations():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import _is_short_workflow_continuation
+
+    for text in ("开始", "开始啊", "开始吧", "开始做", "继续", "做吧", "go", "go on"):
+        assert _is_short_workflow_continuation(text) is True, text
+    for text in (
+        "继续修复 parser 的空指针",
+        "开始设计一个新的导出模块",
+        "continue fixing the parser",
+        "",
+        "你好",
+    ):
+        assert _is_short_workflow_continuation(text) is False, text
+
+
+def test_upgrade_prompt_lists_the_full_schema_and_the_current_contract():
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    host = _host()
+    current = _read_only_decision()
+    prompt = AgentV2._workflow_upgrade_prompt(host, current, "fix parser", "parser.py")
+    for marker in (
+        "Required fields:",
+        "difficulty",
+        "acceptance",
+        "required_checks",
+        "success_predicate",
+        "tests_passed_nonempty",
+        "task_kind must be development",
+        "target-tests",
+        '"cwd": "."',
+        current.workflow_id,
+        "parser.py",
+    ):
+        assert marker in prompt, marker
+
+
+def test_upgrade_reply_missing_defaultable_fields_is_repaired_then_persisted(tmp_path):
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.build_workflow import decision_to_jsonable
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    raw = json.loads(_json_decision())
+    for field in ("difficulty", "goal_revision", "contract_revision", "reason"):
+        raw.pop(field, None)
+    reply = json.dumps(raw)
+    calls = {"n": 0}
+    prompts: list[str] = []
+
+    def ask(prompt: str) -> str:
+        calls["n"] += 1
+        prompts.append(prompt)
+        return reply
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    host = _host()
+    host._session_id = "sess-repair"
+    host._checkpoint_store = store
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen: list[str] = []
+
+    async def execute_tool(name, _args, **_kwargs):
+        seen.append(name)
+        return "wrote"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    edit = {
+        "filePath": "parser.py",
+        "oldString": "x = 1\n",
+        "newString": "def parse():\n    return []\n",
+    }
+
+    import asyncio
+    assert asyncio.run(AgentV2._execute_tool(host, "edit", edit)) == "wrote"
+    assert calls["n"] == 1, "defaultable fields are repaired, not re-asked"
+    assert "The previous JSON was rejected" not in prompts[0]
+    assert seen == ["edit"]
+    decision = host._build_workflow
+    assert decision.task_kind == "development"
+    assert decision.difficulty == "simple"
+    assert decision.workflow_id == "wf-ro", "the task identity is retargeted, not replaced"
+    assert decision.required_checks, "the reply's real check survives the repair"
+    validate_decision(decision_to_jsonable(decision), goal="fix parser")
+    saved = store.load(store.checkpoint_id("sess-repair", "fix parser", "build"))
+    assert saved is not None
+    stored = validate_decision(saved["state"]["build_workflow"], goal="fix parser")
+    assert stored.task_kind == "development"
+    assert stored.workflow_id == "wf-ro"
+
+
+def test_upgrade_reply_without_checks_derives_the_write_existence_check(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.build_workflow import decision_to_jsonable
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    reply = _json_decision(
+        task_kind="read_only",
+        acceptance=["仍然只读"],
+        required_checks=[],
+        stage_actions=_all_skip_stages(),
+    )
+    calls: list[str] = []
+
+    def ask(prompt: str) -> str:
+        calls.append(prompt)
+        return reply
+
+    _bind_shell(monkeypatch, Path(_shell_workspace()))
+    store = CheckpointStore(tmp_path / "checkpoints")
+    host = _host()
+    host._session_id = "sess-auto"
+    host._checkpoint_store = store
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen: list[str] = []
+
+    async def execute_tool(name, _args, **_kwargs):
+        seen.append(name)
+        return "wrote"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    edit = {
+        "filePath": "parser.py",
+        "oldString": "x = 1\n",
+        "newString": "def parse():\n    return []\n",
+    }
+
+    import asyncio
+    assert asyncio.run(AgentV2._execute_tool(host, "edit", edit)) == "wrote", (
+        "a blocked workspace write must not become chat text"
+    )
+    assert len(calls) == 2, "reply + one protocol retry before the deterministic fallback"
+    assert "The previous JSON was rejected" in calls[1]
+    assert seen == ["edit"]
+    decision = host._build_workflow
+    assert decision.task_kind == "development"
+    check = decision.required_checks[0]
+    assert check.check_id.startswith("auto-write-")
+    assert check.command == "test -s parser.py && echo PASS"
+    assert check.cwd == "."
+    assert check.success_predicate == "exit_zero"
+    assert check.required is True
+    assert "automatic write-existence check" in decision.reason
+    validate_decision(decision_to_jsonable(decision), goal="fix parser")
+    saved = store.load(store.checkpoint_id("sess-auto", "fix parser", "build"))
+    assert saved is not None
+    stored = validate_decision(saved["state"]["build_workflow"], goal="fix parser")
+    assert stored.required_checks[0].command == "test -s parser.py && echo PASS"
+    # The completion gate still needs the check to have actually run.
+    assert AgentV2._workflow_completion_feedback(host) is not None
+    AgentV2._record_workflow_receipt(
+        host,
+        "bash",
+        {"command": check.command, "cwd": "."},
+        "PASS",
+        False,
+        call_id="auto-check-1",
+    )
+    assert AgentV2._workflow_completion_feedback(host) is None
+
+
+def test_question_answer_unlocks_one_more_upgrade_attempt_for_the_retried_write():
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+
+    prompts: list[str] = []
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        if len(prompts) <= 2:
+            return "not json"
+        return _json_decision()
+
+    host = _host()
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen: list[str] = []
+
+    async def execute_tool(name, _args, **_kwargs):
+        seen.append(name)
+        return "ran"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    opaque = {"command": "rm -rf build"}
+
+    import asyncio
+    blocked = asyncio.run(AgentV2._execute_tool(host, "bash", opaque))
+    assert blocked.startswith("[blocked")
+    assert len(prompts) == 2, "first attempt: reply + one protocol retry"
+    assert "The previous JSON was rejected" in prompts[1]
+    assert seen == []
+    assert host._workflow_dev_upgrade_attempts == 1
+    assert host._workflow_dev_upgrade_unlocked is False
+
+    # The user's confirmation arrives as a resolved question answer mid-turn;
+    # it must unlock exactly one more upgrade for the retried write (D).
+    AgentV2._record_workflow_receipt(
+        host,
+        "question",
+        {},
+        "A1: 是，按计划实现并用上面的命令验证",
+        False,
+        call_id="q1",
+    )
+    assert host._workflow_clarify_answered is True
+    assert host._workflow_dev_upgrade_unlocked is True
+
+    assert asyncio.run(AgentV2._execute_tool(host, "bash", opaque)) == "ran"
+    assert seen == ["bash"]
+    assert len(prompts) == 3, "one reply for the unlocked attempt, then it succeeds"
+    assert host._build_workflow.task_kind == "development"
+    assert host._workflow_dev_upgrade_attempts == 2
+
+
+@pytest.mark.parametrize("continuation", ["开始啊", "继续", "go on"])
+def test_short_continuation_adopts_the_latest_unfinished_development_contract(
+    tmp_path, continuation
+):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    session_id = "sess-cont"
+    development = _json_decision_for_goal("做一个 SVG 画板", workflow_id="wf-svg")
+    _save_workflow_checkpoint(store, session_id, "做一个 SVG 画板", development)
+    # A newer read-only turn must never win the continuation adoption.
+    read_only = validate_decision(
+        json.loads(
+            _json_decision(
+                task_kind="read_only",
+                workflow_id="wf-ro-start",
+                acceptance=["只解释不改代码"],
+                required_checks=[],
+                stage_actions=_all_skip_stages(),
+            )
+        ),
+        goal="开始啊",
+    )
+    _save_workflow_checkpoint(store, session_id, "开始啊", read_only)
+
+    host = _host()
+    host._session_id = session_id
+    host._checkpoint_store = store
+    host._workspace_root = str(tmp_path)
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        raise AssertionError("a continuation must not be reclassified")
+
+    host._build_workflow_ask = ask
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, continuation))
+    assert calls["n"] == 0
+    assert host._build_workflow is not None
+    assert host._build_workflow.workflow_id == "wf-svg"
+    assert host._build_workflow.goal == "做一个 SVG 画板"
+    assert host._build_workflow.task_kind == "development"
+    assert AgentV2._workflow_development_ready(host, host._build_workflow) is True
+
+
+def test_short_continuation_does_not_hijack_an_explicit_new_goal(tmp_path):
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    development = _json_decision_for_goal("做一个 SVG 画板", workflow_id="wf-svg")
+    _save_workflow_checkpoint(store, "sess-new", "做一个 SVG 画板", development)
+    host = _host()
+    host._session_id = "sess-new"
+    host._checkpoint_store = store
+    host._workspace_root = str(tmp_path)
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision()
+
+    host._build_workflow_ask = ask
+
+    import asyncio
+    asyncio.run(AgentV2._ensure_build_workflow(host, "fix parser"))
+    assert calls["n"] == 1
+    assert host._build_workflow.goal == "fix parser"
+
+
+def test_workspace_outside_write_target_keeps_the_refusal(tmp_path):
+    from types import SimpleNamespace
+
+    from RxyCode.RxyCode1_1_0.core.agent_v2 import AgentV2
+    from RxyCode.RxyCode1_1_0.core.checkpoints import CheckpointStore
+
+    calls = {"n": 0}
+
+    def ask(_prompt: str) -> str:
+        calls["n"] += 1
+        return _json_decision(
+            task_kind="read_only",
+            acceptance=["仍然只读"],
+            required_checks=[],
+            stage_actions=_all_skip_stages(),
+        )
+
+    store = CheckpointStore(tmp_path / "checkpoints")
+    host = _host()
+    host._session_id = "sess-outside"
+    host._checkpoint_store = store
+    host._build_workflow = _read_only_decision()
+    host._build_workflow_ask = ask
+    host._tool_tracer = None
+    host._role_tool_allowlist = None
+    seen: list[str] = []
+
+    async def execute_tool(name, _args, **_kwargs):
+        seen.append(name)
+        return "wrote"
+
+    host._tool_orchestrator = SimpleNamespace(execute_tool=execute_tool)
+    outside = str(tmp_path.parent / "outside_workspace.py")
+    edit = {"filePath": outside, "oldString": "", "newString": "x = 1\n"}
+
+    import asyncio
+    blocked = asyncio.run(AgentV2._execute_tool(host, "edit", edit))
+    assert blocked.startswith("[blocked")
+    assert seen == []
+    assert calls["n"] == 2
+    assert host._build_workflow.task_kind == "read_only"
+    # Never persist a development contract for a non-workspace target.
+    assert store.load(store.checkpoint_id("sess-outside", "fix parser", "build")) is None
+

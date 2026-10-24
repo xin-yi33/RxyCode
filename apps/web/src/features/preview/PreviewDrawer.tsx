@@ -27,12 +27,16 @@ export function PreviewDrawer({ job, title, open = true, onClose }: PreviewDrawe
 
   if (!open) return null
   const ready = job?.status === "ready" && job.preview_url
+  // Terminal states never turn into a ready job; say so instead of spinning.
+  const unavailable =
+    job?.status === "failed" || job?.status === "expired" || job?.status === "cancelled"
   return (
     <div
       role="dialog"
       aria-modal={mode === "overlay" ? true : undefined}
       aria-label={`预览 ${title}`}
       data-preview-drawer
+      data-preview-kind={job?.kind ?? "none"}
       data-preview-mode={mode}
       className={
         mode === "overlay"
@@ -50,9 +54,11 @@ export function PreviewDrawer({ job, title, open = true, onClose }: PreviewDrawe
               ? "就绪"
               : job.status === "failed"
                 ? "失败"
-                : job.status === "expired" || job.status === "cancelled"
-                  ? job.status
-                  : "生成中…"}
+                : job.status === "expired"
+                  ? "已过期"
+                  : job.status === "cancelled"
+                    ? "已取消"
+                    : "生成中…"}
           </span>
         ) : null}
         {pane && mode === "pane" ? (
@@ -85,7 +91,7 @@ export function PreviewDrawer({ job, title, open = true, onClose }: PreviewDrawe
             referrerPolicy="no-referrer"
             className="h-full w-full border-0 bg-white"
           />
-        ) : job?.status === "failed" || job?.status === "expired" ? (
+        ) : unavailable ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
             <p className="text-sm text-failure">预览不可用</p>
             <p className="max-w-sm text-xs text-muted">

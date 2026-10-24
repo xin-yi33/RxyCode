@@ -173,13 +173,16 @@ from RxyCode.RxyCode1_1_0.core.build_workflow import (
     WorkflowContractError,
     check_completion,
     checkpoint_payload,
+    develop_with_auto_check,
     is_documentation_path,
     is_ordinary_text_save,
     assign_workflow_id,
     decision_to_jsonable,
+    parse_decision_mapping,
     parse_decision_text,
     promote_to_development,
     recover_workflow_decision,
+    repair_upgrade_decision,
     retarget_contract,
     tests_passed_nonempty,
     validate_decision,
@@ -946,6 +949,57 @@ _WORKFLOW_MUTATION_TOOLS = frozenset(
 _CONTINUATION_RE = re.compile(
     r"(?i)^(?:继续|接着做|继续做|continue|go on|keep going)[。.!！\s]*$"
 )
+# D: a question answer is new information; it may unlock exactly one more
+# development-contract upgrade for the retried write in the same turn. The
+# turn-wide bound stops an ask/answer ping-pong from looping forever.
+_WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS = 2
+# E: short "start/continue" inputs carry no new goal. When the session has an
+# unfinished development contract, they continue it instead of reclassifying
+# the one-word input into a read_only contract that blocks every write.
+_WORKFLOW_CONTINUATION_INPUTS = frozenset(
+    {
+        "开始",
+        "开始啊",
+        "开始吧",
+        "开始做",
+        "开始干",
+        "继续",
+        "继续吧",
+        "继续做",
+        "接着做",
+        "接着",
+        "做吧",
+        "干吧",
+        "来吧",
+        "go",
+        "go on",
+        "go ahead",
+        "keep going",
+        "continue",
+        "start",
+    }
+)
+_WORKFLOW_CONTINUATION_TAIL_CHARS = "。.!！?？~～、,， \t\r\n"
+_WORKFLOW_CONTINUATION_MORE_RE = re.compile(
+    r"(?i)^(?:开始|继续|接着|做|干|来)[啊吧呀呢了嘛哦哟]{0,2}$"
+)
+
+
+def _is_short_workflow_continuation(text: str) -> bool:
+    """True for a bare "开始/继续/go on" style input with no new goal.
+
+    A genuine new instruction that merely starts with 继续 ("继续修复 parser 的
+    空指针") is longer and keeps its own goal classification.
+    """
+    head = str(text or "").strip().rstrip(_WORKFLOW_CONTINUATION_TAIL_CHARS)
+    head = " ".join(head.split()).lower()
+    if not head or len(head) > 12:
+        return False
+    if head in _WORKFLOW_CONTINUATION_INPUTS:
+        return True
+    return bool(_WORKFLOW_CONTINUATION_MORE_RE.fullmatch(head))
+
+
 _WORKFLOW_CONTINUATION_PREFIXES = (
     "[tool",
     "[retry]",
@@ -5943,6 +5997,8 @@ class AgentV2:
             return True
         if _CONTINUATION_RE.match(head):
             return True
+        if _is_short_workflow_continuation(head):
+            return True
         if _is_approved_plan_implement(head):
             return True
         return head.startswith(_PLAN_REJECT_PREFIXES)
@@ -5979,6 +6035,8 @@ class AgentV2:
         self._workflow_stage_progress = {}
         self._workflow_instruction_text = ""
         self._workflow_dev_upgrade_attempted = False
+        self._workflow_dev_upgrade_attempts = 0
+        self._workflow_dev_upgrade_unlocked = False
         self._workflow_awaiting_approval = False
         self._workflow_pending_contract_note = ""
         self._workflow_upgrade_refusal = ""
@@ -6290,8 +6348,182 @@ class AgentV2:
             return str(produced)
         return await self._workflow_model_text(prompt)
 
+    def _workflow_write_target_path(self, name: str, args: dict | None) -> str:
+        """Workspace-relative target of a blocked write/edit/patch, else ``""``.
+
+        The deterministic fallback check (:func:`develop_with_auto_check`) is
+        only honest for a concrete workspace file. The path is resolved the way
+        the write tool resolves it (relative to the session cwd); a target
+        outside the workspace and opaque bash/git mutations return ``""`` and
+        keep the refusal.
+        """
+        tool = canonical_tool_name(name)
+        if tool not in {"write", "edit", "patch"}:
+            return ""
+        raw = self._workflow_tool_path(args).strip()
+        if not raw:
+            return ""
+        workspace = str(getattr(self, "_workspace_root", "") or "").strip()
+        try:
+            root = Path(workspace).expanduser().resolve() if workspace else Path.cwd().resolve()
+        except OSError:
+            return ""
+        try:
+            base = current_working_directory().resolve()
+        except Exception:
+            base = root
+        candidate = Path(raw).expanduser()
+        try:
+            target = candidate if candidate.is_absolute() else base / candidate
+            relative = target.resolve().relative_to(root)
+        except (OSError, ValueError):
+            return ""
+        if not relative.parts or relative.as_posix() in {"", "."}:
+            return ""
+        return relative.as_posix()
+
+    def _workflow_upgrade_attempt_allowed(self) -> bool:
+        """A first attempt is free; a second one needs a question answer (D)."""
+        attempts = int(getattr(self, "_workflow_dev_upgrade_attempts", 0) or 0)
+        if attempts <= 0:
+            return True
+        if attempts >= _WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS:
+            return False
+        return bool(getattr(self, "_workflow_dev_upgrade_unlocked", False))
+
+    def _note_workflow_upgrade_attempt(self) -> None:
+        attempts = int(getattr(self, "_workflow_dev_upgrade_attempts", 0) or 0)
+        self._workflow_dev_upgrade_attempts = attempts + 1
+        self._workflow_dev_upgrade_attempted = True
+        self._workflow_dev_upgrade_unlocked = False
+
+    def _note_workflow_question_answered(self) -> None:
+        """An answered question unlocks one more upgrade for the retried write.
+
+        Bounded by ``_WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS`` so an ask/answer
+        ping-pong cannot retry the model forever in one turn.
+        """
+        attempts = int(getattr(self, "_workflow_dev_upgrade_attempts", 0) or 0)
+        if 0 < attempts < _WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS:
+            self._workflow_dev_upgrade_unlocked = True
+            self._workflow_dev_upgrade_attempted = False
+
+    def _workflow_upgrade_prompt(self, decision, goal: str, target: str = "") -> str:
+        """The full upgrade schema: one valid example check, current contract."""
+        current = ""
+        if decision is not None:
+            current = (
+                " Current contract: "
+                f"workflow_id={decision.workflow_id}, "
+                f"task_kind={decision.task_kind}, "
+                f"difficulty={decision.difficulty}, "
+                f"acceptance={list(decision.acceptance)}, "
+                "required_checks="
+                f"{[check.check_id for check in decision.required_checks]}. "
+            )
+        target_line = (
+            f"The blocked write targets {target}. " if target else ""
+        )
+        return (
+            "A code or test write arrived under a contract that does not "
+            "require development verification. Reply with one JSON object only. "
+            "Required fields: workflow_id (string; the harness may fill it), "
+            "goal_revision, contract_revision, task_kind, difficulty, "
+            "stage_actions, reason, acceptance, required_checks. "
+            "Keep the same goal. task_kind must be development. difficulty must "
+            "be simple, medium, or complex. stage_actions keys: project_docs, "
+            "clarify, design, build_verify, doc_sync. Values: inspect, run, or "
+            "skip. build_verify must be run. acceptance is a non-empty list of "
+            "concrete outcomes, not blank text. Include the relevant required "
+            "checks, not the repository's full CI. Each required check needs "
+            "check_id, command, cwd, and success_predicate exit_zero or "
+            "tests_passed_nonempty. Check commands must not use inline "
+            "interpreter payloads (python -c, node -e, bash -c, and similar): "
+            "the sandbox denies them as unanalyzable. If a check needs code, "
+            "write a small script file first and make the check command run it "
+            "by path. You cannot turn off permissions, execution boundaries, or "
+            "evidence. One valid check looks like "
+            '{"check_id": "target-tests", "command": "python -m pytest '
+            'tests/test_target.py -q", "cwd": ".", "success_predicate": '
+            '"tests_passed_nonempty"}. '
+            + target_line
+            + current
+            + f"Goal:\n{goal}"
+        )
+
+    def _parse_upgrade_reply(self, body: str, *, goal: str, decision):
+        """Parse one upgrade reply, repairing only defaultable fields.
+
+        Returns ``(decision, "")`` on success or ``(None, rejection)`` when the
+        reply has no usable required check. Never persists: the caller installs
+        the validated contract through :meth:`_apply_upgraded_workflow`.
+        """
+        try:
+            raw = parse_decision_mapping(assign_workflow_id(str(body or ""), goal))
+        except WorkflowContractError as exc:
+            return None, str(exc)
+        try:
+            return validate_decision(raw, goal=goal), ""
+        except WorkflowContractError as exc:
+            rejection = str(exc)
+        repaired = repair_upgrade_decision(raw, current=decision, goal=goal)
+        if repaired is not None:
+            return repaired, ""
+        return None, rejection
+
+    async def _ask_upgrade_decision(self, prompt: str, *, goal: str, decision):
+        """Ask for the upgrade contract; one protocol retry with the rejection.
+
+        A reply that parses but cannot become a development contract with a
+        required check is rejected the same way as invalid JSON: the single
+        retry tells the model exactly why. Defaultable-field repair happens
+        before the retry (B), so the production ``difficulty == ""`` reply never
+        needs it.
+        """
+        rejection = ""
+        for attempt in range(2):
+            body = prompt
+            if attempt:
+                body = (
+                    prompt
+                    + "\nThe previous JSON was rejected: "
+                    + (rejection or "the reply named no required check")
+                    + "\nReturn only the JSON object."
+                )
+            parsed, rejection = self._parse_upgrade_reply(
+                await self._workflow_ask_text(body), goal=goal, decision=decision
+            )
+            if parsed is None:
+                continue
+            try:
+                return self._normalize_upgrade_decision(parsed, decision), ""
+            except WorkflowContractError as exc:
+                rejection = str(exc)
+        return None, rejection
+
+    def _normalize_upgrade_decision(self, parsed, decision):
+        """Keep the task identity and force development verification.
+
+        Raises :class:`WorkflowContractError` when the reply has no required
+        check — the caller retries once, then falls back to the deterministic
+        write-existence check for a workspace target.
+        """
+        if decision is not None:
+            parsed = retarget_contract(decision, parsed)
+        if not self._workflow_development_ready(parsed):
+            parsed = promote_to_development(parsed)
+        return parsed
+
     async def _upgrade_workflow_before_code_write(self, name: str, args: dict | None) -> None:
-        """One upgrade when a non-development contract meets a code write."""
+        """Upgrade a non-development contract before a code write.
+
+        Bounded attempts: the first one is free, a question answer unlocks one
+        retried attempt in the same turn (D). A rejected reply is repaired from
+        the current contract when only defaultable fields are missing (B) and
+        retried once with the rejection reason (A). When no development check
+        can be named at all, a workspace write target gets one deterministic
+        existence check (C) instead of leaving the turn as a dead end.
+        """
         if not self._build_workflow_enabled():
             return
         if not self._workflow_mutation_needs_development(name, args):
@@ -6299,53 +6531,46 @@ class AgentV2:
         decision = getattr(self, "_build_workflow", None)
         if self._workflow_development_ready(decision):
             return
-        if getattr(self, "_workflow_dev_upgrade_attempted", False):
+        if not self._workflow_upgrade_attempt_allowed():
             return
-        self._workflow_dev_upgrade_attempted = True
+        self._note_workflow_upgrade_attempt()
         goal = str(getattr(decision, "goal", "") or "")
+        target = self._workflow_write_target_path(name, args)
+        rejection = ""
         if not goal:
             if decision is not None:
                 try:
-                    upgraded = promote_to_development(decision)
-                except WorkflowContractError as exc:
-                    self._refuse_workflow_upgrade(decision, exc)
+                    self._apply_upgraded_workflow(promote_to_development(decision))
                     return
-                self._apply_upgraded_workflow(upgraded)
-            return
-        prompt = (
-            "A code or test write arrived under a contract that does not "
-            "require development verification. Reply with one JSON object only. "
-            "Keep the same goal. task_kind must be development. "
-            "build_verify must be run. Include the relevant required checks, "
-            "not the repository's full CI. "
-            "Check commands must not use inline interpreter payloads "
-            "(python -c, node -e, bash -c, and similar): the sandbox denies "
-            "them as unanalyzable. If a check needs code, write a small "
-            "script file first and make the check command run it by path. "
-            "You cannot turn off permissions, execution boundaries, or evidence. "
-            f"Goal:\n{goal}"
-        )
-        try:
-            parsed = parse_decision_text(
-                assign_workflow_id(await self._workflow_ask_text(prompt), goal),
-                goal=goal,
-            )
-            if decision is not None:
-                parsed = retarget_contract(decision, parsed)
-            if not self._workflow_development_ready(parsed):
-                parsed = promote_to_development(parsed)
-        except WorkflowContractError as exc:
-            fallback = None
-            if decision is not None:
-                try:
-                    fallback = promote_to_development(decision)
-                except WorkflowContractError:
-                    fallback = None
-            if fallback is None:
+                except WorkflowContractError as exc:
+                    rejection = str(exc)
+        else:
+            prompt = self._workflow_upgrade_prompt(decision, goal, target)
+            try:
+                parsed, rejection = await self._ask_upgrade_decision(
+                    prompt, goal=goal, decision=decision
+                )
+            except WorkflowContractError as exc:
+                parsed, rejection = None, str(exc)
+            if parsed is not None:
+                self._apply_upgraded_workflow(parsed)
+                return
+        if target and decision is not None:
+            try:
+                automatic = develop_with_auto_check(
+                    decision, goal=goal or target, path=target
+                )
+            except WorkflowContractError as exc:
                 self._refuse_workflow_upgrade(decision, exc)
                 return
-            parsed = fallback
-        self._apply_upgraded_workflow(parsed)
+            self._apply_upgraded_workflow(automatic)
+            return
+        self._refuse_workflow_upgrade(
+            decision,
+            WorkflowContractError(
+                rejection or "no required check available for a development contract"
+            ),
+        )
 
     def _refuse_workflow_upgrade(self, decision, error: Exception) -> None:
         """Keep the non-development contract and never persist the invalid shape.
@@ -6487,19 +6712,38 @@ class AgentV2:
         return not any(check.required for check in decision.required_checks)
 
     def _workflow_blocked_mutation_result(self, name: str) -> str:
-        """Actionable refusal: a blocked write must not be a dead end."""
+        """Actionable refusal: a blocked write must not be a dead end.
+
+        The next-step text matches the real retry policy: a question tool
+        answer unlocks one more upgrade attempt for the retried write in the
+        same turn (bounded by ``_WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS``); after
+        that, a new turn is needed. A workspace write target normally upgrades
+        through the deterministic existence check instead of seeing this.
+        """
         decision = getattr(self, "_build_workflow", None)
         kind = str(getattr(decision, "task_kind", "") or "missing")
         refusal = str(getattr(self, "_workflow_upgrade_refusal", "") or "")
         detail = f" Upgrade was refused: {refusal}." if refusal else ""
+        attempts = int(getattr(self, "_workflow_dev_upgrade_attempts", 0) or 0)
+        unlocked = bool(getattr(self, "_workflow_dev_upgrade_unlocked", False))
+        if unlocked or attempts < _WORKFLOW_MAX_DEV_UPGRADE_ATTEMPTS:
+            retry_hint = (
+                " An answered question tool unlocks one more upgrade attempt "
+                "for the retried write in this turn."
+            )
+        else:
+            retry_hint = (
+                " This turn's upgrade attempts are used; retry the write in a "
+                "new turn."
+            )
         return (
             f"[blocked: {name} was not executed; a code or test write needs a "
             f"development contract with at least one required check, and the "
             f"current contract is {kind}.{detail} Next step: do the read-only "
             "part and answer, or call the question tool to ask the user whether "
-            "this should be a development task and which verification command to "
-            "use; writes are retried on their answer. Documentation/prose writes "
-            "and read-only commands stay allowed.]"
+            "this should be a development task and which verification command "
+            f"to use.{retry_hint} Documentation/prose writes and read-only "
+            "commands stay allowed.]"
         )
 
     def _workflow_tool_ref(self, call_id: str) -> str:
@@ -6523,6 +6767,10 @@ class AgentV2:
         tool = canonical_tool_name(name)
         if tool == "question" and self._question_answer_resolved(result):
             self._workflow_clarify_answered = True
+            # D: the answer is new information. It may unlock exactly one more
+            # upgrade attempt for a retried write in this same turn; without
+            # this the one-shot upgrade flag made the answer a no-op.
+            self._note_workflow_question_answered()
             self._persist_build_workflow()
             return
         decision = getattr(self, "_build_workflow", None)
@@ -6747,11 +6995,21 @@ class AgentV2:
         self._turn_context_blocks = blocks
 
     def _restore_unfinished_workflow(self, goal: str) -> bool:
-        """Load the current attempt's contract before a new classification."""
+        """Load the current attempt's contract before a new classification.
+
+        Exact-goal restore keeps a normal goal's own unfinished task. A short
+        "开始/继续" input carries no goal of its own: it adopts the session's
+        latest unfinished development contract instead of reclassifying the
+        one-word input into a read_only contract that blocks every write.
+        """
         store = getattr(self, "_checkpoint_store", None)
         session_id = str(getattr(self, "_session_id", "") or "")
         if store is None or not session_id or not str(goal or "").strip():
             return False
+        if _is_short_workflow_continuation(goal) and self._adopt_unfinished_development_workflow(
+            store, session_id
+        ):
+            return True
         try:
             document = store.load(store.checkpoint_id(session_id, goal, "build"))
         except Exception:
@@ -6765,6 +7023,40 @@ class AgentV2:
             return False
         self.restore_build_workflow(payload, run_id=str(get_current_run_id() or ""))
         return getattr(self, "_build_workflow", None) is not None
+
+    def _adopt_unfinished_development_workflow(self, store, session_id: str) -> bool:
+        """Adopt this session's newest unfinished development contract.
+
+        ``CheckpointStore.list`` is newest-first and skips completed snapshots;
+        read_only/question turns are ignored. A payload that no longer
+        validates is repaired by :meth:`restore_build_workflow`; adoption only
+        succeeds when a usable development contract is installed, so a bad
+        snapshot cannot silently widen the write gate.
+        """
+        try:
+            documents = store.list(session_id=session_id, include_completed=False)
+        except Exception:
+            return False
+        for document in documents:
+            if not isinstance(document, dict) or document.get("completed"):
+                continue
+            state = document.get("state")
+            payload = state.get("build_workflow") if isinstance(state, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("task_kind") or "") != "development":
+                continue
+            checks = payload.get("required_checks")
+            if not isinstance(checks, list) or not checks:
+                continue
+            self.restore_build_workflow(payload, run_id=str(get_current_run_id() or ""))
+            adopted = getattr(self, "_build_workflow", None)
+            if adopted is not None and self._workflow_development_ready(adopted):
+                return True
+            # A stale snapshot must not leave a demoted contract behind.
+            self._build_workflow = None
+            self._build_workflow_receipts = {}
+        return False
 
     def _persist_build_workflow(self) -> None:
         decision = getattr(self, "_build_workflow", None)
@@ -7680,9 +7972,12 @@ class AgentV2:
         await self._ensure_session_loaded()
         self._workflow_active_mode = mode or "build"
         if resume is None:
-            # One upgrade attempt per turn, not forever: a refused upgrade stays
-            # retryable on a later user turn instead of a permanent dead end.
+            # Upgrade attempts are bounded per turn, not forever: a refused
+            # upgrade stays retryable on a later user turn, and a question
+            # answer unlocks one retried attempt inside this turn (D).
             self._workflow_dev_upgrade_attempted = False
+            self._workflow_dev_upgrade_attempts = 0
+            self._workflow_dev_upgrade_unlocked = False
         if self._workflow_active_mode != "plan":
             await self._ensure_build_workflow(user_input)
             self._observe_workflow_plan_turn(user_input)
@@ -10918,6 +11213,11 @@ class AgentV2:
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
         self._workflow_gate_this_turn = False
+        # Bounded per top-level request: a question answer may unlock one more
+        # upgrade attempt for the retried write, never an unbounded retry loop.
+        self._workflow_dev_upgrade_attempted = False
+        self._workflow_dev_upgrade_attempts = 0
+        self._workflow_dev_upgrade_unlocked = False
         # 2026-09-23：每次顶层请求清空传输耗尽记录，避免上一次的网络断
         # 污染本次的证据门判定。
         _last_transport_exhaustion.drain()

@@ -24,7 +24,8 @@ from rxycode_server.persistence.models import (
 
 router = APIRouter()
 _PAGE_LIMIT = 100
-_PROFILES = {"confirm", "full"}
+#: Same three web permission tiers as /tasks and /sessions/{id}/runs.
+_PROFILES = {"confirm", "auto_edit", "full"}
 
 
 def _iso(value) -> str | None:

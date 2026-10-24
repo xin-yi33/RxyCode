@@ -43,6 +43,11 @@ type ComposerProps = {
 
 const PROFILES: { value: PermissionProfile; label: string; hint: string }[] = [
   { value: "confirm", label: "需要确认", hint: "执行有风险的工具前会先征求你的同意" },
+  {
+    value: "auto_edit",
+    label: "自动编辑",
+    hint: "写代码不再询问，其它有风险操作仍需确认",
+  },
   { value: "full", label: "完全自动", hint: "工具不经确认直接执行" },
 ]
 

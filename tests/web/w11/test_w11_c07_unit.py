@@ -302,7 +302,7 @@ def test_w11_c07_manifest(postgres_url: str) -> None:
                     relative_path="out.txt",
                     availability="available",
                     partial=False,
-                    preview_kind="frontend",
+                    preview_kind="frontend_static",
                 )
             )
             db.commit()
@@ -317,7 +317,7 @@ def test_w11_c07_manifest(postgres_url: str) -> None:
     assert len(body["artifacts"]) == 1
     item = body["artifacts"][0]
     assert item["filename"] == "out.txt"
-    assert item["preview_kind"] == "frontend"
+    assert item["preview_kind"] == "frontend_static"
     assert item["availability"] == "available"
     assert item["partial"] is False
     assert item["size"] == 42

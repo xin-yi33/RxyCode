@@ -25,6 +25,7 @@ const TABS: { value: Tab; label: string }[] = [
 
 const PROFILE_TEXT: Record<string, string> = {
   confirm: "需要确认",
+  auto_edit: "自动编辑",
   full: "完全自动",
 }
 

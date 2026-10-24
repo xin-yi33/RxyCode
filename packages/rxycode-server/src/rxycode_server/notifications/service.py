@@ -23,6 +23,9 @@ from rxycode_server.usage.service import usage_cost_kind
 router = APIRouter()
 _TERMINAL = {"succeeded", "failed", "cancelled"}
 _NOTICE = "run.completed"
+#: Web permission tiers a stored schedule may create its run under. Anything
+#: else falls back to `confirm` (never silently widen a scheduled run).
+_SCHEDULE_PROFILES = {"confirm", "auto_edit", "full"}
 
 
 class ScheduleForbidden(Exception):
@@ -654,7 +657,7 @@ def _submit_scheduled(engine, row):
             model_snapshot = None
     message = (getattr(row, "message", "") or "").strip() or "scheduled run"
     profile = getattr(row, "permission_profile", "") or "confirm"
-    if profile not in ("confirm", "full"):
+    if profile not in _SCHEDULE_PROFILES:
         profile = "confirm"
     target_id = f"cloud:{row.tenant_id}:{row.project_id}"
     try:
@@ -707,7 +710,7 @@ def _fire_manual(db: Session, row: dict, *, reason: str) -> dict[str, str]:
     db.flush()
     message = (row.get("message") or "").strip() or "scheduled run"
     profile = row.get("permission_profile") or "confirm"
-    if profile not in ("confirm", "full"):
+    if profile not in _SCHEDULE_PROFILES:
         profile = "confirm"
     bind_url = db.get_bind().url.render_as_string(hide_password=False)
     accepted = create_run(

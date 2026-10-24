@@ -1,7 +1,11 @@
 import { create } from "zustand"
 
+import type { PermissionProfile } from "../sdk/client"
+
 export type ThemeName = "light" | "dark"
-export type PermissionProfile = "confirm" | "full"
+// 三档权限的路由词汇（confirm / auto_edit / full）由 sdk 定义 ——
+// 服务端校验、worker 映射和这里必须共用同一份联合类型。
+export type { PermissionProfile }
 
 export type ComposerDraft = {
   text: string

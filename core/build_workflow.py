@@ -180,8 +180,14 @@ def assign_workflow_id(text: str, goal: str) -> str:
     return json.dumps(raw, ensure_ascii=False)
 
 
-def parse_decision_text(text: str, *, goal: str) -> WorkflowDecision:
-    body = text.strip()
+def parse_decision_mapping(text: str) -> dict:
+    """The model's JSON object, before any contract field is validated.
+
+    The upgrade path needs the raw fields to repair only the defaultable ones
+    (:func:`repair_upgrade_decision`) instead of discarding an otherwise usable
+    reply for one missing enum.
+    """
+    body = str(text or "").strip()
     fenced = re.search(r"\{.*\}", body, re.S)
     if fenced is None:
         raise WorkflowContractError("classifier did not return JSON")
@@ -191,7 +197,11 @@ def parse_decision_text(text: str, *, goal: str) -> WorkflowDecision:
         raise WorkflowContractError("classifier JSON is invalid") from exc
     if not isinstance(raw, dict):
         raise WorkflowContractError("classifier JSON must be an object")
-    return validate_decision(raw, goal=goal)
+    return raw
+
+
+def parse_decision_text(text: str, *, goal: str) -> WorkflowDecision:
+    return validate_decision(parse_decision_mapping(text), goal=goal)
 
 
 def classify_workflow(
@@ -310,6 +320,176 @@ _RECOVERY_ACCEPTANCE = (
     "Recover the persisted task and finish the request without changing code.",
 )
 _VAGUE_ACCEPTANCE = frozenset({"功能正常", "works", "done"})
+_CHECK_ID_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_SHELL_SAFE_WORD_RE = re.compile(r"^[A-Za-z0-9._/@%+=,-]+$")
+
+
+def _shell_word(text: str) -> str:
+    """Quote one shell word so a check command survives spaces and metachars."""
+    if _SHELL_SAFE_WORD_RE.fullmatch(text):
+        return text
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def auto_write_check_id(path: str) -> str:
+    """Stable check id for the deterministic write-existence check."""
+    name = Path(str(path or "")).name or "target"
+    slug = _CHECK_ID_SLUG_RE.sub("-", name.lower()).strip("-") or "target"
+    return "auto-write-" + slug[:40].rstrip("-")
+
+
+def auto_write_check(path: str) -> RequiredCheck:
+    """One honest check derived from the blocked workspace write target.
+
+    ``test -s`` proves the written file exists and is non-empty. It does not
+    pretend to verify behaviour, which is why it is only used for a concrete
+    file write/edit/patch target (see :func:`develop_with_auto_check`) and never
+    for an opaque bash/git mutation.
+    """
+    return RequiredCheck(
+        check_id=auto_write_check_id(path),
+        contract_revision=0,
+        command=f"test -s {_shell_word(path)} && echo PASS",
+        cwd=".",
+        success_predicate="exit_zero",
+        required=True,
+    )
+
+
+def develop_with_auto_check(
+    current: WorkflowDecision | None,
+    *,
+    goal: str,
+    path: str,
+) -> WorkflowDecision:
+    """Deterministic development contract for a blocked workspace write.
+
+    Used only when the model could not name a development check after one
+    repair retry: the write is otherwise a dead end and the assistant dumps
+    code as chat text. The contract keeps the current task identity, requires
+    the existence check, and is validated before it can be persisted.
+    """
+    revision = int(current.contract_revision) + 1 if current is not None else 1
+    goal_revision = int(current.goal_revision) if current is not None else 1
+    check = replace(auto_write_check(path), contract_revision=revision)
+    stages: dict[str, StageAction] = (
+        dict(current.stage_actions)
+        if current is not None
+        else {stage: "skip" for stage in STAGES}
+    )
+    stages["build_verify"] = "run"
+    raw = {
+        "workflow_id": (
+            current.workflow_id
+            if current is not None and current.workflow_id
+            else "wf-" + hashlib.sha256((goal or path).encode("utf-8")).hexdigest()[:12]
+        ),
+        "goal_revision": goal_revision,
+        "contract_revision": revision,
+        "task_kind": "development",
+        "difficulty": (
+            current.difficulty
+            if current is not None and current.difficulty in _DIFFICULTIES
+            else "simple"
+        ),
+        "stage_actions": stages,
+        "reason": (
+            "automatic write-existence check for the blocked write target "
+            f"{path}; the upgrade reply named no usable development check"
+        ),
+        "acceptance": [f"Write {path} and verify it exists and is non-empty"],
+        "required_checks": [
+            {
+                "check_id": check.check_id,
+                "contract_revision": check.contract_revision,
+                "command": check.command,
+                "cwd": check.cwd,
+                "success_predicate": check.success_predicate,
+                "required": True,
+            }
+        ],
+    }
+    return validate_decision(raw, goal=goal)
+
+
+def repair_upgrade_decision(
+    raw: Mapping,
+    *,
+    current: WorkflowDecision | None,
+    goal: str,
+) -> WorkflowDecision | None:
+    """Fill only the defaultable fields of an upgrade reply from the contract.
+
+    The production failure was an upgrade reply that omitted ``difficulty``:
+    validation rejected the whole contract for one blank enum and the write
+    stayed blocked. Difficulty, acceptance, revisions, stage actions, reason,
+    and identity are contract metadata the harness can default from the
+    current contract. Required checks are verification evidence: they are
+    never invented here — :func:`develop_with_auto_check` is the one explicit
+    deterministic fallback. Returns ``None`` when the reply still has no
+    usable required check, so the caller can retry or derive the write check.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    repaired = dict(raw)
+    baseline = current
+    repaired["task_kind"] = "development"
+    difficulty = str(repaired.get("difficulty") or "")
+    if difficulty not in _DIFFICULTIES:
+        fallback = str(getattr(baseline, "difficulty", "") or "")
+        repaired["difficulty"] = fallback if fallback in _DIFFICULTIES else "simple"
+    provided = repaired.get("stage_actions")
+    provided_stages: Mapping = provided if isinstance(provided, Mapping) else {}
+    fallback_stages: Mapping = (
+        getattr(baseline, "stage_actions", {}) if baseline is not None else {}
+    ) or {}
+    stages: dict[str, StageAction] = {}
+    for stage in STAGES:
+        action = str(provided_stages.get(stage) or "")
+        if action not in _ACTIONS:
+            action = str(fallback_stages.get(stage) or "")
+        stages[stage] = action if action in _ACTIONS else "skip"  # type: ignore[assignment]
+    stages["build_verify"] = "run"
+    repaired["stage_actions"] = stages
+    acceptance = repaired.get("acceptance")
+    cleaned = (
+        [str(item).strip() for item in acceptance]
+        if isinstance(acceptance, list)
+        else []
+    )
+    cleaned = [item for item in cleaned if item and item not in _VAGUE_ACCEPTANCE]
+    if not cleaned:
+        cleaned = [
+            str(item).strip()
+            for item in (getattr(baseline, "acceptance", ()) or ())
+            if str(item).strip() and str(item).strip() not in _VAGUE_ACCEPTANCE
+        ]
+    if not cleaned and str(goal or "").strip():
+        cleaned = [str(goal).strip()]
+    if not cleaned:
+        return None
+    repaired["acceptance"] = cleaned
+    baseline_workflow_id = str(
+        getattr(baseline, "workflow_id", "") if baseline is not None else ""
+    ).strip()
+    if not str(repaired.get("workflow_id") or "").strip() and baseline_workflow_id:
+        repaired["workflow_id"] = baseline_workflow_id
+    reason = str(repaired.get("reason") or "").strip()
+    if not reason and baseline is not None:
+        reason = str(getattr(baseline, "reason", "") or "").strip()
+    repaired["reason"] = reason or "upgrade the current contract to development"
+    for field in ("goal_revision", "contract_revision"):
+        fallback_value = (
+            getattr(baseline, field, None) if baseline is not None else None
+        )
+        try:
+            repaired[field] = max(1, int(repaired.get(field) or fallback_value or 1))
+        except (TypeError, ValueError):
+            repaired[field] = max(1, int(fallback_value or 1))
+    try:
+        return validate_decision(repaired, goal=goal)
+    except WorkflowContractError:
+        return None
 
 
 def recover_workflow_decision(

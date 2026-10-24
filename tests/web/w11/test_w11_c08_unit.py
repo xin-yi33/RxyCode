@@ -86,9 +86,15 @@ def test_w11_c08_contract(postgres_url: str, tmp_path: Path) -> None:
     kinds = caps["preview"]["kinds"]
     assert kinds["frontend_static"] is True
     assert kinds["image"] is True
-    # Honest absence: no converter provisioned → reported false, not omitted.
-    assert kinds["pdf"] is False
-    assert kinds["office"] is False
+    # Every artifact kind the server can now convert/stream advertises true;
+    # the old "converter not provisioned" false flags are gone.
+    assert kinds["pdf"] is True
+    assert kinds["office"] is True
+    assert kinds["media"] is True
+    assert kinds["archive"] is True
+    assert kinds["binary"] is True
+    # frontend_build still follows the real static snapshot on disk.
+    assert kinds["frontend_build"] is False
 
     # Without a blob config the surface reports attachments honestly off.
     app.state.attachment_blobs = None
@@ -131,6 +137,29 @@ def test_w11_c08_negative() -> None:
     # Server-set surface survives serialization round-trip.
     web = RunContext(**{**base, "run_id": uuid.uuid4().hex, "surface": "web"})
     assert RunContext(**web.to_dict()).surface == "web"
+
+
+def test_w11_c08_capability_kinds_follow_shared_taxonomy() -> None:
+    """The advertised preview kinds are the shared taxonomy, all convertible.
+
+    Pure check (no database): the W11 conftest's ``postgres_url`` fixture needs
+    Docker, so this is the environment-independent regression guard for the
+    capability matrix the web app gates its preview button on.
+    """
+    from types import SimpleNamespace
+
+    from rxycode_server.api.auth import _web_capabilities
+    from rxycode_server.previews.kinds import ALL_KINDS
+
+    state = SimpleNamespace(attachment_blobs=None, preview_root="")
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    kinds = _web_capabilities(request)["preview"]["kinds"]
+    assert set(ALL_KINDS) <= set(kinds)
+    assert all(kinds[kind] is True for kind in ALL_KINDS)
+    # frontend_build still follows the real static snapshot on disk.
+    assert kinds["frontend_build"] is False
+    state.preview_root = "/srv/preview"
+    assert _web_capabilities(request)["preview"]["kinds"]["frontend_build"] is True
 
 
 def test_w11_c08_prompt_appendix() -> None:

@@ -39,7 +39,11 @@ from rxycode_server.runs.service import (
 )
 
 _DONE = {"succeeded", "failed", "cancelled", "recovery_required"}
-_PROFILES = ("confirm", "full")
+#: Web-route vocabulary for the agent's three permission modes. The worker
+#: maps confirm->confirm_all, auto_edit->auto_edit, full->full_auto; the
+#: server stores the route value verbatim in run.created (approvals/service
+#: understands both spellings of the no-approval tier).
+_PROFILES = ("confirm", "auto_edit", "full")
 _PAGE_LIMIT = 100
 
 router = APIRouter()

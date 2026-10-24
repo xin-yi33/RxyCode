@@ -35,9 +35,28 @@ export type WebCapabilities = {
   surface?: string
 }
 
-export type PreviewKind = "frontend_static" | "frontend_build" | "pdf" | "office" | "image"
+// Shared taxonomy with the server/worker preview pipeline
+// (rxycode_server.previews.kinds.ALL_KINDS): every artifact carries one of
+// these kinds, and the preview surface must accept all of them. Raw-byte kinds
+// (image, media) are streamed as-is; the rest arrive as a converted HTML page.
+export type PreviewKind =
+  | "frontend_static"
+  | "frontend_build"
+  | "pdf"
+  | "office"
+  | "image"
+  | "media"
+  | "archive"
+  | "binary"
 
 export type Project = { id: string; name: string } & Partial<ProjectItem>
+
+// 三档权限（web 路由词汇 -> agent permission_mode）：
+//   confirm   -> confirm_all（每个有风险的工具都先确认）
+//   auto_edit -> auto_edit  （写代码免批，其它有风险操作仍需确认）
+//   full      -> full_auto  （工具不经确认直接执行，仍受沙箱/黑名单约束）
+// 服务端只接受这三个值；worker 再把它映射成 agent 的 permission_mode。
+export type PermissionProfile = "confirm" | "auto_edit" | "full"
 
 export type RunAccepted = {
   run_id: string
@@ -61,6 +80,8 @@ export type RunSummary = {
   status: string
   created_at: string | null
   message: string
+  // 服务端回显 run.created 里存下的原始档案（web 词汇 confirm/auto_edit/full）。
+  // 读取侧保留 string：历史运行或其它创建路径写入的旧值仍按原文展示，不误报。
   permission_profile: string
   final_preview: string
   model?: RunModel | null
@@ -363,7 +384,7 @@ export type Schedule = {
   rule: ScheduleRule
   timezone: string
   model_ref: string | null
-  permission_profile: string
+  permission_profile: PermissionProfile
   enabled: boolean
   notify: boolean
   next_fire: string | null
@@ -710,7 +731,7 @@ export function createClient() {
     createTask(body: {
       message: string
       request_id: string
-      permission_profile: "confirm" | "full"
+      permission_profile: PermissionProfile
       project_id?: string
       // "platform" 哨兵或 "m_…" 目录引用；null/缺省 = 服务端默认链。
       model_ref?: string | null
@@ -723,7 +744,7 @@ export function createClient() {
       body: {
         message: string
         request_id: string
-        permission_profile: "confirm" | "full"
+        permission_profile: PermissionProfile
         model_ref?: string | null
         attachment_ids?: string[]
       },
@@ -891,7 +912,7 @@ export function createClient() {
       message: string
       timezone?: string
       model_ref?: string | null
-      permission_profile?: string
+      permission_profile?: PermissionProfile
       notify?: boolean
       enabled?: boolean
       request_id?: string
@@ -906,7 +927,7 @@ export function createClient() {
         rule: ScheduleRule
         timezone: string
         model_ref: string | null
-        permission_profile: string
+        permission_profile: PermissionProfile
         notify: boolean
         enabled: boolean
         expected_revision: number

@@ -459,3 +459,21 @@ Dispatch entry points: `tools/subagent_task_tool.py` (`task` tool),
 - **Turn context** (`append_turn_context`) only appends to the user suffix
   after the memory context; `system`/`tools` kinds are rejected.
 - **Handoff** may never carry transcripts (`HandoffEnvelope`).
+
+## Workflow contract upgrade repair (2026-10-24)
+
+- A code/test write under a non-development contract triggers a bounded
+  upgrade (`AgentV2._upgrade_workflow_before_code_write`): full decision
+  schema + one retry with the rejection reason; only defaultable metadata
+  (`difficulty`/`acceptance`/revisions/stage actions) is repaired from the
+  current contract — required checks are never invented silently.
+- When the model still names no usable development check, a concrete
+  workspace write/edit/patch target gets ONE deterministic check
+  (`develop_with_auto_check`: `test -s <path> && echo PASS`, cwd `.`) — an
+  opaque bash/git mutation keeps the refusal.
+- A question-tool answer unlocks exactly one more upgrade attempt for the
+  retried write in the same turn (hard cap 2); the blocked result text states
+  the real retry policy. Short continuation inputs ("开始"/"继续"/"go on")
+  adopt the session's newest unfinished DEVELOPMENT checkpoint instead of
+  reclassifying into a read_only contract; adoption only succeeds when the
+  restored contract validates, and invalid shapes are still never persisted.

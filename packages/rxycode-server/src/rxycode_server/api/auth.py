@@ -44,6 +44,7 @@ from rxycode_server.persistence.models import (
     Project,
     User,
 )
+from rxycode_server.previews.kinds import ALL_KINDS
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -1215,22 +1216,16 @@ def _web_capabilities(request: Request) -> dict[str, object]:
     blobs = getattr(request.app.state, "attachment_blobs", None)
     attachments_configured = blobs is not None
     preview_root = bool(getattr(request.app.state, "preview_root", "") or "")
+    # Every artifact kind classifies to a real preview pipeline (the server
+    # converts or streams it); only the static-build snapshot is deployment
+    # dependent. Keep the keys in sync with previews.kinds.ALL_KINDS.
+    preview_kinds: dict[str, bool] = {kind: True for kind in ALL_KINDS}
+    preview_kinds["frontend_build"] = preview_root
     return {
         "attachments": attachments_configured,
         "attachment_max_bytes": MAX_ATTACHMENT_BYTES,
         "attachment_max_per_run": MAX_ATTACHMENTS_PER_RUN,
-        "preview": {
-            # Kinds that can honestly produce a rendered page on this
-            # deployment. Static builds serve from the preview snapshot;
-            # office/pdf need a converter that is not yet provisioned.
-            "kinds": {
-                "frontend_static": True,
-                "frontend_build": preview_root,
-                "pdf": False,
-                "office": False,
-                "image": True,
-            }
-        },
+        "preview": {"kinds": preview_kinds},
         "surface": "web",
     }
 

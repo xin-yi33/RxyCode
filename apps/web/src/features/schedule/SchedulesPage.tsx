@@ -7,6 +7,7 @@ import { IconClose, IconPlus, IconSpinner } from "../../components/icons"
 import { useI18n } from "../../lib/i18n"
 import {
   createClient,
+  type PermissionProfile,
   type Schedule,
   type ScheduleExecution,
   type ScheduleRule,
@@ -19,6 +20,18 @@ const api = createClient()
 
 const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"]
 const ACTIVE_RUN_STATUSES = new Set(["queued", "pending", "running", "waiting_approval", "waiting"])
+
+// 三档权限与 Composer 同一套词汇：confirm / auto_edit / full。
+const PROFILE_LABELS: Record<PermissionProfile, string> = {
+  confirm: "需要确认",
+  auto_edit: "自动编辑",
+  full: "完全自动",
+}
+
+/** 历史定时任务只会有 confirm/full；未知值回退到最保守的一档。 */
+function scheduleProfile(value: string | undefined): PermissionProfile {
+  return value === "full" || value === "auto_edit" ? value : "confirm"
+}
 
 function ruleText(rule: ScheduleRule): string {
   if (rule.kind === "interval") {
@@ -230,8 +243,8 @@ function ScheduleEditor({
   const models = catalog.data?.models ?? []
   const defaultRef = catalog.data?.default_model_ref ?? ""
   const [modelRef, setModelRef] = useState(schedule?.model_ref ?? "")
-  const [permission, setPermission] = useState(
-    schedule?.permission_profile === "full" ? "full" : "confirm",
+  const [permission, setPermission] = useState<PermissionProfile>(() =>
+    scheduleProfile(schedule?.permission_profile),
   )
   const [notify, setNotify] = useState(schedule?.notify ?? true)
   const [enabled, setEnabled] = useState(schedule?.enabled ?? true)
@@ -515,10 +528,11 @@ function ScheduleEditor({
             <select
               id="sched-perm"
               value={permission}
-              onChange={(e) => setPermission(e.target.value as "confirm" | "full")}
+              onChange={(e) => setPermission(e.target.value as PermissionProfile)}
               className={input}
             >
               <option value="confirm">confirm — 危险操作需审批</option>
+              <option value="auto_edit">auto_edit — 写代码免批，其它有风险操作仍需确认</option>
               <option value="full">full — 全自动（受云沙箱限制）</option>
             </select>
           </div>
@@ -627,7 +641,10 @@ function ScheduleDrawer({ schedule, onClose }: { schedule: Schedule; onClose: ()
           </div>
           <div className="flex gap-2">
             <dt className="w-20 shrink-0 text-muted">权限</dt>
-            <dd>{schedule.permission_profile}</dd>
+            <dd>
+              {PROFILE_LABELS[schedule.permission_profile] ??
+                schedule.permission_profile}
+            </dd>
           </div>
           <div className="flex gap-2">
             <dt className="w-20 shrink-0 text-muted">{t("schedule.next")}</dt>

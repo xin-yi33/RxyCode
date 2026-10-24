@@ -33,10 +33,19 @@
 		header @public_https Strict-Transport-Security "max-age=86400"
 		header {
 			X-Content-Type-Options "nosniff"
-			X-Frame-Options "DENY"
 			Referrer-Policy "no-referrer"
 			-Server
 		}
+		# Preview surfaces are same-origin iframes: artifact preview content
+		# (/api/v1/previews/{job}/content) and the owner-authenticated sandbox
+		# port proxy (/api/v1/previews/{sandbox}/{port}/...). A blanket
+		# X-Frame-Options DENY makes the browser refuse to render them inside
+		# the web app's split pane, so only those paths get SAMEORIGIN; every
+		# other route keeps the clickjacking-hard DENY.
+		@preview_frames path /api/v1/previews/*
+		@not_preview_frames not path /api/v1/previews/*
+		header @preview_frames X-Frame-Options "SAMEORIGIN"
+		header @not_preview_frames X-Frame-Options "DENY"
 
 		# Preview-auth seam: sandbox preview pages ride on the app's own
 		# owner-authenticated route (/api/v1/previews/*, rxycode_server
