@@ -4,6 +4,7 @@ import {
   classifyTool,
   diffCounts,
   fileLabel,
+  fileEditVerb,
   genericSummary,
   groupDiffHunks,
   parseToolArgs,
@@ -79,6 +80,20 @@ describe("toolDisplay", () => {
       { kind: "add", text: "one" },
       { kind: "add", text: "two" },
     ]);
+  });
+
+  test("unified edit keeps write/replace/patch previews and labels", () => {
+    expect(fileEditVerb("edit", { operation: "write", content: "one\ntwo" })).toBe("Wrote");
+    expect(fileEditVerb("edit", { content: "" })).toBe("Wrote");
+    expect(fileEditVerb("edit", { oldString: "a", newString: "b" })).toBe("Edited");
+    expect(fileEditVerb("edit", { operation: "patch", diff: "@@ -1 +1 @@\n-a\n+b" })).toBe("Edited");
+    expect(buildEditDiff("edit", { operation: "write", content: "one\ntwo" })).toEqual([
+      { kind: "add", text: "one" }, { kind: "add", text: "two" },
+    ]);
+    expect(buildEditDiff("edit", { operation: "patch", diff: "@@ -1 +1 @@\n-a\n+b" })).toEqual([
+      { kind: "del", text: "a" }, { kind: "add", text: "b" },
+    ]);
+    expect(buildEditDiff("edit", { operation: "write", content: "" })).toEqual([]);
   });
 
   test("grep and read both surface as read: targets", () => {
