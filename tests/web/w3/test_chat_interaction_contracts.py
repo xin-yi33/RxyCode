@@ -945,7 +945,6 @@ def test_cross_engine_ime_enter_guard(
             pytest.skip(
                 f"{engine_name}: [data-testid=chat-composer] absent (task-5 not landed)"
             )
-        composer = composer_box(page)
         _focus_composer(page)
         _set_composer_text(page, "跨引擎输入法守卫")
 
