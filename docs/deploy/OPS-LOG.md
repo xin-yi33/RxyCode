@@ -319,3 +319,11 @@
 
 - **根因记录**：生产 worker 容器无 userns overlay 能力 → `overlay_dests` 全负；但探针对每候选先 copytree 后探测（/usr 662MB），负 verdict TTL 过期还会周期性重付。`_overlay_preflight` 一条 50ms `bwrap --unshare-user /bin/true` 让全负环境直接落缓存；候选改 /etc→/var→/usr 且首个双败即停。
 - **验收临时会话已回收**（auth_sessions + device_locks 清理见 git note）。
+
+## 2026-10-24 — web-92b8e1bb（merge→CI→deploy 正规流程）
+
+- **流程**：feat/rxycode-web 全部改动随 PR #24 squash 合入 master（`92b8e1bb`）→ master CI 全绿（ci `40041018503` + web-ci `40041018577` 均 success）→ 才上线。符合用户要求的“先合并、再 CI、再上线”顺序。
+- **部署**：VM `src` checkout 至 `92b8e1bb`（git bundle 全量推送）+ 工作树 WIP overlay（99 文件，与线上既有行为一致，含 `utils/proxy_env.py` 等运行时必需新文件）；`compose.prod.yaml` 同步 repo 版（`${RXYCODE_IMAGE_TAG}` 变量化 + worker S3 env）；`.env` `RXYCODE_IMAGE_TAG=web-92b8e1bb`。
+- **构建**：`docker build` 三镜像（api `3d6ca72b`/worker `232fd5c0`/web `99bce0c8`）——层缓存命中秒级完成；补 `RXYCODE_BUILD_COMMIT` build-arg 后 api `67ae…`/worker 重建，`/api/v1/version` 返回 `92b8e1bb…`。
+- **上线核验**：api/3×worker/gateway 全 healthy；公网 `https://rxycode.xyz` 200；迁移幂等（head 不变）。
+- **线上实测**（铸临时 auth_session，6h TTL，用后已 revoke 2 行）：真实任务 `1a0300aa`（DeepSeek/OpenCode Go BYOK）`succeeded` 126 事件；UI 渲染「思考过程」7 块可展开（298 字真实推理文本）、工具行/产物登记正常、console 零错误。phase 时序：`sandbox_probed` 块 36ms、`prompt_dispatched` 累计 4.3s——延迟优化持续生效。
