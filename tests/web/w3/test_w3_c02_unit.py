@@ -256,19 +256,55 @@ class _Stack:
 
 def _login(page, origin: str) -> None:
     """Local-secret login via the W9 /login page's 本机口令 section."""
-    # CI runners under xdist load can exceed playwright's 30s nav default.
+    # CI runners under xdist load can exceed playwright's 30s nav default;
+    # expect_navigation/expect_response wait contexts use default_timeout.
     page.set_default_navigation_timeout(60000)
+    page.set_default_timeout(60000)
     page.goto(f"{origin}/login", wait_until="domcontentloaded")
     page.get_by_role("button", name="本机口令").click()
     page.get_by_label("本机口令").fill(SECRET)
-    page.get_by_role("button", name="使用本机口令登录").click()
+    # Wait on the POST response first — under xdist load the SPA can swallow a
+    # click before hydration, which shows up as a wait_for_url timeout with no
+    # signal. Seeing the response splits "post never fired/hung" from "nav lost".
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with page.expect_response(
+                lambda r: "/api/v1/auth/local/login" in r.url, timeout=60000
+            ) as login_resp:
+                page.get_by_role("button", name="使用本机口令登录").click()
+            status = login_resp.value.status
+        except Exception:
+            if attempts >= 2:
+                raise
+            continue
+        if status == 200:
+            break
+        if attempts >= 2:
+            raise AssertionError(f"local login returned {status}")
     # /login?next=/app contains the literal "/app" — match the path, not the
     # string, or a bounced redirect satisfies the wait and the next expect
     # fails with a misleading "no composer" message.
-    page.wait_for_url(
-        lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=30000
-    )
-    expect(page.get_by_label("消息")).to_be_visible(timeout=30000)
+    def _at_app() -> None:
+        page.wait_for_url(
+            lambda url: urlparse(url).path.rstrip("/") == "/app", timeout=60000
+        )
+
+    try:
+        _at_app()
+    except Exception:
+        # SPA navigates only after GET /me resolves; under xdist load that call
+        # can stall while the session itself is already valid. A reload hits
+        # `me.isSuccess -> <Navigate>` — the same path a user's F5 would take.
+        page.reload(wait_until="domcontentloaded")
+        try:
+            _at_app()
+        except Exception as exc:  # noqa: BLE001 - surface where the SPA is
+            raise AssertionError(
+                f"login ok but never reached /app; url={page.url}"
+            ) from exc
+    expect(page.get_by_label("消息")).to_be_visible(timeout=60000)
 
 
 def _provision_byok(page, stack: _Stack) -> None:

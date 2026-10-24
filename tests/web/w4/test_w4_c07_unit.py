@@ -75,8 +75,8 @@ def test_w4_c07_contract(tmp_path: Path) -> None:
             "connect",
             "--url",
             gateway.ws,
-            "--code",
-            issued.json()["code"],
+            # '=' form: a pairing code may legitimately start with '-'.
+            "--code=" + issued.json()["code"],
             "--device-id",
             "desk-c07",
             "--os-name",

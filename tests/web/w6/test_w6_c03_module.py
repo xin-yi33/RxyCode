@@ -146,6 +146,16 @@ def test_w6_c03_integration() -> None:
             url="https://example.com/",
             selector="a",
         )
+        if public["status"] != "ok":
+            # External navigation flake — ERR_NETWORK_*, slow first paint, or
+            # chromium's own chrome-error interrupt under load. A genuine
+            # product refusal would still reproduce on the retry, which keeps
+            # the assertion strict.
+            public = navigate_click(
+                session_id=str(agent["session_id"]),
+                url="https://example.com/",
+                selector="a",
+            )
         assert public["status"] == "ok", public
         shot = snapshot(session_id=str(agent["session_id"]))
         assert shot["status"] == "ok"

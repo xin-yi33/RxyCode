@@ -116,7 +116,30 @@ def connect_main() -> None:
     parser.add_argument("--os-name", default="Windows")
     parser.add_argument("--capability", action="append", default=[])
     parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
-    args = parser.parse_args()
+    import sys
+
+    value_options = {
+        "--url",
+        "--code",
+        "--device-id",
+        "--os-name",
+        "--capability",
+        "--heartbeat-seconds",
+    }
+    known_options = value_options | {"-h", "--help"}
+    argv = sys.argv[1:]
+    merged: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        nxt = argv[index + 1] if index + 1 < len(argv) else ""
+        if token in value_options and nxt.startswith("-") and nxt not in known_options:
+            merged.append(f"{token}={nxt}")
+            index += 2
+        else:
+            merged.append(token)
+            index += 1
+    args = parser.parse_args(merged)
     reset_stop()
     asyncio.run(
         _one_session(

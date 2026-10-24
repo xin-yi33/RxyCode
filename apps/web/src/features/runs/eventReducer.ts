@@ -60,6 +60,9 @@ export type TimelineItem =
       // "choice" 只允许点选项；缺省/“text” 才显示自由输入框。
       inputType: "choice" | "text"
       answer?: string
+      // question.resolved 到达即 true（即使 answer 为空串，卡片也必须折叠，
+      // 不能因为 answer 是 falsy 又变回可交互）。
+      answered?: boolean
     }
   | { kind: "final"; seq: number; text: string }
 
@@ -562,7 +565,10 @@ export function reduceEvents(
       }
       case "question.resolved": {
         const found = findQuestion(view.timeline, str(payload.question_id))
-        if (found) found.answer = str(payload.answer)
+        if (found) {
+          found.answer = str(payload.answer)
+          found.answered = true
+        }
         return
       }
       case "plan.updated":

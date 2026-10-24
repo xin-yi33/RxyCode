@@ -278,7 +278,19 @@ def check_completion(
 
 
 def promote_to_development(decision: WorkflowDecision) -> WorkflowDecision:
-    """Keep the same task and require verification. Checks are not invented."""
+    """Keep the same task and require verification. Checks are not invented.
+
+    A development contract needs at least one required check
+    (:func:`validate_decision`). Refuse the promotion instead of returning a
+    contract that could never be persisted or restored — a forced
+    `task_kind=development` with `required_checks=[]` is exactly the invalid
+    state that crashed resumed turns.
+    """
+    if not any(check.required for check in decision.required_checks):
+        raise WorkflowContractError(
+            "development requires at least one required check; "
+            "refusing to promote a contract that has none"
+        )
     stages = dict(decision.stage_actions)
     stages["build_verify"] = "run"
     revision = int(decision.contract_revision) + 1
@@ -292,6 +304,75 @@ def promote_to_development(decision: WorkflowDecision) -> WorkflowDecision:
         contract_revision=revision,
         required_checks=checks,
     )
+
+
+_RECOVERY_ACCEPTANCE = (
+    "Recover the persisted task and finish the request without changing code.",
+)
+_VAGUE_ACCEPTANCE = frozenset({"功能正常", "works", "done"})
+
+
+def recover_workflow_decision(
+    payload: Mapping,
+    *,
+    error: Exception | None = None,
+) -> WorkflowDecision | None:
+    """Repair a persisted contract that no longer validates.
+
+    Checkpoints are disk data written by an older build. A contract that
+    `validate_decision` rejects must never crash a resumed turn: keep the
+    task identity (goal, workflow id, revisions), demote it to a non-development
+    kind, drop the unusable checks, and make the stage actions/acceptance valid.
+    Callers then keep the task read-only (mutations stay gated by a real
+    development contract) and never persist the invalid shape again.
+
+    Returns `None` when even the demoted shape is invalid, so the caller can
+    drop the contract and reclassify instead of failing the turn.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    raw = dict(payload)
+    kind = str(raw.get("task_kind") or "")
+    raw["task_kind"] = kind if kind in {"question", "read_only"} else "read_only"
+    actions = raw.get("stage_actions")
+    actions = dict(actions) if isinstance(actions, Mapping) else {}
+    for stage in STAGES:
+        if actions.get(stage) not in _ACTIONS:
+            actions[stage] = "skip"
+    # No checks survive a failed validation; keeping "run" without checks would
+    # recreate the exact invalid development shape.
+    actions["build_verify"] = "skip"
+    raw["stage_actions"] = actions
+    raw["required_checks"] = []
+    acceptance = raw.get("acceptance")
+    cleaned = (
+        [str(item).strip() for item in acceptance]
+        if isinstance(acceptance, list)
+        else []
+    )
+    cleaned = [item for item in cleaned if item and item not in _VAGUE_ACCEPTANCE]
+    raw["acceptance"] = cleaned or list(_RECOVERY_ACCEPTANCE)
+    if str(raw.get("difficulty") or "") not in _DIFFICULTIES:
+        raw["difficulty"] = "simple"
+    goal = str(raw.get("goal") or "")
+    workflow_id = str(raw.get("workflow_id") or "").strip()
+    if not workflow_id:
+        workflow_id = "wf-" + hashlib.sha256(goal.encode("utf-8")).hexdigest()[:12]
+    raw["workflow_id"] = workflow_id
+    for field in ("goal_revision", "contract_revision"):
+        try:
+            raw[field] = max(1, int(raw.get(field) or 1))
+        except (TypeError, ValueError):
+            raw[field] = 1
+    note = "recovered from an invalid persisted contract"
+    if error is not None and str(error).strip():
+        note = f"{note}: {error}"
+    reason = str(raw.get("reason") or "").strip()
+    raw["reason"] = f"{reason}; {note}" if reason else note
+    try:
+        return validate_decision(raw, goal=goal)
+    except WorkflowContractError:
+        return None
 
 
 def retarget_contract(previous: WorkflowDecision, new: WorkflowDecision) -> WorkflowDecision:

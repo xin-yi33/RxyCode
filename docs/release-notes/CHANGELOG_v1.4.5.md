@@ -605,3 +605,67 @@
 - 拒绝：decision 将 run 置为 cancelled，resume 不返回 record，目标文件与 `att_*.json` journal 均不存在。
 
 **边界**：只模型 stream 与 `_CtlApproval` 的 AF_UNIX worker channel hop 被脚本化/进程内 `_PostgresChannel` 替代；审批 service、production parent control handlers、真实 tool、journal 和 AgentV2 恢复均走生产实现。测试不启动浏览器、不访问公网；fixture 使用 `isolated_runtime`，并显式关闭 `execution.build_workflow.enabled`。质量子代理独立实测本文件 **2 passed**，邻近 pause 单测 **3 passed**。
+
+## 云端 Web 事故修复批：附件读取 / question 卡渲染与单选 / question 恢复崩溃（2026-10-24，本地已验证，待部署）
+
+线上会话 `0e7dab8474874bbaadc443e4d99fd18f`（run `211f0165ba014f3dae77dac8e5626491`，2026-10-23 23:08 CST）暴露四个连在一起的严重问题，用户报告为“上传文件后所有工具调用全部失败 / question 选项应该竖排编号但顺序乱 / 选择后像是所有选项都被提交 / 随后直接异常结束”。逐条取证后确认是**三条独立根因叠加**，均已修复。
+
+### 症状与证据（生产 DB + 事件流 + worker 工作区）
+
+- 上传 `实验报告-第3章 HDFS分布式文件系统_阮心一.docx`：`attachment.import` imported（589856B，sha256 校验通过），但 worker staging 把中文名洗成 `____-_3_ HDFS___________.docx`；`read` 把 docx 当 UTF-8 读成 ZIP 乱码，`vision` 拒绝非图片，模型最终只能向用户提问“文档读取受阻”。
+- 同一 run 里模型发出的 bash 写探针没有产生任何 `tool.*` 事件：被 build-workflow 的“写操作需要开发合同”门静默拒绝（`[blocked: ...]` 只回给模型、不发事件），用户侧看到的就是“工具全失败”。
+- `question.requested` 只发了一次（4 个选项），API access log 只有 **1 次** `POST /questions`，DB `question.resolved` 的 answer 是单值 `state_goal`；因此“所有选项都被提交”不是 API/事件重放，而是旧 UI 的 `{submitting ? "提交中…" : label}` 把**四个按钮同时**改成“提交中…”。
+- 回答后 run 进入 epoch 2 恢复：`event/agent_started` 后立即 `notify.event/error` → `run.error: RuntimeError: 处理未完成... 原因：WorkflowContractError: development requires at least one required check`，run 终态 `failed`。
+- 工作区 checkpoint `cp_932c880e….json` 里持久化的 `build_workflow` 为 `task_kind=development` + `required_checks=[]` + `build_verify=run`：正是被 `promote_to_development()` 强制升级、又被 `_persist_build_workflow()` 落盘、最后在恢复时被 `validate_decision()` 拒绝的形状。
+
+### 根因与修复
+
+**1) 上传文件在云端不可读（apps/web + tools + worker）**
+- 根因：worker `_stage_attachments` 用 `re.sub(r"[^A-Za-z0-9._ -]", "_", filename)` 洗文件名（中文全变 `_`）；`tools/read.py` 对任何文件都按 UTF-8 `errors="replace"` 读，docx/xlsx/pptx 这类 ZIP+XML 容器必然乱码；云端没有文档文本抽取能力。
+- 修复：新增 `tools/document_text.py`（**纯标准库**：zipfile + ElementTree 抽取 .docx/.xlsx/.pptx 及 .odt/.ods/.odp 正文，PDF/旧版 OLE Office/RTF/压缩包/图片给出可操作提示；magic 优先、上限 2MB 文本 + 单 XML 16MB + 5 万 zip 条目，防 zip 炸弹）；`tools/read.py` 增加二进制识别、UTF-16 BOM 文本、抽取结果按 offset/limit 分页；worker `drain.py` 新增 `_safe_attachment_filename`（NFC 保留中文/空格/emoji，只中和路径分隔符、控制字符、Windows 禁用字符、保留名、`..`），staging 目录改为安全 id 目录 + `_unique_attachment_name` 冲突后缀，manifest 增加 `stored_name/dir` 并由 `_import_prompt_attachments` 原样带进 `imports/`（旧 manifest 无 `stored_name` 时回退重算，不静默丢附件）。**未新增任何 pip 依赖**。
+
+**2) question 卡渲染与提交（apps/web）**
+- 修复：`QuestionItem.tsx` 改为垂直 `<ol>` 列表，显式 `1. 2. 3. …` 且严格按 payload 顺序（新 `questionOptions.ts`：不排序、去空白行、完全重复项只保留首个、value 保持字节精确）；提交中**只有被点中那一项**显示 `aria-busy` + “提交中…”，其余选项保留 label；新增同步 ref + 模块级 `questionAnswerGuard.ts`（跨重复挂载/事件重放/双击的 exactly-one-POST 闸门，成功后保持关闭、可重试失败才释放）；折叠行显示 **label** 而非原始 value（`answerLabel`）；`eventReducer.ts` 给 question 项补 `answered` 标记，空 answer 的 `question.resolved` 也会折叠。
+
+**3) question 恢复必崩（core）**
+- 根因：`promote_to_development()` 在没有任何 required check 时仍强制返回 `task_kind=development` 的非法合同；`_upgrade_workflow_before_code_write()` 的三条回退路径都把它落盘；恢复时 `restore_build_workflow()` 无保护地 `workflow_from_checkpoint()` → 异常逃出 turn。
+- 修复：`core/build_workflow.py` — `promote_to_development` 无 required check 时抛 `WorkflowContractError` 拒绝升级；新增 `recover_workflow_decision()`（把非法持久化合同确定性降级成只读合同：保留 goal/workflow_id/revision，清空无效 checks，补齐合法 stage/acceptance，修不好返回 None）；新增 `decision_to_jsonable()`。`core/agent_v2.py` — 升级失败保留非开发合同并记录拒绝原因、不再落盘；`_persist_build_workflow` 落盘前 `validate_decision` 自检；`restore_build_workflow` / `inherit_build_workflow` 捕获并修复/丢弃非法合同、先自愈 checkpoint 再继续 turn；被拒绝的写操作返回可操作的 `[blocked: …]`（提示做只读部分或 question 询问），升级尝试改为**每轮一次**而非永久死锁；checkpoint 里的 int/列表字段做容错解析。
+
+### 本地验证
+
+- `python -m pytest tests/test_core/test_build_workflow.py tests/test_tools/test_read.py tests/test_tools/test_read_documents.py tests/web/w11/test_w11_attachments_staging.py -q` → **114 passed**（含新增：非法合同 persist→restore 不再抛、`promote_to_development` 拒绝、中文名 staging + 冲突后缀 + 路径穿越、docx 抽取、staged docx 立即可被 read 读）。
+- `python -m pytest tests/web/w3/test_w3_question_card.py -q` → **5 passed**（真实 vite 产物 + vite preview + `/api/v1/**` stub：竖排编号与 payload 顺序、点击第 2 项仅 1 次 POST 且 answer=第 2 项 value、只有被点项显示“提交中…”、同步双击只 1 次、text 变体、409 stale 折叠）。
+- `npm --prefix apps/web run typecheck` → exit 0。
+### 部署与云端真机验收（2026-10-24 02:05 CST，镜像 tag `cloudfix-aba79b60-01`）
+
+- 代码提交 `feat/rxycode-web` `aba79b60`；部署源 = 本地工作树 tar（含既有 WIP overlay，与线上既有行为一致）+ 150 条 dirty 文件 sha256 manifest，构建目录 `/home/ruanxinyi/cloudfix/build-cloudfix-aba79b60-01`。
+- 三镜像同 tag 上线：api `660b6c31f593` / worker `b1fa0586fe6d` / web `4b83814de2a7`；api+worker 镜像内 `RXYCODE_BUILD_COMMIT=aba79b609b230e27ce7c17a6644e5e6422fdafc9`。compose.prod.yaml 4 处 image pin 与 .env `RXYCODE_IMAGE_TAG` 统一改写（此前 api/web=`web-dfb6f356`、worker=`web-52e6c7a8`、.env 为过期 `3a8526c` 的漂移一并修掉）；migrate 幂等（head `012_files_batch` 不变）；api/3 workers/gateway 全部 healthy；`/api/v1/version` 返回新 commit，csrf 200。备份 `/opt/rxycode/backups/cloudfix-cloudfix-aba79b60-01-20261024-015758/`，DB dump `/opt/rxycode/backups/pre-cloudfix/rxycode-20261023T173435Z.sql.gz`。首次 deploy 尝试在 preflight 安全中止（无变更：render 的 migrate pin 指向不存在的旧 tag 被误判为回滚目标）；脚本已改为按“运行中容器实际镜像”判定回滚目标。
+- 公网隧道插曲：部署后公网出现 Cloudflare 1033/530，VM 本机 curl 网关 8080 为 200；`systemctl restart cloudflared` 后公网恢复 200（非应用故障）。
+- **真机验收 A（上传 → 云端读取）**：run `13d02c1a40b749a1aa2922fee79b6d99`（session `8bfdccf91e914553b54720221af71ccb`）。上传 `实验报告-第3章 HDFS分布式文件系统_测试.docx`：`attachment.import` 的 filename 完整保留中文；`read` 返回 `[extracted text of … (docx)]` + 12 行正文；run `succeeded`，最终答案正确总结 HDFS/NameNode/DataNode 并给出第 3 章标题；无 `run.error`，浏览器 console/page error 为空。截图 `D:/agent-demo/rxycode-web-hotfix-20261023/evidence-A-upload-read.png`。
+- **真机验收 B（question 卡 + 单选 + 恢复）**：run `d9d8c580b5434ff9aaa6d48d1f05cc70`（session `140d19f1d3cd4826bb4a56550324c4f4`）。question.requested 4 选项；DOM 为垂直 `<ol><li>` 且按 payload 顺序（a11y：选项 1/2/3/4，截图 `evidence-B-question-before.png`）。点击第 2 项：网络仅 **1 次** `POST .../questions`（200），DB `question.resolved` answer=`proofread` 单值；卡片折叠为“你的回答：**2 校对格式**”（label 而非 raw value）。epoch 2 恢复不再抛 `WorkflowContractError`/无 `run.error`，resumed turn 正常 `read` docx 并继续，run 终态 `succeeded`（143 events）；console 零 error。截图 `evidence-B-question-answered.png`、`evidence-B-final.png`。
+- 验收用的临时 ops 会话已撤销、`device_locks` 已恢复原值（未改用户密码/既有会话）；旧镜像保留可回滚（`deploy-web-vm.sh rollback`）。
+
+### 涉及文件
+
+`apps/web/src/features/approvals/QuestionItem.tsx`、`questionOptions.ts`（新）、`questionAnswerGuard.ts`（新）、`apps/web/src/features/runs/eventReducer.ts`、`tools/document_text.py`（新）、`tools/read.py`、`packages/rxycode-worker/src/rxycode_worker/drain.py`、`core/build_workflow.py`、`core/agent_v2.py`、`tests/web/w3/test_w3_question_card.py`（新）、`tests/web/w11/test_w11_attachments_staging.py`（新）、`tests/test_tools/test_read_documents.py`（新）、`tests/test_core/test_build_workflow.py`、`scripts/deploy-web-vm.sh`（新）、`docs/deploy/CLOUD-FIX-20261024-PLAN.md`（新）。
+
+### CI 稳定性修复（PR #24 期间，2026-10-24 后段）
+
+- **w4-c07 间歇失败根因（真实缺陷）**：`devices/pairing.py` 的 `issue()` 用 `secrets.token_urlsafe(18)` 生成配对码——urlsafe 字符集含 `-`，约 1.5% 概率首字符为 `-`；此时 `rxycode-connect connect --code -xYz…` 中 argparse 把 code 值误判为 option 报 `expected one argument`，同 SHA 随机复现。修复三层：
+  - `pairing.py`：配对码首字符不得为 `-`（重抽）；
+  - `capabilities.py` `connect_main`：argv 预处理，凡 `--opt <value>` 中 value 以 `-` 开头且非已知 option 名，折叠为 `--opt=<value>` 再 `parse_args`（覆盖 `--code`/`--device-id` 等所有值参数——用户自起名的 `-` 前缀值同样受保护）；
+  - `test_w4_c07_unit.py`：`--code=<v>` 等号形式传值。
+- **w6-c06 `oauth_states` 缺失**：测试自建 per-worker 库但未跑迁移；补 `upgrade_head(DATABASE)`（`006_auth_and_runs.py` 才建该表）。
+- **w3 登录 flake**：`_login` 60s 导航/默认超时 + 先等 login POST 响应再等 `/app` 路径、失败重试一次并带诊断；URL 匹配改 path 精确匹配防 query 误判。
+- **w6-c03 外网导航 flake**：`example.com` 导航遇 `ERR_NETWORK_*` 重试一次。
+- **pg 测试基建竞争**：`tests/support/pgurl.py` `ensure_container` 统一 "inspect→run" 竞窗——名冲突视为兄弟进程已建、继续就绪探测；w2/w5/w7 conftest 同款内联 `docker run --name` 统一收编；支持 `RXYCODE_PGURL` 外部库。
+
+### 产物列表 UI 修复（2026-10-24，用户反馈三点）
+
+- **下载/预览按钮 hover 无提示**：`ArtifactRows` 的下载 `<a>` 与预览 `<button>` 仅有 `aria-label`，鼠标悬停无任何说明——补 `title`（`下载 <文件名>` / `预览 <文件名>`），原生 tooltip 立即可见，读屏语义不变。
+- **文件行缺类型图标**：新增 `apps/web/src/components/FileTypeIcon.tsx`——按扩展名归 10 类（document/sheet/slides/pdf/image/archive/code/audio/video/app/generic），Windows 资源管理器式**类别着色**（docx 蓝、xlsx 绿、pptx 橙、pdf 红、图片紫、压缩包棕、代码青、媒体粉、应用深灰、未知灰）+ **类别字形**（表格网格、幻灯片框、pdf 花体、图片山形、拉链齿、`</>` 括号、音符、播放键等）；文件页+折角统一外壳，`aria-hidden` 不干扰读屏。`FileName` 默认内嵌该图标（`icon={false}` 可关），`ArtifactRows`/附件卡/预览标题等所有调用点自动获得图标；图标 `shrink-0`，扩展名优先截断语义不受影响。
+- **产物与最终回答关联弱、列表突兀**：`ArtifactRows` 从裸 `<ul>` 改为归属分区 `<section data-artifacts>`——上边框分隔 + 标题「产出文件 (N) — 以上回答在工作区生成的文件」，明确挂在本次回答名下；`FileName` 替代裸 span（保留 `title`/`aria-label` 完整名与扩展名截断）；下载锚点补 `download={filename}`。
+
+**本地验证**：`tsc --noEmit` 通过；Playwright 实测（拦截 artifacts manifest 喂 8 种类型 mock）——8 行各带正确 `data-file-category` 与 ≥6 种差异化描边色，下载锚点全部含 `title=下载…`、预览含 `title=预览…`，分区标题「产出文件 (8)」渲染，390px 窄视口无横向溢出，console 零 error。截图 `~/.rxycode/ops/verify-artifacts{,-mobile}.png`。
+
+**涉及文件**：`apps/web/src/components/FileTypeIcon.tsx`（新）、`apps/web/src/components/FileName.tsx`、`apps/web/src/features/runs/ArtifactRows.tsx`。

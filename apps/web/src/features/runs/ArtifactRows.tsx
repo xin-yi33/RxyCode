@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
+import { FileName } from "../../components/FileName"
 import { IconArrowDown, IconEye } from "../../components/icons"
 import { createClient, type ArtifactItem, type PreviewJob } from "../../sdk/client"
 import { isActiveRunStatus } from "./status"
@@ -29,15 +30,23 @@ export function ArtifactRows({ runId, status, onPreview }: ArtifactRowsProps) {
   const items = manifest.data?.artifacts ?? []
   if (!items.length) return null
   return (
-    <ul data-artifacts className="mt-3 space-y-1.5">
-      {items.map((item) => (
-        <li
-          key={item.artifact_id}
-          className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm"
-        >
-          <span className="min-w-0 flex-1 truncate" title={item.relative_path || item.filename}>
-            {item.filename || item.relative_path || item.artifact_id.slice(0, 8)}
-          </span>
+    <section data-artifacts className="mt-4 border-t border-border/60 pt-3">
+      {/* 产物归属：直接挂在本次回答名下的交付清单，不再是裸列表。 */}
+      <p className="mb-2 flex items-baseline gap-2 text-xs text-muted">
+        <span className="rxy-weight-medium text-muted-ink">产出文件</span>
+        <span className="rxy-tabular-nums">({items.length})</span>
+        <span className="text-muted">— 以上回答在工作区生成的文件</span>
+      </p>
+      <ul className="space-y-1.5">
+        {items.map((item) => (
+          <li
+            key={item.artifact_id}
+            className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm"
+          >
+          <FileName
+            name={item.filename || item.relative_path || item.artifact_id.slice(0, 8)}
+            className="min-w-0 flex-1"
+          />
           {item.partial ? (
             <span className="rounded-full bg-waiting/15 px-1.5 py-0.5 text-xs text-waiting-ink">
               部分
@@ -53,6 +62,7 @@ export function ArtifactRows({ runId, status, onPreview }: ArtifactRowsProps) {
             <button
               type="button"
               aria-label={`预览 ${item.filename}`}
+              title={`预览 ${item.filename}`}
               className="rounded p-1 text-muted-ink hover:bg-sidebar"
               onClick={() => onPreview(item)}
             >
@@ -61,8 +71,9 @@ export function ArtifactRows({ runId, status, onPreview }: ArtifactRowsProps) {
           ) : null}
           <a
             href={item.download_url}
-            download
+            download={item.filename || undefined}
             aria-label={`下载 ${item.filename}`}
+            title={`下载 ${item.filename}`}
             className="rounded p-1 text-muted-ink hover:bg-sidebar"
           >
             <IconArrowDown size={14} />
@@ -72,7 +83,8 @@ export function ArtifactRows({ runId, status, onPreview }: ArtifactRowsProps) {
       {manifest.data?.manifest_status === "partial" ? (
         <li className="px-1 text-xs text-muted">产物还在生成中…</li>
       ) : null}
-    </ul>
+      </ul>
+    </section>
   )
 }
 
