@@ -203,6 +203,25 @@ def test_w7_c02_integration(postgres_url: str):
             headers=headers,
         )
         session_a = opened.json()["id"]
+        # FastAPI yield-dependency teardown commits AFTER the response is
+        # sent — the POST answered with an id while the sessions row was
+        # still uncommitted. Poll until the row is visible to a fresh
+        # connection before create_run's FK check reads it.
+        visibility = create_engine(postgres_url)
+        try:
+            deadline = time.time() + 15
+            while True:
+                with Session(visibility) as db:
+                    visible = db.execute(
+                        text("SELECT 1 FROM sessions WHERE id = :sid AND tenant_id = :tid"),
+                        {"sid": session_a, "tid": tenant_a},
+                    ).first()
+                if visible is not None:
+                    break
+                assert time.time() < deadline, "sessions row never committed"
+                time.sleep(0.05)
+        finally:
+            visibility.dispose()
         run_a = create_run(
             postgres_url,
             tenant_id=tenant_a,
