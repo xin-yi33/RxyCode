@@ -74,9 +74,7 @@ def _postgres_server() -> str:
 @pytest.fixture
 def postgres_url(_postgres_server: str) -> str:
     """Give each test an empty database. The test itself runs Alembic."""
-    engine = create_engine(_postgres_server)
-    with engine.begin() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
+    from tests.support.pgurl import reset_schema
+
+    reset_schema(_postgres_server)
     return _postgres_server

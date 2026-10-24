@@ -67,12 +67,28 @@ async def run_patch_async(filePath: str, diff: str) -> str:
 
 
 def _apply_diff(original: str, diff: str) -> str:
-    """Apply a simple unified diff."""
+    """Apply a simple unified diff.
+
+    Context (`` ``) and removal (``-``) lines must equal the file's actual
+    lines at the hunk position.  A mismatched diff used to silently skip the
+    file's real lines and still report success — a corrupted patch must
+    surface as an error, never as a green apply.
+    """
     lines = diff.splitlines()
     result = []
     orig_lines = original.splitlines()
     orig_idx = 0
     strip_final_newline = False
+
+    def take_expected(expected: str) -> None:
+        nonlocal orig_idx
+        got = orig_lines[orig_idx] if orig_idx < len(orig_lines) else "<EOF>"
+        if orig_idx >= len(orig_lines) or orig_lines[orig_idx] != expected:
+            raise ValueError(
+                f"context mismatch at file line {orig_idx + 1}: "
+                f"expected {expected!r}, found {got!r}"
+            )
+        orig_idx += 1
 
     i = 0
     while i < len(lines):
@@ -101,18 +117,16 @@ def _apply_diff(original: str, diff: str) -> str:
             i += 1
             continue
 
-        # Context line
+        # Context line — must equal the file line it claims to keep
         if line.startswith(" "):
-            if orig_idx < len(orig_lines):
-                result.append(orig_lines[orig_idx])
-                orig_idx += 1
+            take_expected(line[1:])
+            result.append(orig_lines[orig_idx - 1])
             i += 1
             continue
 
-        # Remove line
+        # Remove line — must equal the file line it claims to delete
         if line.startswith("-"):
-            if orig_idx < len(orig_lines):
-                orig_idx += 1
+            take_expected(line[1:])
             i += 1
             continue
 

@@ -42,6 +42,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -568,6 +569,11 @@ class ManagedShell:
         self._env = env
         self._sandbox_command = sandbox_command
         self._process: asyncio.subprocess.Process | None = None
+        #: The event loop that spawned the process.  asyncio transports and
+        #: StreamReaders bind to it forever; a shell reused from another loop
+        #: (a fresh pytest-asyncio loop, a second worker loop) fails deep in
+        #: ``stdout.read`` with "Future attached to a different loop".
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
         self._closed = False
@@ -592,6 +598,16 @@ class ManagedShell:
         self._pending_artifacts: list[str] = []
 
     # -- lifecycle ------------------------------------------------------
+
+    def _loop_is_foreign(self) -> bool:
+        """True when the process belongs to a different (possibly dead) loop."""
+        if self._loop is None:
+            return False
+        try:
+            return asyncio.get_running_loop() is not self._loop
+        except RuntimeError:
+            # No running loop: any async use would bind wrong — treat foreign.
+            return True
 
     @property
     def alive(self) -> bool:
@@ -682,6 +698,7 @@ class ManagedShell:
         # handle is owned by this local from the moment it exists, and every
         # exit path below releases it.
         try:
+            self._loop = asyncio.get_running_loop()
             try:
                 self._process = await asyncio.create_subprocess_exec(
                     *argv,
@@ -802,10 +819,17 @@ class ManagedShell:
         process = self._process
         self._process = None
         if self._stderr_task is not None:
-            self._stderr_task.cancel()
+            try:
+                self._stderr_task.cancel()
+            except RuntimeError:
+                # Task belongs to a loop that is already closed.
+                pass
             self._stderr_task = None
         if self._monitor_task is not None:
-            self._monitor_task.cancel()
+            try:
+                self._monitor_task.cancel()
+            except RuntimeError:
+                pass
             self._monitor_task = None
         # A cancelled/killed command never reaches the normal trailer, so its
         # temp files would otherwise leak into the workspace one per command.
@@ -881,6 +905,14 @@ class ManagedShell:
         """
         if self._closed:
             raise ShellLostError("managed shell was closed")
+        if self._loop_is_foreign():
+            # The registry should have evicted this shell before it reached
+            # run(); a direct caller hit it anyway — mark it lost so the next
+            # acquire respawns on this loop.
+            self._closed = True
+            raise ShellLostError(
+                "managed shell belongs to a different event loop"
+            )
         async with self._lock:
             await self.ensure_started()
             try:
@@ -1254,6 +1286,11 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
         pass
     try:
         await asyncio.wait_for(process.wait(), timeout=10)
+    except RuntimeError:
+        # The process's transport belongs to another (usually dead) event
+        # loop — wait() cannot run here. The kill above already fired; the
+        # pid sweep below covers survivors.
+        pass
     except asyncio.TimeoutError:
         _logger.warning("managed shell pid=%s did not exit after kill", pid)
     # Sweep anything that outlived the tree kill (e.g. a grandchild that
@@ -1313,7 +1350,12 @@ def _remove_sandbox_cleanup(leftovers: Any) -> None:
 #: entries is what makes one identity mean one shell under concurrent first
 #: use (the audit caught two PIDs for one session).
 _SHELLS: dict[str, ManagedShell] = {}
-_REGISTRY_LOCK = asyncio.Lock()
+#: ``threading.Lock``, not ``asyncio.Lock`` — an asyncio lock binds to the
+#: first loop that awaits it, and shells outlive individual loops (each
+#: pytest-asyncio test, each worker task gets a fresh loop).  The critical
+#: sections are synchronous dict mutations only; any ``close()`` is awaited
+#: AFTER the lock is released.
+_REGISTRY_LOCK = threading.Lock()
 #: Identities whose shell is currently being started.
 _STARTING: set[str] = set()
 
@@ -1348,18 +1390,22 @@ async def acquire_shell(
     """Return the shell for ``identity``, creating it on first use.
 
     The registry entry is created under the lock BEFORE any await, so two
-    concurrent first callers always observe the same object.
+    concurrent first callers always observe the same object.  The eviction
+    ``close()`` is awaited after the lock is released — it may target a
+    shell owned by a dead loop, which must not serialize into the lock.
     """
-    async with _REGISTRY_LOCK:
+    evict: ManagedShell | None = None
+    with _REGISTRY_LOCK:
         existing = _SHELLS.get(identity)
-        if existing is not None and not existing._closed:
+        if (
+            existing is not None
+            and not existing._closed
+            and not existing._loop_is_foreign()
+        ):
             return existing
         if existing is not None:
             _SHELLS.pop(identity, None)
-            try:
-                await existing.close()
-            except Exception:
-                pass
+            evict = existing
         shell = ManagedShell(
             identity=identity,
             cwd=cwd,
@@ -1370,39 +1416,48 @@ async def acquire_shell(
         # Registered before returning: a second caller sees this instance even
         # though it has not spawned yet.
         _SHELLS[identity] = shell
-        return shell
+    if evict is not None:
+        try:
+            await evict.close()
+        except Exception:
+            pass
+    return shell
 
 
 async def release_shell(identity: str) -> bool:
-    async with _REGISTRY_LOCK:
+    with _REGISTRY_LOCK:
         shell = _SHELLS.pop(identity, None)
     if shell is None:
         return False
-    await shell.close()
+    try:
+        await shell.close()
+    except Exception:
+        pass
     return True
 
 
 async def release_all() -> int:
-    async with _REGISTRY_LOCK:
+    with _REGISTRY_LOCK:
         shells = list(_SHELLS.values())
         _SHELLS.clear()
     for shell in shells:
-        await shell.close()
+        try:
+            await shell.close()
+        except Exception:
+            pass
     return len(shells)
 
 
 def active_identities() -> list[str]:
     """Identities holding a shell object (started or pending)."""
-    return [
-        name
-        for name, shell in _SHELLS.items()
-        if not shell._closed
-    ]
+    with _REGISTRY_LOCK:
+        return [name for name, shell in _SHELLS.items() if not shell._closed]
 
 
 def started_identities() -> list[str]:
     """Identities whose shell process is actually running."""
-    return [name for name, shell in _SHELLS.items() if shell.alive]
+    with _REGISTRY_LOCK:
+        return [name for name, shell in _SHELLS.items() if shell.alive]
 
 
 def invalidate_session_sync(session_id: str) -> list["ManagedShell"]:
@@ -1419,14 +1474,17 @@ def invalidate_session_sync(session_id: str) -> list["ManagedShell"]:
         return []
     prefix = f"{base}::"
     doomed: list[ManagedShell] = []
-    # ``_SHELLS`` mutation is atomic in CPython; the asyncio lock guards async
-    # callers, and this sync path must not await it (it may run without a loop).
-    for name in [n for n in list(_SHELLS) if n == base or n.startswith(prefix)]:
-        shell = _SHELLS.pop(name, None)
-        if shell is None:
-            continue
-        shell._closed = True
-        doomed.append(shell)
+    # threading.Lock is safe here too: no awaits inside, works with or
+    # without a running loop.
+    with _REGISTRY_LOCK:
+        for name in [
+            n for n in list(_SHELLS) if n == base or n.startswith(prefix)
+        ]:
+            shell = _SHELLS.pop(name, None)
+            if shell is None:
+                continue
+            shell._closed = True
+            doomed.append(shell)
     return doomed
 
 

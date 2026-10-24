@@ -350,6 +350,11 @@
   通过，P7 `180/181` 未抬阈值。
 - **边界**：真实付费 provider 的持久运行未测；未做全仓全量套件，不改
   Build/TTFT。本条为开发验证结果、不等于发版；版本号不变。
+- **merge 追随（`584b8c28` / PR #28）**：标准非交互合入 Linux/backend
+  regressions，`ManagedShell` 的 owner-loop 隔离、registry loop ownership 与
+  patch atomicity 全部保留；本次 observer/probe 在冲突 hunk 中叠加。合并后
+  `test_persistent_shell_loops.py` + 本次 watchdog/P7/lost-evidence +
+  acceptance 目标集 → **41 passed**。未覆盖 PR28 的 Linux 环境其它模块。
 
 ### Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
 
@@ -793,3 +798,14 @@
 - **P2 阅读锚点选中外层 run 容器**：`captureVisibleAnchor` 首个「bottom 越过视口顶」的候选是外层 run `<li>`（祖先先于子孙返回）——同 run 内上方内容长高会把视口拽回 run 顶部。改为持续扫描：跨过顶边界的候选记录后继续深入，让最内层的可见条目胜出（首个 top 低于边界的候选做兜底）。
 - **P2 滚动控制器在 DOM 重挂载后失效**：SessionPage 错误→重试替换 chat 子树后，effect 依赖仅 `sessionKey`+稳定回调不重跑，监听器/ResizeObserver 留在已分离节点上——恢复后的聊天失去自动跟随/滚动意图追踪。`scrollRef`/`contentRef` 改为 callback ref + 节点 state（`scrollEl`/`contentEl`），DOM 节点身份变化即重跑绑定 effect；公开类型 `RefObject` → `RefCallback`（消费方仅 `ref={}` 传递，无 `.current` 读取）。
 - **w7_c02 复合外键间歇违例**：FastAPI yield 依赖 teardown 在响应发送后才 `db.commit()`——sessions POST 已返回 id 而行未提交，紧随的 `create_run` 经另一连接做 `fk_runs_session_tenant` 检查偶发失败。测试改为先轮询 session 行在新连接上可见再 `create_run`。
+
+### Master Linux/backend 回归修复（2026-10-25，master CI 红修绿）
+
+- **managed-shell 平台句式**：`test_managed_shell_wiring.py`、`test_encoding_roundtrip.py` 与 `test_audit_repro.py` 的 PowerShell 句式改为按 `os.name` 分派（`Write-Output`↔`echo`/`printf`）——此前 Linux 常驻 bash 收到 `Write-Output`/`$var` 直接 command-not-found，中文 round-trip 断言拿到空输出。`test_p1_exit_code_leaks` 的 POSIX `exit 7` 会杀死常驻 shell 本身（`ShellLostError`），改为子 shell `( exit 7 )` 保留原语义。
+- **跨事件循环归属（`Future attached to a different loop` / `Event loop is closed`）**：`ManagedShell` 记录 spawn 时的 owner loop（`_spawn` 内 `get_running_loop()`），`_loop_is_foreign()` 判异；`acquire_shell` 检出外 loop（含已关闭 loop）shell 即驱逐重开；`run()` 在外 loop 被直接调用抛 `ShellLostError` 而非深栈 Future 错误；`close()`/`_terminate_process_tree` 对外 loop 的 `task.cancel()`/`process.wait()` RuntimeError 容忍（kill 与 pid sweep 仍生效）。新增 `tests/test_core/test_persistent_shell_loops.py` 三条回归（worker 线程独立 `asyncio.run` 造真外 loop）。
+- **注册表锁跨 loop**：`_REGISTRY_LOCK` 由 `asyncio.Lock`（首 await 绑定 loop，跨 loop 永久死锁源）改为 `threading.Lock`——临界区只剩同步 dict 操作，`close()` 一律在锁外 await；`acquire_shell`/`release_*`/`active_identities`/`started_identities`/`invalidate_session_sync` 同步适配。原「同一 identity 只建一个 shell」原子性由同步锁保持。
+- **包别名快照竞态**：`__init__.py` 的 `list(_sys.modules.items())` 在并发 import 下于**构建 list 期间**抛 `dictionary changed size during iteration`——新增 `_modules_snapshot()` 重试快照，替换 `_remap_descendant_aliases` 与 `unify_bare_package_aliases` 两处。
+- **`tools/patch.py` diff 错配静默成功（w6_c02_negative 真缺陷）**：`_apply_diff` 的 context(` `)/remove(`-`) 行此前**从不与文件实际内容比对**——错配 diff 照样「应用成功」且可能写坏文件。改为严格校验：期望行与 `orig_lines[orig_idx]` 不等即抛 `ValueError(context mismatch at file line N)`，`run_patch` 不写盘，`apply_patch` 报 applied=False、不再应用后续 diff（`later_diff` 原子性保持）。
+- **w6_c03 外网导航 flake**：chromium `navigate_click` 返回 ok 但落地页为 `chrome-error://chromewebdata/` 时此前不重试——改为状态+落地页双重检查最多 3 次，`iana.org`/`example domain` 与密钥隔离断言不变。
+- 验证：`tests/test_execution` + `tests/test_core` 全套 **8365 passed**（Windows）；w6_c02 单测 2/2；跨 loop 回归 3/3；ruff 全过。Linux 句式分支由 CI 层验证。
+- **`test_agent_main_chain` fixture 失同步（master 预存回归）**：`_attach_diagnostics` 给写后证据 detail 追加 `[syntax check: …]` 块后，集成测试 fixture 的 `write_result` 仍只含 `[wrote …]`——grounding `source_id` hash 不匹配，validator 以 "Claim 1 references unknown source_id" 拒答。fixture 改经 `post_write_report_async` 同一生产入口生成期望 detail（不硬编码块文本）。

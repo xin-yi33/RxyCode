@@ -15,6 +15,7 @@ import subprocess
 import time
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 
 def docker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -86,6 +87,34 @@ def ensure_container(container: str, port: int) -> None:
         time.sleep(1)
     logs = docker("logs", container)
     raise RuntimeError(logs.stderr or logs.stdout or "postgres did not become ready")
+
+
+def reset_schema(server_url: str, *, migrate: bool = False) -> None:
+    """Drop and recreate ``public``, optionally migrating to head.
+
+    The shared CI container can drop a connection mid-setup under xdist
+    load ("server closed the connection unexpectedly").  The whole block is
+    idempotent — schema reset and alembic both retry cleanly — so retry a
+    few times instead of failing the test on a transient blip.
+    """
+    last_exc: OperationalError | None = None
+    for attempt in range(4):
+        try:
+            engine = create_engine(server_url)
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+                conn.execute(text("CREATE SCHEMA public"))
+            engine.dispose()
+            if migrate:
+                from rxycode_server.persistence.migrate import upgrade_head
+
+                upgrade_head(server_url)
+            return
+        except OperationalError as exc:
+            last_exc = exc
+            time.sleep(0.5 * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 def worker_dbname() -> str:
