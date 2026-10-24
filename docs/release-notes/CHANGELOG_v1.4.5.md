@@ -355,6 +355,34 @@
   patch atomicity 全部保留；本次 observer/probe 在冲突 hunk 中叠加。合并后
   `test_persistent_shell_loops.py` + 本次 watchdog/P7/lost-evidence +
   acceptance 目标集 → **41 passed**。未覆盖 PR28 的 Linux 环境其它模块。
+- **发布记录（2026-10-24T14:26:44Z，产品版本不变）**：真实运行基线为
+  `web-584b8c28`。运行镜像的 `execution/tool_orchestrator.py` 旧 overlay
+  （`304bed64…`）经 AST 归因为四处旧实现：缺 `current_permission_mode`、
+  old computer-use import、DANGER→WRITE 降级审批、native-only full 路由。
+  候选以已测 master 的只升不降权限、显式 port native/CLI managed 语义逐 hunk
+  修正，并仅叠加 watchdog，不整文件覆盖其他模块。
+- Worker 候选 `rxycode-worker:watchdog-bd026-20261024-r4`，image ID
+  `sha256:dcbf7fe603f032450aac41327aa5ec8bfdbd5b3967c99c594b36c62de31927ef`，
+  FROM 实际 worker `web-584b8c28`；仅覆盖 9 个 watchdog/protocol/worker 文件。
+  Linux 候选容器（只读 test bundle，排除独立已验 Bun/Web reducer）
+  **63 passed / 1 deselected / 11.98s**，3 个 subprocess transport warning。
+- Web 候选由 Avicenna manifest/zip `824b55e7da29…` 构建，image
+  `rxycode-web:liveness-web-584b8c28-20261024`，image ID
+  `sha256:95104094d39151b45ec2dd2d3e40fa7b84931abd0ffd301e583dfc58204cdfcb`，
+  FROM 实际 `rxycode-web:web-584b8c28`。容器内 index/JS/CSS 分别为
+  `5ad75f23…` / `6426be0b…` / `5b37f9d0…`；公网 JS/CSS SHA 完全一致。
+  公网 `/` 与 `/app` 返回 200；HTML 经 Cloudflare 响应变换，raw hash 与容器
+  `index.html` 不同，不以容器 hash 冒充公网 HTML hash。
+- Cutover 只 recreate worker×3 + gateway；API 容器保持
+  `8ccbec3e703b` / `ca0cfed7…`。当前 worker 容器为
+  `1a7ab124e285,8d55f4bd7727,12a779ad3db4`，gateway 为 `c48fae757d55`；
+  worker/gateway/API 全 healthy，切换后 active runs=0。root-only rollback
+  备份与 image pointers 位于
+  `/opt/rxycode/backups/liveness-watchdog-20261024T142407Z`。
+- CI 实际状态：`web-ci` success；主 `CI` failure，失败 job 是 Linux backend
+  py3.11/py3.12。五红均为本次新增 `probe_callback/probe_offsets` 与旧
+  `test_full_auto_bash_format` fake 签名不兼容，业务层 13568 passed；
+  本文不宣称 CI 全绿。真实付费 provider smoke 未执行。
 
 ### Linux 后端层修复批 A：agent 工具派发与 web-DB 泄漏（2026-10-22）
 
