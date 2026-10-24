@@ -843,3 +843,8 @@
 - **w6_c03 外网导航 flake**：chromium `navigate_click` 返回 ok 但落地页为 `chrome-error://chromewebdata/` 时此前不重试——改为状态+落地页双重检查最多 3 次，`iana.org`/`example domain` 与密钥隔离断言不变。
 - 验证：`tests/test_execution` + `tests/test_core` 全套 **8365 passed**（Windows）；w6_c02 单测 2/2；跨 loop 回归 3/3；ruff 全过。Linux 句式分支由 CI 层验证。
 - **`test_agent_main_chain` fixture 失同步（master 预存回归）**：`_attach_diagnostics` 给写后证据 detail 追加 `[syntax check: …]` 块后，集成测试 fixture 的 `write_result` 仍只含 `[wrote …]`——grounding `source_id` hash 不匹配，validator 以 "Claim 1 references unknown source_id" 拒答。fixture 改经 `post_write_report_async` 同一生产入口生成期望 detail（不硬编码块文本）。
+
+### CI 测试夹具：W11 PostgreSQL host-TCP readiness（2026-10-24）
+
+- CI `40104203266` 的 py3.12 job 为 `13570 passed / 112 skipped / 3 errors`；3 个 setup error 均来自 W11 c08/c09 在 session PostgreSQL fixture 的 `127.0.0.1:55441` 首次 `worker_url()` 建连失败，py3.11 与其余 lane 通过。
+- `tests/support/pgurl.py` 移除 `ensure_container()` 的 Unix-socket `pg_isready` 成功快返回：socket ready 不能代替 host TCP readiness，统一复用既有 60 秒 bounded `SELECT 1` 循环。新增 `tests/unit/test_pgurl.py` 确定性覆盖“socket ready、host TCP 尚未可用”的交错，本地 `1 passed`；真实 PostgreSQL CI 待复跑，不宣称已证 OOM 或必然由 init 窗口引起。
