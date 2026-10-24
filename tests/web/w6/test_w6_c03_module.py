@@ -141,25 +141,27 @@ def test_w6_c03_integration() -> None:
         cookies = request_user_cookies(authorized=True, user_chrome_dir=user_chrome)
         assert cookies["shared"] is False
         assert secret.decode("ascii") not in str(cookies)
-        public = navigate_click(
-            session_id=str(agent["session_id"]),
-            url="https://example.com/",
-            selector="a",
-        )
-        if public["status"] != "ok":
-            # External navigation flake — ERR_NETWORK_*, slow first paint, or
-            # chromium's own chrome-error interrupt under load. A genuine
-            # product refusal would still reproduce on the retry, which keeps
-            # the assertion strict.
+        blob = ""
+        public = {"status": "not attempted"}
+        for _ in range(3):
+            # External navigation flake — ERR_NETWORK_*, slow first paint,
+            # or chromium landing on its own chrome-error page despite an
+            # "ok" status under load. A genuine product refusal reproduces
+            # on every retry, which keeps the assertion strict.
             public = navigate_click(
                 session_id=str(agent["session_id"]),
                 url="https://example.com/",
                 selector="a",
             )
+            if public["status"] != "ok":
+                continue
+            shot = snapshot(session_id=str(agent["session_id"]))
+            if shot["status"] != "ok":
+                continue
+            blob = (shot["dom"] + shot.get("title", "") + shot["url"]).lower()
+            if "chrome-error://" not in blob:
+                break
         assert public["status"] == "ok", public
-        shot = snapshot(session_id=str(agent["session_id"]))
-        assert shot["status"] == "ok"
-        blob = (shot["dom"] + shot.get("title", "") + shot["url"]).lower()
         assert "iana.org" in blob or "example domain" in blob
         assert secret.decode("ascii") not in blob
         assert secret_path.read_bytes() == secret

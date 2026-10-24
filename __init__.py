@@ -73,6 +73,21 @@ def _same_source(left: _types.ModuleType | None, right: _types.ModuleType | None
     return bool(left_file) and left_file == right_file
 
 
+def _modules_snapshot() -> list[tuple[str, _types.ModuleType]]:
+    """Materialise ``sys.modules.items()`` despite concurrent imports.
+
+    ``list()`` iterates the live view: another thread importing mid-copy
+    raises ``RuntimeError: dictionary changed size during iteration``.
+    Retry a few times — the copy is microseconds once it wins a quiet slice.
+    """
+    for _ in range(50):
+        try:
+            return list(_sys.modules.items())
+        except RuntimeError:
+            continue
+    return []
+
+
 def _apply_bare_alias(key: str, short: str, module: _types.ModuleType) -> None:
     parent_name, _, child = short.rpartition(".")
     parent = _sys.modules.get(parent_name)
@@ -126,7 +141,7 @@ def _remap_descendant_aliases(key: str, short: str, module: _types.ModuleType) -
         return
     short_prefix = f"{short}."
     key_prefix = f"{key}."
-    for name, child in list(_sys.modules.items()):
+    for name, child in _modules_snapshot():
         if name.startswith(short_prefix):
             rest = name[len(short_prefix) :]
         elif name.startswith(key_prefix):
@@ -205,7 +220,7 @@ def unify_bare_package_aliases(*, force: bool = False) -> None:
                 continue
             _apply_bare_alias(key, short, module)
     new_items: list[tuple[str, str, _types.ModuleType]] = []
-    for key, module in list(_sys.modules.items()):
+    for key, module in _modules_snapshot():
         if key in _mirrored_canonical or not key.startswith(prefix):
             continue
         short = key[len(prefix) :]

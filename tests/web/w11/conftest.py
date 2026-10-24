@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
 
 REPO = Path(__file__).resolve().parents[3]
 for _name in (
@@ -26,7 +25,12 @@ for _name in (
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from tests.support.pgurl import ensure_container, external_url, worker_url
+from tests.support.pgurl import (
+    ensure_container,
+    external_url,
+    reset_schema,
+    worker_url,
+)
 
 _CONTAINER = "rxy-w11-pg"
 _PORT = 55441
@@ -48,14 +52,7 @@ def _postgres_server() -> str:
 @pytest.fixture
 def postgres_url(_postgres_server: str, monkeypatch: pytest.MonkeyPatch):
     """Empty schema migrated to head, and a deterministic env."""
-    engine = create_engine(_postgres_server)
-    with engine.begin() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-    engine.dispose()
-    from rxycode_server.persistence.migrate import upgrade_head
-
-    upgrade_head(_postgres_server)
+    reset_schema(_postgres_server, migrate=True)
     monkeypatch.delenv("RXYCODE_WEB_REGISTRATION", raising=False)
     for name in (
         "RXYCODE_QUOTA_CONCURRENCY",

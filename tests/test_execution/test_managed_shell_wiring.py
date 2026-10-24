@@ -59,6 +59,19 @@ async def _clean():
 pytestmark = pytest.mark.asyncio
 
 
+def _print(text: str) -> str:
+    """Portable 'print one word' for the managed shell on this platform."""
+    return f"Write-Output '{text}'" if os.name == "nt" else f"echo '{text}'"
+
+
+def _set_var(name: str, value: str) -> str:
+    return f"${name} = '{value}'" if os.name == "nt" else f"{name}='{value}'"
+
+
+def _get_var(name: str) -> str:
+    return f"Write-Output ${name}" if os.name == "nt" else f"echo \"${name}\""
+
+
 def _orch() -> ToolOrchestrator:
     orch = ToolOrchestrator(tool_registry=default_registry)
     # Register the real bash tool so the real dispatch path runs.
@@ -73,7 +86,7 @@ class TestOrchestratorRoutesToManagedShell:
         orch = _orch()
         out = await orch.execute_tool(
             "bash",
-            {"command": "Write-Output wired", "description": "t",
+            {"command": _print("wired"), "description": "t",
              "workdir": "", "timeout": 60},
             config=_config(),
         )
@@ -83,13 +96,13 @@ class TestOrchestratorRoutesToManagedShell:
         # process-global registry that other tests may have touched.
         await orch.execute_tool(
             "bash",
-            {"command": "$wired_marker = 'kept'", "description": "t",
+            {"command": _set_var("wired_marker", "kept"), "description": "t",
              "workdir": "", "timeout": 60},
             config=_config(),
         )
         echo = await orch.execute_tool(
             "bash",
-            {"command": "Write-Output $wired_marker", "description": "t",
+            {"command": _get_var("wired_marker"), "description": "t",
              "workdir": "", "timeout": 60},
             config=_config(),
         )
@@ -100,13 +113,13 @@ class TestOrchestratorRoutesToManagedShell:
         cfg = _config()
         await orch.execute_tool(
             "bash",
-            {"command": "$wired_state = 'persisted'", "description": "t",
+            {"command": _set_var("wired_state", "persisted"), "description": "t",
              "workdir": "", "timeout": 60},
             config=cfg,
         )
         out = await orch.execute_tool(
             "bash",
-            {"command": "Write-Output $wired_state", "description": "t",
+            {"command": _get_var("wired_state"), "description": "t",
              "workdir": "", "timeout": 60},
             config=cfg,
         )

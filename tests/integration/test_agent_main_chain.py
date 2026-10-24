@@ -47,7 +47,15 @@ async def test_scripted_agent_runs_graph_tool_gate_and_validator(
     executor_result = (
         "The calculator artifact was written and is ready for validation."
     )
-    write_result = f"[wrote {len(expected)} bytes to {artifact}]"
+    # The recorded tool detail is what the real edit tool returns — success
+    # line plus the shared post-write diagnostics block.  Compute it through
+    # the same production entry point so the fixture stays aligned with the
+    # evidence contract (this is what ``_attach_diagnostics`` appends).
+    from RxyCode.RxyCode1_1_0.tools.write import post_write_report_async
+
+    write_result = f"[wrote {len(expected)} bytes to {artifact}]" + (
+        await post_write_report_async(artifact, expected, operation="write")
+    )
     open_result = f"[opened {artifact.resolve()}]"
     root = TaskNode(id=root_id, title="goal")
     leaf = TaskNode(

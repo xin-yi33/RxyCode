@@ -35,7 +35,9 @@ async def test_p1_exit_code_leaks_from_previous_command():
             first = await sh.run("cmd /c exit 7", timeout=30)
             second = await sh.run("Write-Output ok", timeout=30)
         else:
-            first = await sh.run("exit 7", timeout=30)
+            # Bare `exit 7` would kill the persistent shell itself; a
+            # subshell produces the failing rc while the shell lives on.
+            first = await sh.run("( exit 7 )", timeout=30)
             second = await sh.run("echo ok", timeout=30)
         leaked = second.exit_code not in (0,)
         show(
