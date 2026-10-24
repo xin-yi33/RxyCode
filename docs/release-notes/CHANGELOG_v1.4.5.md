@@ -27,12 +27,34 @@
   现在保留 tuple 兼容接口但显式记录 unavailable；慢 RPC 返回前后复核命令完成
   与当前 probe ownership，取消后的迟到结果不反馈、不判活。
 - Linux 同生产权限临时容器真实验证：注册后 exec 同 PID/starttime，父侧
-  sampler 两窗口 CPU 与 IO 均增长，one-shot 子树进程数 `1,1`、managed
-  持久 shell 子树 `2,2`，外部 decoy 未进入采样；managed 连续两条命令后同一
-  长命令两 checkpoint 均 `continue`，注册仅 1 次且窗口为 2 个。
+  sampler 两窗口 CPU 与 IO 均增长；one-shot 子树进程数 `1,1`，真实
+  `ToolOrchestrator -> bash -> _run_managed` 持久 shell 子树 `2,2`，
+  managed 连续命令后同一长命令两 checkpoint 的确定性 judge fixture 均返回
+  `continue`，只验证调用接线，注册仅 1 次且窗口为 2 个；这不是真实 owner
+  BYOK LLM 验收，本批没有付费模型调用。最终复合脚本未再次放外部 decoy；
+  独立同 flags decoy preflight 已验证 `decoy_in_sampler=false`，两种证据不混写。
 - 包装冷启动中位增量 `24.38 ms`（直接 `/bin/true` `1.21 ms`，注册包装后
   `25.58 ms`，n=12）；warm managed 命令不重复启动注册 Python。未部署、
   未普通 push、未改 P6/judge 15 秒/预算/续期/权限/DB/journal/schema/UI。
+- Stage C 在最终提交 `1cd6b4a2` 上重跑 execution/persistent-shell/liveness/
+  projection 定向面：`302 passed, 2 skipped`，耗时 67.83 秒；Ruff 绿，
+  lazy-import `180/181`，`git diff --check` 通过。跳过项仅 Windows 下
+  POSIX-only exec/helper 用例。
+- 独立 Quality 的 fresh Linux 验收通过：kernel `SO_PEERCRED` 两项 2 passed；
+  one-shot 子树进程数 `1,1`，CPU `51.5/51.1`，IO `2,916,352→5,799,936`，
+  decoy 未入采样；managed 同 PID、状态保持、进程数 `2,2`，CPU `98.2/97.7`，
+  IO `5,406,720→17,399,808`，注册 1、窗口 2。原始
+  `retained_after_first=false` 来自检查表达式包含 `not registry._windows`
+  与异步 cancel 的竞态，不是 registration loss；单次注册实际支撑第二窗口。
+  该证据保存在私有 `quality-linux-fresh-20261025.json`。
+- 阶段 B 候选 `rxycode-worker:process-bridge-1cd6b4a2-20261025` 为
+  `sha256:7b8531e37f3b3a6f982b33895d1377ce552149bb78e52bf9d5d0e19cd31fd7d1`，
+  parent 严格为 `sha256:26136a00…108aa550`，实际 RootFS `50→51`，仅新增
+  一层 `sha256:6a213300e043dee826608a9c59c3115535ebb7b9a1663a9152fe39c43f66d7ab`，
+  7 个产品文件 SHA-256 与 `1cd6b4a2` 一致；候选未替换生产。原始复合
+  runner/result/candidate manifest 保存在任务私有 evidence 目录，不作为
+  repo fixture 路径宣称。确定性 judge fixture 不是真实 owner BYOK LLM
+  验收；本批无付费模型调用，15 秒和全部时钟未改。
 
 ### 思考过程与 BYOK 额度（2026-10-22 已部署）
 
@@ -879,7 +901,7 @@
 - 正常网页 ALTCHA 显示验证通过后，仅用用户截图确认的本人账号提交一次密码登录：`POST /api/v1/auth/login` 200，`GET /api/v1/me` 200、身份匹配、角色 `owner`，无额外 MFA。没有伪造 cookie、重置密码、修改权限或读取平台模型密钥；用户自己的公开模型目录只有一个可用 BYOK 模型，本次显式选择 `opencode-go / deepseek-flash`，run 快照确认 `credential_source=byok`。这证明正常鉴权与真实 Provider 调用已走通，不代表已完成活性判定。
 - 唯一正式诊断 run 于 `2026-10-24T15:33:41Z` 提交（任务接口 202），使用新建独立诊断项目、`confirm` 权限；请求仅执行一次 Python 打印开始标记、睡眠 225 秒、打印结束标记的命令，显式请求工具 timeout 300。未加速生产 180/300/600 检查点，未更改 observer、预算、续期 ledger、权限、沙箱或已上线镜像。
 - **验收阻塞，不能计为 PASS**：命令在执行前被工作流合同门拒绝，真实 SSE seq 42/44 包含 `bash was not executed`、`current contract is read_only` 与 `Upgrade was refused: dif…`。状态文本在此截断；模型最终解释称 difficulty 解析失败，但不能据模型解释替代完整错误回执。59 个唯一 SSE 事件中，`tool.started`、审批请求和 `process.liveness` 均为 0；没有进程开始/结束标记或退出码，因此默认 180 秒检查点、真实 5 秒 CPU/IO 观察、owner LLM 的 continue/stop/unknown 判定以及低 CPU 睡眠正常结束仍全部 **未验证**，没有静默重试第二条正式任务。
-- 完成口径：正常 Web 会话确实收到了 SSE，最终 seq 52 为 `[evidence failed: requested side effect has no verified WRITE/DANGER tool execution]`；API 终态及 UI 标签却为 `succeeded` / 已完成。该终态不能作为进程运行成功的证明。安全证据保存在 `tests/fixtures/process_liveness/provider225-20261024-blocked.json`，不含密码、cookie、API key 或其它用户任务内容。
+- 完成口径：正常 Web 会话确实收到了 SSE，最终 seq 52 为 `[evidence failed: requested side effect has no verified WRITE/DANGER tool execution]`；API 终态及 UI 标签却为 `succeeded` / 已完成。该终态不能作为进程运行成功的证明。历史阻塞 run 的脱敏证据保留在任务私有 evidence 归档，不再指向不存在的 repo fixture 路径；私有归档不含密码、cookie、API key 或其它用户任务内容。
 - 清理与边界：仅将本次自建 session 经正常 archive API 归档（200，暂停定时任务数 0）；诊断项目与归档 trace 保留供定位，没有触碰用户其它会话/文件。未依赖用户删除中的 staging 目录，未安装依赖、部署或修改生产代码。本条为真实执行记录及失败边界，不是一次新的业务镜像发布。
 
 ### Session 终态真值修复与第二次真实合同门复验（2026-10-25）
