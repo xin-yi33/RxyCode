@@ -225,16 +225,15 @@ export function ModelPicker({
         disabled={disabled}
         onClick={onTriggerClick}
         className={
-          "flex max-w-[11rem] items-center gap-1.5 rounded-full border " +
-          "border-border bg-transparent px-3 py-1.5 text-xs text-muted-ink " +
-          "outline-none hover:bg-sidebar disabled:opacity-60 sm:max-w-[15rem]"
+          "rxy-ghost-control flex max-w-[11rem] items-center gap-1.5 rounded-full " +
+          "px-3 py-1.5 text-xs text-muted-ink disabled:opacity-60 sm:max-w-[15rem]"
         }
       >
         {authStatus === "authed" && catalog.isPending ? (
-          <IconSpinner size={12} />
+          <IconSpinner size={12} className="rxy-icon-inline" />
         ) : null}
-        <span className="min-w-0 truncate">{label}</span>
-        <IconChevronDown size={12} className="shrink-0" />
+        <span className="rxy-weight-medium min-w-0 truncate">{label}</span>
+        <IconChevronDown size={12} className="rxy-icon-inline shrink-0" />
       </button>
       {open ? (
         <div
@@ -343,7 +342,7 @@ export function ModelPicker({
                           <span className="w-3.5 shrink-0 text-foreground">
                             {isSelected ? <IconCheck size={12} /> : null}
                           </span>
-                          <span className="min-w-0 flex-1 truncate">
+                          <span className="rxy-weight-medium min-w-0 flex-1 truncate">
                             {m.display_name || m.model_id}
                           </span>
                           {m.model_ref === defaultRef ? (

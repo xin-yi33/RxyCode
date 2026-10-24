@@ -1,5 +1,6 @@
 import { useState } from "react"
 
+import { Collapse } from "../../components/Collapse"
 import { IconCheck, IconClose, IconSpinner } from "../../components/icons"
 import type { TimelineItem } from "../runs/eventReducer"
 
@@ -39,6 +40,7 @@ function DetailSection({ label, text }: { label: string; text: string }) {
 
 // 紧凑工具卡：工具名 chip + 标题 + 状态图标（spinner→对勾/叉）。点击展开
 // 参数/结果详情；运行中默认展开，终态默认折叠（点过之后以用户为准）。
+// 展开体用共享 Collapse：关闭时保持挂载（流式结果不丢）且不可聚焦。
 export function ToolRow({ item }: { item: ToolItem }) {
   const [open, setOpen] = useState<boolean | null>(null)
   const isOpen = open ?? item.status === "running"
@@ -82,7 +84,7 @@ export function ToolRow({ item }: { item: ToolItem }) {
           ) : null}
         </span>
       </button>
-      {isOpen ? (
+      <Collapse open={isOpen}>
         <div className="pb-1">
           {item.args ? <DetailSection label="参数" text={item.args} /> : null}
           {item.result ? (
@@ -94,7 +96,7 @@ export function ToolRow({ item }: { item: ToolItem }) {
             <p className="px-1 pb-0.5 text-[11px] text-muted">等待工具返回…</p>
           ) : null}
         </div>
-      ) : null}
+      </Collapse>
     </div>
   )
 }

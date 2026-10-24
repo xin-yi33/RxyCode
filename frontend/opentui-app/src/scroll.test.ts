@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CustomSpeedScroll, SCROLLBAR_TRACK, createScrollAcceleration } from "./scroll.ts";
+import { SURFACES, isPureBlack } from "./theme.ts";
 
 describe("scroll OpenCode parity", () => {
   test("CustomSpeedScroll returns fixed speed", () => {
@@ -16,7 +17,9 @@ describe("scroll OpenCode parity", () => {
 
   test("scrollbar track is muted gray (not brand pink)", () => {
     expect(SCROLLBAR_TRACK.foregroundColor).toBe("#555555");
-    expect(SCROLLBAR_TRACK.backgroundColor).toBe("#111111");
+    // 2026-10-24 UI polish: track comes from the surface token (near-black, not #000).
+    expect(SCROLLBAR_TRACK.backgroundColor).toBe(SURFACES.track);
+    expect(isPureBlack(SCROLLBAR_TRACK.backgroundColor)).toBe(false);
     expect(SCROLLBAR_TRACK.foregroundColor).not.toBe("#FF69B4");
   });
 });

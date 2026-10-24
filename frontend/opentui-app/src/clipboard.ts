@@ -8,6 +8,7 @@ import {
   validateClipboardAttachments,
   type ClipboardAttachment,
 } from "./clipboardAttachments.ts";
+import { middleEllipsisFileName } from "./lib/fileName.ts";
 
 export type { ClipboardAttachment };
 export {
@@ -298,8 +299,20 @@ export async function captureClipboard(signal?: AbortSignal): Promise<ClipboardC
   }
 }
 
-export function formatAttachmentLabels(attachments: readonly ClipboardAttachment[]): string[] {
-  return attachments.map((attachment, index) =>
-    `${index + 1}. ${getAttachmentName(attachment)} · ${getAttachmentKind(attachment)}`,
-  );
+/** Display cells reserved for one attachment name before the middle ellipsis. */
+export const ATTACHMENT_LABEL_NAME_WIDTH = 26;
+
+/**
+ * Composer attachment chips. Long names are split with a middle ellipsis that
+ * keeps the extension (incl. compound suffixes like .tar.gz) — an end
+ * truncation would hide the suffix and make attachments indistinguishable.
+ */
+export function formatAttachmentLabels(
+  attachments: readonly ClipboardAttachment[],
+  nameWidth = ATTACHMENT_LABEL_NAME_WIDTH,
+): string[] {
+  return attachments.map((attachment, index) => {
+    const name = middleEllipsisFileName(getAttachmentName(attachment), nameWidth);
+    return `${index + 1}. ${name} · ${getAttachmentKind(attachment)}`;
+  });
 }

@@ -237,6 +237,7 @@ export function DialogSessionList({
       currentId={highlightId || undefined}
       footerHint={busy}
       footerHintItems={SESSION_LIST_FOOTER_ITEMS}
+      footerAlign="end"
       onClose={onClose}
       onSelect={(opt) => {
         void (async () => {

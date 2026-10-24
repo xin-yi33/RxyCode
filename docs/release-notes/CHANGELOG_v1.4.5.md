@@ -430,3 +430,40 @@
 
 **涉及文件**：`apps/web/src/components/FileTypeIcon.tsx`（新）、`apps/web/src/components/FileName.tsx`、`apps/web/src/features/runs/ArtifactRows.tsx`。
 - **PR #25 CI flake 追加修复**：`w9_b1_rate_limit` 注册块硬编码 `same@example.com` 撞共享 worker DB 残留账号 → EMAIL_TAKEN(409) 先于限流分支返回，改用 `uuid` 唯一邮箱；`w6_c03` 外网导航重试放宽到任意非 ok（chrome-error 打断类）；`w3_c01` `_source_digest` 从 `rglob` 改 `os.walk` 目录级 prune——rglob 会 scandir 下沉进兄弟 worker 正 rmtree 的 `dist-gwN`。
+
+
+## RxyCode Web：聊天前端打磨（UI-01～UI-09，2026-10-24）
+
+### 表面、字体与输入（UI-01/02/03）
+- **UI-01 表面层次**：基础色板保持既有 `--rxy-*` 与同步的 `--rxy-*-rgb`（新增配色必须成对出现）；输入区收成**单层外壳**——`border:0` + `inset 0 0 0 1px var(--rxy-border)`，`:focus-within` 叠 `inset 1px + 0 0 0 3px rgba(--rxy-running-rgb,.18)`（`:has(textarea:focus-visible)` 加强，旧引擎回退不改变几何）；内部权限/模型/附件/发送改为无边框 ghost（hover/focus 用底色 + inset 环，不增加独立描边），hover/focus 几何变化 0px；只有真正嵌套的附件 chip 用 `--rxy-composer-radius - --rxy-composer-gap`（16−8=8px）；暗色底保持既有 `#212121`（非纯黑，`--rxy-bg-rgb 33,33,33` 同步，c08 回归断言依赖）。
+- **UI-02 暗色字重/数字/图标**：新增 `--weight-body/medium/strong`（亮 400/500/600，暗 350/450/550），只落在真实文字元素（body/h1-h4/strong/label），不用 `.dark *` 抹层级；`.rxy-tabular-nums` 用于耗时/大小/计数/额度（连续 111→888 与 9→10→100 无横向抖动）；`.rxy-icon-inline` 统一行内图标基线。仓库无 @font-face（系统栈），`document.fonts.check` 通过；静态字体上中间字重按最近面渲染，变量字体上精确。
+- **UI-03 中文输入**：Composer 增加 `composingRef` + `compositionEndedAt`，拦截 `native.isComposing`/`keyCode 229`，compositionend 后 500ms 内的 Enter 不提交（`<500` 阻止、`≥500` 放行）；`event.repeat`、`dialog[open]` 保护；Shift+Enter 换行；`submit()` 语义未动。另加**同步 in-flight 闸门**（`submitInFlightRef`，进入即占用、finally 释放）：同一任务内两次 Enter 只产生 1 个 task POST/1 个 request_id，正常按钮/等待结束后发送不受阻。
+
+### 滚动、流式与折叠（UI-04/05/06/07）
+- **UI-04 单一滚动控制器**：`features/timeline/useChatScrollController.ts` 成为唯一写 `scrollTop` 的地方（SessionPage 只保留一个 `data-testid=chat-scroll`）：`distanceToBottom ≤ 40` 才跟随、`> 120` 显示 `chat-jump-to-latest`；用户上滚立即暂停，程序滚动用 `expectedTop` 标记永不算用户滚动；点击回到底部恢复跟随；历史加载用元素锚点补偿异步回放增长（实测漂移 0px ≤2px）；多 Run/图片/折叠共享同一状态，旧会话迟到事件不串台。
+- **UI-05 流式逐字动效**：新增 `components/streamReveal.ts`（grapheme 安全切分、URL 区间跳过）+ `features/timeline/timeline.css` 的 `.rxy-stream-glyph`（`stream-reveal` 90ms `cubic-bezier(.215,.61,.355,1) both`，相邻 30ms 错峰、最多 15 步）：只动画**新到达**的正文；历史/代码/链接不重播；动画结束 spans 回归纯文本（不长期堆积）；`prefers-reduced-motion`/.reduced-motion 直接纯文本；final 替换文本不丢不重；SSE 消费不等待动画（真实 CSSAnimation 对象采样验证，非假时钟）。
+- **UI-06 平滑折叠**：新增共享 `components/Collapse.tsx`（`.rxy-collapse` 0fr→1fr 180ms；`.rxy-collapse-inner{min-height:0;overflow:hidden}`），ThinkingBlock/TasksBlock/ToolRow 统一使用；内容常驻不卸载、收起时 `inert`+`aria-hidden` 不可 Tab、无残留 padding、快速反向得到正确终态、减弱动效瞬时。
+- **UI-07 统一复制反馈**：新增 `components/CopyButton.tsx` + `lib/useCopyFeedback.ts` + `lib/clipboard.ts`：真实剪贴板布尔（Clipboard API 失败回退 `execCommand` 且校验返回值），成功显示对勾 2500ms 后 300ms 淡出恢复，重复复制重置计时，失败显示“复制失败”不装成功，固定图标占位不改变按钮几何，卸载清理计时器；Markdown 代码块与 ConsolePanel 旧 1.5s 本地实现全部删除并接入。
+
+### 预览分栏与文件名（UI-08/09）
+- **UI-08 可拖拽分栏**：`features/preview/split.ts`（SplitState、`SPRING.rigid{1200,80,1}`/`confirm{380,18,1}` 的真实 rAF 积分器、82% 严格阈值、双精度安全 clamp/snap）+ `SplitWorkspace.tsx`（`data-testid=chat-preview-split/chat-preview-handle`，pointer capture + 拖拽时透明遮罩覆盖 iframe，`DragSnapshot{leftRatio,previewOpen,pointerId}`；Esc 恢复拖动前快照且**不额外关闭**预览；双击/重置按钮用 rigid 回 50/50（1px 内）；键盘方向键用 confirm；`>82%` 收起、pointercancel/blur 回退；≤767px 全屏覆盖模式、不强制分栏；iframe `sandbox="allow-scripts"` + `no-referrer` 保留；未打开预览时完全透明布局，页面与改造前一致）；SessionPage 仅做最小包裹，`max-w-3xl` 移入内容区，`chat-scroll`/jump/composer 结构不变。
+- **UI-09 长文件名**：`components/FileName.tsx` 中间省略 + 复合后缀（.tar.gz/.min.js/.d.ts）独立保留 + `title`/`aria-label` 完整名 + 可压缩头部；Composer 附件 chip、ArtifactRows、SessionFiles、预览标题全部接入；下载名与真实文件名不变（提交 `d65f5f5d` 的 FileTypeIcon/产物分区由并行工作一并保留）。
+
+### 测试与本地验收
+- 新增 `tests/web/w3/_chat_case.py`：**一份**共享 fixture（只启动一次 production vite build+vite preview、可控 `ChatApi`/`EventSource` 确定性 stub、暂停时钟、chromium/firefox/webkit 引擎 fixtures、移动/桌面视口与几何/颜色探针），四个文件不再复制服务器启动代码。
+- 新增 `test_chat_interaction_contracts.py`（32 passed：IME 全表 499/500/501 + isComposing/229/repeat/dialog/Shift+Enter、双击只 1 POST、滚动 39/40/41 与 119/120/121、上滚暂停、jump、多 Run 单活动、切换会话迟到事件、Collapse 正反向/inert/减弱动效、复制 2499/2500/重启/拒绝、跨引擎子集）、`test_chat_visual_contracts.py`（17 passed：明暗 token↔rgb、主题切换/刷新/SPA、composer border0+inset 环+焦点几何 ≤1px、长文件名复合后缀无溢出 320/375/768/1440、暗色字重 computed+fonts.check、tabular-nums 稳定性、真实 Animation 对象采样、减弱动效纯文本、历史零 glyph、预览 81.9/82/82.1+Esc+dblclick+pointercancel+移动覆盖）、`test_chat_composite_e2e.py`（W01 输入→IME 安全发送→单 POST→流式回答；W02 历史滚动暂停→jump→折叠；W03 暗色→长文件名→预览拖拽/Esc）。
+- 最终：`python -m pytest tests/web/w3/test_chat_interaction_contracts.py tests/web/w3/test_chat_visual_contracts.py tests/web/w3/test_chat_composite_e2e.py -q` → **52 passed, 2 skipped, 0 failed, 0 xfailed（110.63s）**；既有 `test_w3_c03_unit.py` 5 passed、`test_w3_question_card.py` 5 passed、`test_mobile_browser_ui.py`/`test_w10/test_composer_model_lifecycle.py` 3 passed、`test_w3_c08` 目标用例 passed；跨引擎关键子集 chromium/firefox/webkit **各 6 passed, 0 failed**（Firefox/WebKit 引擎本轮已安装验证）；`npm --prefix apps/web run typecheck` 与 `run build` 均 exit 0。
+- **诚实未跑（不计通过）**：真实云端链路（部署后由本轮部署验收单独执行并记入 OPS-LOG）；vivo 内置浏览器与 iPhone Safari **真机不可由本机驱动**，Playwright chromium/firefox/webkit 不是替代品 —— 明确记为 NOT RUN。
+- 部署：待本轮部署完成后补记（镜像 tag / 版本 / 真机验收结果）。
+
+**涉及文件（Web）**：`apps/web/src/styles/globals.css`、`components/ui/button.tsx`、`features/console/{Composer,ConsolePanel,ModelPicker,SessionFiles,SessionPage}.tsx`、`features/preview/{PreviewDrawer,SplitWorkspace,split}.tsx/ts`、`features/timeline/{Timeline,ThinkingBlock,TasksBlock,ToolRow,useChatScrollController,timeline.css}`、`components/{Markdown,Collapse,CopyButton,streamReveal}.tsx/ts`、`lib/{clipboard,useCopyFeedback}.ts`、`tests/web/w3/{_chat_case,test_chat_interaction_contracts,test_chat_visual_contracts,test_chat_composite_e2e}.py`。
+
+## RxyCode CLI（OpenTUI）：聊天界面打磨（2026-10-24）
+
+- **表面层次**：`theme.ts` 新增 `SURFACES` 近黑 token（`#0f1115` 家族：app/surface0/surface1/userBubble/field/track）并接入真实渲染路径——应用背景、面板/对话框、logo 字段、滚动条轨道不再出现纯黑；提供 `isPureBlack`/`relativeLuminance` 供测试断言；输入区为单层 `C.field` 外壳，char-cell 级边缘对齐。
+- **数字列对齐**：新增 `lib/displayColumns.ts`（CJK/emoji 感知的显示列宽、pad/truncate/align，duration/bytes/rate/quota/budget/count 单元格式化）接入状态栏、ToolCard 名称/状态/耗时列与 +N/-N 计数、todo dock 计数、会话列表时间列右对齐——同位数变化不再横向抖动。
+- **复制反馈**：新增 `lib/copyFeedback.ts`（`COPY_FEEDBACK_MS=2500` 单窗口、可注入延迟、计时器清理、诚实失败文案），App 复制提示 2.5s 恢复；OSC52 写入抛错时显示失败而非假成功。
+- **长文件名**：新增 `lib/fileName.ts`（复合后缀 .tar.gz/.min.js/.d.ts/dotfile 保留、CJK 显示列宽、中间省略），接入附件 chip、用户气泡附件行、工具卡文件行。
+- **测试**：`bun test` → **422 pass / 0 fail / 1677 expect（76 文件，39.26s；新增 25 条 uiPolish 测试）**；`bunx tsc --noEmit` exit 0；`node e2e/ui-polish-verify.mjs` → **27/27 PASS**（真实默认 CLI 经 node-pty/ConPTY 启动 + 本地确定性 HTTP stub：中文输入、两轮 exactly-once 无重复发送、真实鼠标展开/收起 Tool 与 Thought、滚轮看历史再回最新、OSC52 复制载荷解码 + 2500ms 恢复、宽/中/窄 resize 保持单层外壳与焦点、Ctrl+C 二次退出、无残留 bun 进程）。
+- **诚实边界**：Node 24 + ConPTY 下 node-pty 不投递 `onExit`，退出**码**不可验，已验 OS 进程消失/光标恢复/无残留；复制失败路径由 bun 测试覆盖（PTY 只证明真实 OSC52 载荷与计时）；e2e 回复来自本地确定性 stub，transport/renderer/按键处理为真实路径。TUI 无 artifact/session-file 面板，文件名拆分用于所有真实附件/文件行。
+- **涉及文件（CLI）**：`frontend/opentui-app/src/{theme,App,statusBar,ToolCard,todoDock,brand,scroll,clipboard}.ts(x)`、`dialog/*.tsx`、`lib/{displayColumns,fileName,copyFeedback}.ts`、`uiPolish.test.tsx`、`e2e/ui-polish-verify.mjs`、`statusBar.test.ts`/`brand.test.ts`/`scroll.test.ts`（仅同步新 token/列宽期望）。
