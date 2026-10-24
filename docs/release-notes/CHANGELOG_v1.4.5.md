@@ -596,3 +596,12 @@
 **改法（20 处）**：合并 `governance` 已加载的 policy 导入；`post_write_diagnostics` 以 settings 模块别名保留运行时 `load_config` mock；`persistent_shell` 上移 `base64`/`subprocess`、`sandbox.manager` 模块别名和纯数据 `JobPlan`，并以单一专用 helper 保留可选 `psutil` 懒加载；`subagents/runtime` 上移 `asyncio`/`inspect`/`time` 并合并已有 `session_runtime` try/except 导入布局；`tool_orchestrator` 改用 settings 模块别名；`cache_policy` 上移 `hashlib`/`json`/`time`；`bridge/acp` 合并两处 `subprocess`；`agents/coordinator` 合并重复 `logging` 导入。`session_runtime → persistent_shell`、`AgentV2`、appserver delegate state、Windows `windll` 与每命令 sandbox manager 调用接缝均保持懒加载/可替换。
 
 **验证**：同正则 `lazy_import_total=180 budget=181`；P7/fast boundary/startup **8 passed**；目录/session/子代理上下文 **75 passed**；受影响模块目标回归 **218 passed**；父代理指出的 Job ownership 两项复审后 **2 passed**；诊断/3–6 轮审计 **178 passed / 2 skipped**（仅缺本机 eslint/tsc）。独立首次 183 项中曾出现的两项 manager 注入退化已由模块别名修复，未修改对应测试或预算。产品版本仍为 1.4.4。
+
+## 2026-10-24 · W8 真实 Postgres 审批恢复复合链
+
+新增 `tests/web/w8/test_w8_real_approval_roundtrip.py`，在隔离 Postgres 审批库上验证两条生产链：
+
+- 批准：`HarnessPaused` checkpoint → Postgres approval decision → production parent handlers/claim → 真实 `edit` 写入 → `RemoteJournalAdapter` 记录 completed → 同一 `AgentV2` 注入真实 tool result 后继续 `read` 并产出 final；随后删除目标文件并重复 resume，completed journal 不再执行写操作。
+- 拒绝：decision 将 run 置为 cancelled，resume 不返回 record，目标文件与 `att_*.json` journal 均不存在。
+
+**边界**：只模型 stream 与 `_CtlApproval` 的 AF_UNIX worker channel hop 被脚本化/进程内 `_PostgresChannel` 替代；审批 service、production parent control handlers、真实 tool、journal 和 AgentV2 恢复均走生产实现。测试不启动浏览器、不访问公网；fixture 使用 `isolated_runtime`，并显式关闭 `execution.build_workflow.enabled`。质量子代理独立实测本文件 **2 passed**，邻近 pause 单测 **3 passed**。
