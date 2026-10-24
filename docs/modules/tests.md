@@ -232,6 +232,7 @@ leak。它只衡量 RxyCode 内部适配器，不能写成真实模型或 OpenCo
 ## 编写规则
 
 - 优先使用事件、barrier、端口探测和明确的进程退出通知，不用固定长时间 `sleep` 证明并发或启动完成。
+- PostgreSQL 测试容器只把 `pg_isready` 当启动提示；Unix socket 探针成功不能跳过 host TCP 的真实 `SELECT 1`。`tests/unit/test_pgurl.py` 固定了“socket ready、TCP 尚未可用”的交错，统一 helper 必须留在现有 60 秒 bounded readiness loop 内等待。
 - pytest session 把 HOME 与 data/config 放入独立根目录；`isolated_runtime` 进一步隔离 CWD 和 cache。autouse fixture 在每个测试前后清理并恢复 approval broker、audit logger、token stats、run monitor 和 tracer。
 - 网络、模型、时间、ID、token/cost 等不确定数据必须脚本化或规范化。
 - 测试应断言外部行为和协议顺序；不得通过弱化断言、无理由 `skip/xfail` 或吞掉异常制造绿色结果。

@@ -38,9 +38,6 @@ def external_url() -> str | None:
 def ensure_container(container: str, port: int) -> None:
     if external_url():
         return
-    ready = docker("exec", container, "pg_isready", "-U", "postgres", "-d", "rxycode")
-    if ready.returncode == 0:
-        return
     exists = docker("inspect", container)
     if exists.returncode == 0:
         started = docker("start", container)
