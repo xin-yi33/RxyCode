@@ -35,7 +35,7 @@ function Row({
         width: "100%",
         height: 1,
         flexShrink: 0,
-        backgroundColor: bg || C.panel,
+        backgroundColor: bg || C.bg,
       }}
       onMouseDown={onMouseDown}
       onMouseOver={onMouseOver}
@@ -121,7 +121,7 @@ export function Modal({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.panel,
+        backgroundColor: C.bg,
       }}
       onMouseScroll={onScroll}
     >

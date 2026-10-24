@@ -1,5 +1,4 @@
 import { NO_MODEL_WELCOME_HINT } from "./modelSetup.ts";
-import { SURFACES } from "./theme.ts";
 
 /**
  * Classic RxyCode branding — colors frozen to original Ink screenshot:
@@ -23,8 +22,7 @@ export const WORDMARK_UNICODE = WORDMARK;
 export const LOGO_INK_TOP = "#FFB6C1";
 /** Original Ink hot pink (capabilities / build / logo body). */
 export const LOGO_INK_BODY = "#FF69B4";
-/** Same near-black token as the app canvas — never pure #000 (base surface rule). */
-export const LOGO_FIELD_BG = SURFACES.app;
+export const LOGO_FIELD_BG = "#000000";
 
 export const BRAND_LIGHT = LOGO_INK_TOP;
 export const BRAND_HOT = LOGO_INK_BODY;

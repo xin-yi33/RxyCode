@@ -204,7 +204,7 @@ export function DialogDoc({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.panel,
+        backgroundColor: C.bg,
       }}
     >
       <box style={{ flexDirection: "row", width: "100%", height: 1, flexShrink: 0 }}>
@@ -228,10 +228,10 @@ export function DialogDoc({
             height: viewport,
             maxHeight: viewport,
             border: false,
-            backgroundColor: C.panel,
+            backgroundColor: C.bg,
           },
-          viewportOptions: { flexGrow: 1, backgroundColor: C.panel },
-          contentOptions: { backgroundColor: C.panel },
+          viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
+          contentOptions: { backgroundColor: C.bg },
           verticalScrollbarOptions: {
             showArrows: false,
             trackOptions: {

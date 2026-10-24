@@ -16,11 +16,8 @@ describe("status bar formatting", () => {
       modeColor: "#FF69B4",
     });
     expect(text).toContain("online");
-    // 2026-10-24 UI polish: numeric cells are display-column aligned. The
-    // context quota uses fixed 5-cell used/max columns, the cache size a
-    // 6-cell column — values stop jittering the whole status bar.
-    expect(text).toContain("上下文: 1.2k/ 256k");
-    expect(text).toContain("缓存:  12KB/33.0%");
+    expect(text).toContain("上下文:1.2k/256k");
+    expect(text).toContain("缓存:12KB/33.0%");
     expect(text).toContain("Build");
     expect(text).toContain("思考:关");
   });

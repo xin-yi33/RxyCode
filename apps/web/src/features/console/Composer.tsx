@@ -10,8 +10,6 @@ import { Link, useLocation, useNavigate } from "react-router"
 import { useQueryClient } from "@tanstack/react-query"
 
 import { IconClose, IconSend, IconSpinner, IconStop } from "../../components/icons"
-import { FileName } from "../../components/FileName"
-import { Button } from "../../components/ui/button"
 import {
   ApiError,
   createClient,
@@ -29,9 +27,6 @@ import { isActiveRunStatus } from "../runs/status"
 import { ModelPicker } from "./ModelPicker"
 
 const api = createClient()
-
-// UI-03：compositionend 之后这段时间内的 Enter 仍可能来自一次输入法确认。
-const IME_ENTER_GRACE_MS = 500
 
 type ComposerProps = {
   // null = /app new-task flow (POST /tasks creates the session).
@@ -74,7 +69,6 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const draft = useUi((state) => state.drafts[draftKey])
   const patchDraft = useUi((state) => state.patchDraft)
   const clearDraft = useUi((state) => state.clearDraft)
-  const inheritModelRefIfUnset = useUi((state) => state.inheritModelRefIfUnset)
   const pendingIntent = useUi((state) => state.pendingIntent)
   const setPendingIntent = useUi((state) => state.setPendingIntent)
   const auth = useAuth()
@@ -98,8 +92,6 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const [files, setFiles] = useState<PendingFile[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState("")
-  const [errorCode, setErrorCode] = useState<string | null>(null)
-  const [errorModelRef, setErrorModelRef] = useState<string | null>(null)
   const [errorLink, setErrorLink] = useState<{ to: string; label: string } | null>(null)
   // "send" | "model" —— 同一个登录提示层，措辞随触发点不同。
   const [loginPrompt, setLoginPrompt] = useState<"send" | "model" | null>(null)
@@ -107,23 +99,8 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const [modelHint, setModelHint] = useState("")
   const modelHintTimer = useRef(0)
   const areaRef = useRef<HTMLTextAreaElement>(null)
-  // UI-03：输入法（中文/日文等组合输入）守卫。
-  // composition 期间的 Enter 是“确认候选”，不是发送；部分输入法会在
-  // compositionend 之后才补发这次 Enter，所以再留一个 500ms 宽限窗口。
-  const composingRef = useRef(false)
-  const compositionEndedAt = useRef(Number.NEGATIVE_INFINITY)
-  // 一次合法发送只允许一个任务请求：React 的 sending state 要到下一次渲染
-  // 才生效，同一个 task 里连发的第二个 Enter/点击仍会看到 sending=false。
-  // 同步 ref 在 submit() 入口、任何 await 之前占位，请求结算后释放。
-  const submitInFlightRef = useRef(false)
 
   const showModelHint = (label: string) => {
-    if (errorCode === "BYOK_REQUIRED" && errorModelRef == null) {
-      setError("")
-      setErrorLink(null)
-      setErrorCode(null)
-      setErrorModelRef(null)
-    }
     setModelHint(`已切换模型为 ${label}，下次任务生效`)
     window.clearTimeout(modelHintTimer.current)
     modelHintTimer.current = window.setTimeout(() => setModelHint(""), 4000)
@@ -151,16 +128,9 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     area.style.height = `${Math.min(area.scrollHeight, 200)}px`
   }, [text])
 
-  const fail = (
-    message: string,
-    link: { to: string; label: string } | null = null,
-    code: string | null = null,
-    failedModelRef: string | null = null,
-  ) => {
+  const fail = (message: string, link: { to: string; label: string } | null = null) => {
     setError(message)
     setErrorLink(link)
-    setErrorCode(code)
-    setErrorModelRef(failedModelRef)
   }
 
   // ---- 附件（API-FILE-*）：卡片先在本地出现，暂存/上传/绑定的每一步都可观测。
@@ -266,8 +236,6 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
   const update = (nextText: string) => {
     setError("")
     setErrorLink(null)
-    setErrorCode(null)
-    setErrorModelRef(null)
     patchDraft(draftKey, {
       text: nextText,
       // Editing the text after a failed send invalidates the old request_id;
@@ -276,7 +244,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     })
   }
 
-  const submitOnce = async () => {
+  const submit = async () => {
     const message = text.trim()
     if (sending || active || !message) return
     if (files.length > 0 && uploadsBusy) {
@@ -317,8 +285,6 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     setSending(true)
     setError("")
     setErrorLink(null)
-    setErrorCode(null)
-    setErrorModelRef(null)
     try {
       const body = {
         message,
@@ -330,9 +296,6 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
       const accepted = sessionId
         ? await api.createRun(sessionId, body)
         : await api.createTask(body)
-      if (!sessionId && typeof effectiveModelRef === "string" && effectiveModelRef.length > 0) {
-        inheritModelRefIfUnset(accepted.session_id, effectiveModelRef)
-      }
       clearDraft(draftKey)
       setPendingIntent(false)
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
@@ -362,7 +325,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
           fail(apiErrorText(err), {
             to: "/app/settings?section=models",
             label: "去添加 API Key",
-          }, err.code, effectiveModelRef)
+          })
           return
         }
         fail(apiErrorText(err))
@@ -375,27 +338,11 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     }
   }
 
-  // UI-03「一次合法发送只产生一个任务请求」：同一 tick 里第二个 Enter/点击在
-  // React 刷新 sending 之前仍会进入 submit，重复 mint request_id 并重复 POST。
-  // 这里在任何 await 之前同步占位；成功/失败/校验早退后都在 finally 释放，
-  // 不会阻塞下一次正常发送。submitOnce() 的语义保持原样。
-  const submit = async () => {
-    if (submitInFlightRef.current) return
-    submitInFlightRef.current = true
-    try {
-      await submitOnce()
-    } finally {
-      submitInFlightRef.current = false
-    }
-  }
-
   const cancel = async () => {
     if (!activeRun || !active || cancelling) return
     setCancelling(true)
     setError("")
     setErrorLink(null)
-    setErrorCode(null)
-    setErrorModelRef(null)
     try {
       await api.cancelRun(activeRun.run_id)
       void queryClient.invalidateQueries({ queryKey: ["sessionRuns", sessionId] })
@@ -407,37 +354,16 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
     }
   }
 
-  const onCompositionStart = () => {
-    composingRef.current = true
-  }
-
-  const onCompositionEnd = () => {
-    composingRef.current = false
-    compositionEndedAt.current = Date.now()
-  }
-
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // 只有不带 Shift 的 Enter 才可能是发送；Shift+Enter 保持换行。
-    if (event.key !== "Enter" || event.shiftKey) return
-    const native = event.nativeEvent
-    // 组合态（isComposing / 229）交给输入法，不 preventDefault，否则会吞掉
-    // 候选确认。
     if (
-      composingRef.current ||
-      native.isComposing ||
-      event.keyCode === 229 ||
-      native.keyCode === 229
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing && // 中文输入法候选态不发送
+      !document.querySelector("dialog[open]") // 模态层开着时全局发送让位
     ) {
-      return
+      event.preventDefault()
+      void submit()
     }
-    // compositionend 后 <500ms 的 Enter 仍可能属于同一次输入法确认。
-    if (Date.now() - compositionEndedAt.current < IME_ENTER_GRACE_MS) return
-    // 长按重复派发的 Enter 只发送一次。
-    if (event.repeat) return
-    // 模态层开着时全局发送让位。
-    if (document.querySelector("dialog[open]")) return
-    event.preventDefault()
-    void submit()
   }
 
   return (
@@ -445,15 +371,15 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
       <div className="mx-auto max-w-3xl">
         {showPendingBanner ? (
           <p className="mb-2 flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-ink">
-            <span className="rxy-weight-medium min-w-0 flex-1">草稿已保留，确认后发送</span>
+            <span className="min-w-0 flex-1">草稿已保留，确认后发送</span>
             <button
               type="button"
               aria-label="关闭提示"
               title="关闭提示"
-              className="rxy-ghost-control shrink-0 rounded p-0.5 text-muted"
+              className="shrink-0 rounded p-0.5 text-muted hover:bg-sidebar"
               onClick={() => setPendingIntent(false)}
             >
-              <IconClose size={12} className="rxy-icon-inline" />
+              <IconClose size={12} />
             </button>
           </p>
         ) : null}
@@ -463,8 +389,10 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
           </p>
         ) : null}
         <div
-          data-testid="chat-composer"
-          className="rxy-composer-shell rounded-2xl bg-card transition-colors"
+          className={
+            "rounded-2xl border border-border bg-card transition-colors " +
+            "focus-within:border-muted"
+          }
           onDrop={attachmentsEnabled ? onDrop : undefined}
           onDragOver={attachmentsEnabled ? (event) => event.preventDefault() : undefined}
         >
@@ -477,40 +405,39 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                   <li
                     key={entry.localId}
                     className={
-                      "rxy-nested-card flex items-center gap-2 bg-sidebar px-2.5 py-1.5 text-xs"
+                      "flex items-center gap-2 rounded-lg border border-border " +
+                      "bg-sidebar px-2.5 py-1.5 text-xs"
                     }
                     title={entry.attachment?.reason ?? undefined}
                   >
-                    <FileName name={entry.file.name} className="rxy-weight-medium max-w-40" />
-                    <span className="rxy-tabular-nums text-muted">
-                      {formatBytes(entry.file.size)}
-                    </span>
+                    <span className="max-w-40 truncate">{entry.file.name}</span>
+                    <span className="text-muted">{formatBytes(entry.file.size)}</span>
                     {entry.error ? (
                       <>
-                        <span className="rxy-weight-medium text-failure">失败</span>
+                        <span className="text-failure">失败</span>
                         <button
                           type="button"
-                          className="rxy-ghost-control rxy-weight-medium rounded px-1 text-muted-ink underline"
+                          className="text-muted-ink underline"
                           onClick={() => retryFile(entry)}
                         >
                           重试
                         </button>
                       </>
                     ) : uploading ? (
-                      <span className="rxy-tabular-nums text-muted-ink" aria-live="polite">
+                      <span className="text-muted-ink" aria-live="polite">
                         {Math.round(entry.progress * 100)}%
                       </span>
                     ) : (
-                      <span className="rxy-weight-medium text-success">就绪</span>
+                      <span className="text-success">就绪</span>
                     )}
                     <button
                       type="button"
                       aria-label={`移除 ${entry.file.name}`}
                       title="移除"
-                      className="rxy-ghost-control rounded p-0.5 text-muted"
+                      className="rounded p-0.5 text-muted hover:bg-card"
                       onClick={() => removeFile(entry)}
                     >
-                      <IconClose size={10} className="rxy-icon-inline" />
+                      <IconClose size={10} />
                     </button>
                   </li>
                 )
@@ -523,15 +450,13 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             placeholder={active ? "任务运行中…" : "描述要做的任务…"}
             rows={1}
             className={
-              "rxy-composer-input rxy-weight-body block max-h-[200px] w-full resize-none " +
-              "bg-transparent px-4 pb-1 pt-3 text-sm leading-relaxed outline-none"
+              "rxy-composer-input block max-h-[200px] w-full resize-none bg-transparent px-4 pb-1 " +
+              "pt-3 text-sm leading-relaxed outline-none"
             }
             value={text}
             disabled={sending || active}
             onChange={(event) => update(event.target.value)}
             onKeyDown={onKeyDown}
-            onCompositionStart={onCompositionStart}
-            onCompositionEnd={onCompositionEnd}
             onPaste={attachmentsEnabled ? onPaste : undefined}
           />
           <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
@@ -539,8 +464,8 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
               aria-label="权限模式"
               title={PROFILES.find((item) => item.value === permission)?.hint}
               className={
-                "rxy-ghost-control rxy-weight-medium rounded-full px-3 py-1.5 " +
-                "text-xs text-muted-ink"
+                "rounded-full border border-border bg-transparent px-3 py-1.5 " +
+                "text-xs text-muted-ink outline-none"
               }
               value={permission}
               disabled={sending || active}
@@ -571,17 +496,19 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                     event.target.value = ""
                   }}
                 />
-                <Button
-                  variant="ghost"
-                  size="sm"
+                <button
+                  type="button"
                   aria-label="添加附件"
                   title="添加附件（也可以粘贴或拖入文件）"
                   disabled={sending || active}
                   onClick={() => fileInputRef.current?.click()}
-                  className="rxy-weight-medium rounded-full px-3 py-1.5 text-xs disabled:opacity-50"
+                  className={
+                    "rounded-full border border-border px-3 py-1.5 text-xs " +
+                    "text-muted-ink hover:bg-sidebar disabled:opacity-50"
+                  }
                 >
                   附件
-                </Button>
+                </button>
               </>
             ) : null}
             <div className="ml-auto flex items-center gap-2">
@@ -596,35 +523,41 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                 returnFocusRef={areaRef}
               />
               {active ? (
-                <Button
-                  size="icon"
+                <button
+                  type="button"
                   aria-label={cancelling ? "取消中…" : "停止"}
                   title={cancelling ? "取消中…" : "停止"}
                   disabled={cancelling}
                   onClick={() => void cancel()}
-                  className="rounded-full disabled:opacity-50"
+                  className={
+                    "flex h-9 w-9 items-center justify-center rounded-full " +
+                    "bg-foreground text-background disabled:opacity-50"
+                  }
                 >
                   {cancelling ? (
-                    <IconSpinner size={15} className="rxy-icon-inline" />
+                    <IconSpinner size={15} />
                   ) : (
-                    <IconStop size={15} className="rxy-icon-inline" />
+                    <IconStop size={15} />
                   )}
-                </Button>
+                </button>
               ) : (
-                <Button
-                  size="icon"
+                <button
+                  type="button"
                   aria-label={sending ? "提交中…" : "发送"}
                   title={sending ? "提交中…" : "发送"}
                   disabled={sending || !text.trim()}
                   onClick={() => void submit()}
-                  className="rounded-full disabled:opacity-50"
+                  className={
+                    "flex h-9 w-9 items-center justify-center rounded-full " +
+                    "bg-foreground text-background disabled:opacity-50"
+                  }
                 >
                   {sending ? (
-                    <IconSpinner size={15} className="rxy-icon-inline" />
+                    <IconSpinner size={15} />
                   ) : (
-                    <IconSend size={15} className="rxy-icon-inline" />
+                    <IconSend size={15} />
                   )}
-                </Button>
+                </button>
               )}
             </div>
           </div>
@@ -646,7 +579,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
             ) : null}
           </p>
         ) : (
-          <p className="rxy-weight-body mt-2 px-1 text-xs text-muted">
+          <p className="mt-2 px-1 text-xs text-muted">
             Enter 发送，Shift+Enter 换行
           </p>
         )}

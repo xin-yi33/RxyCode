@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 
+import { IconArrowDown } from "../../components/icons"
 import { Markdown } from "../../components/Markdown"
 import { ApprovalItem } from "../approvals/ApprovalItem"
 import { QuestionItem } from "../approvals/QuestionItem"
@@ -12,7 +13,6 @@ import type { RunView } from "../runs/eventReducer"
 import { ThinkingBlock } from "./ThinkingBlock"
 import { TasksBlock } from "./TasksBlock"
 import { ToolRow } from "./ToolRow"
-import "./timeline.css"
 
 const chipClass: Record<string, string> = {
   running: "bg-running/15 text-running-ink",
@@ -36,9 +36,17 @@ export function StatusChip({ status }: { status: string }) {
   )
 }
 
+function findScroller(node: HTMLElement | null): HTMLElement | null {
+  let current = node?.parentElement ?? null
+  while (current) {
+    const overflowY = getComputedStyle(current).overflowY
+    if (overflowY === "auto" || overflowY === "scroll") return current
+    current = current.parentElement
+  }
+  return null
+}
+
 // §5.4 时间线：顶部状态行（activity + 状态芯片）+ 按 seq 排好的 items。
-// 滚动完全交给 SessionPage 的唯一 chat-scroll 容器（useChatScrollController）——
-// 这里绝不写祖先 scrollTop，也不自己放 FAB。
 export function Timeline({
   view,
   connected,
@@ -48,18 +56,47 @@ export function Timeline({
   connected?: boolean
   createdAt?: string | null
 }) {
+  const listRef = useRef<HTMLOListElement>(null)
+  const scrollerRef = useRef<HTMLElement | null>(null)
+  const atBottomRef = useRef(true)
+  const [hasNew, setHasNew] = useState(false)
+
   const active = isActiveRunStatus(view.status)
-  const seenKeysRef = useRef<Set<string>>(new Set())
 
-  // 记录已经渲染过的条目：只有"本次挂载期间新出现"的流式条目才在首批文字上
-  // 做 glyph reveal；首屏回放的历史文本永远保持纯文本。
+  // 找到滚动祖先（ConsoleShell 的 <main>）并跟踪“是否在底部”。
   useEffect(() => {
-    const seen = seenKeysRef.current
-    for (const item of view.timeline) seen.add(`${item.kind}-${item.seq}`)
-  }, [view.timeline])
+    const scroller = findScroller(listRef.current)
+    scrollerRef.current = scroller
+    if (!scroller) return
+    const onScroll = () => {
+      const atBottom =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80
+      atBottomRef.current = atBottom
+      if (atBottom) setHasNew(false)
+    }
+    scroller.addEventListener("scroll", onScroll, { passive: true })
+    onScroll()
+    return () => scroller.removeEventListener("scroll", onScroll)
+  }, [])
 
-  const seen = seenKeysRef.current
-  const live = active && connected === true
+  // 新事件到达：在底部则跟随滚动；否则浮出“↓ 新消息”。
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    if (atBottomRef.current) {
+      scroller.scrollTop = scroller.scrollHeight
+    } else {
+      setHasNew(true)
+    }
+  }, [view.timeline, view.activity, view.status])
+
+  const scrollToLatest = () => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    scroller.scrollTop = scroller.scrollHeight
+    atBottomRef.current = true
+    setHasNew(false)
+  }
 
   return (
     <div>
@@ -82,13 +119,13 @@ export function Timeline({
           </time>
         ) : null}
       </p>
-      <ol className="relative mt-3 space-y-3">
+      <ol ref={listRef} className="relative mt-3 space-y-3">
         {view.timeline.map((item, index) => {
           const key = `${item.kind}-${item.seq}`
-          // 思考块的"正在思考"微光只在它还是流尾时亮：后面一旦出现
+          // 思考块的“正在思考”微光只在它还是流尾时亮：后面一旦出现
           // 工具/正文/终答，说明这段思考已收口。
-          const streaming = active && index === view.timeline.length - 1
-          const appearedLive = live && seen.size > 0 && !seen.has(key)
+          const streaming =
+            active && index === view.timeline.length - 1
           switch (item.kind) {
             case "user":
               return (
@@ -101,11 +138,7 @@ export function Timeline({
             case "text":
               return (
                 <li key={key}>
-                  <Markdown
-                    text={item.text}
-                    streaming={streaming}
-                    animateAtMount={streaming && appearedLive}
-                  />
+                  <Markdown text={item.text} />
                 </li>
               )
             case "thinking":
@@ -152,6 +185,22 @@ export function Timeline({
               return null
           }
         })}
+        {hasNew ? (
+          // sticky 在列表末尾：向上滚动时浮在滚动口底部（输入框上方），点击回底。
+          <li className="sticky bottom-36 z-10 flex justify-end">
+            <button
+              type="button"
+              onClick={scrollToLatest}
+              className={
+                "flex items-center gap-1 rounded-full border border-border " +
+                "bg-card px-3 py-1.5 text-xs text-foreground shadow-sm"
+              }
+            >
+              <IconArrowDown size={13} />
+              新消息
+            </button>
+          </li>
+        ) : null}
       </ol>
     </div>
   )

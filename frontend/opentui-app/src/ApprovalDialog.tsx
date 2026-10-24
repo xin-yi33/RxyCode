@@ -351,11 +351,11 @@ export function ApprovalDialog({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.panel,
+        backgroundColor: C.bg,
         ...(capped ? { height: maxHeight, maxHeight, overflow: "hidden" as const } : {}),
       }}
     >
-      <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.panel }}>
+      <box style={{ flexDirection: "column", width: "100%", backgroundColor: C.bg }}>
         <box style={{ flexDirection: "row", width: "100%", height: 1, flexShrink: 0 }}>
           <text fg={riskColor} attributes={1}>
             {"  Safety Approval"}
@@ -397,10 +397,10 @@ export function ApprovalDialog({
                   height: visibleRows,
                   maxHeight: visibleRows,
                   border: false,
-                  backgroundColor: C.panel,
+                  backgroundColor: C.bg,
                 },
-                viewportOptions: { flexGrow: 1, backgroundColor: C.panel },
-                contentOptions: { backgroundColor: C.panel },
+                viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
+                contentOptions: { backgroundColor: C.bg },
                 verticalScrollbarOptions: {
                   showArrows: false,
                   trackOptions: {
@@ -437,10 +437,10 @@ export function ApprovalDialog({
                   height: visibleRows,
                   maxHeight: visibleRows,
                   border: false,
-                  backgroundColor: C.panel,
+                  backgroundColor: C.bg,
                 },
-                viewportOptions: { flexGrow: 1, backgroundColor: C.panel },
-                contentOptions: { backgroundColor: C.panel },
+                viewportOptions: { flexGrow: 1, backgroundColor: C.bg },
+                contentOptions: { backgroundColor: C.bg },
                 verticalScrollbarOptions: {
                   showArrows: false,
                   trackOptions: {

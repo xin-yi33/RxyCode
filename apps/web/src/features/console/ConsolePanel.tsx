@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useParams } from "react-router"
 
-import { CopyButton } from "../../components/CopyButton"
-import { IconClose } from "../../components/icons"
+import { IconCheck, IconClose, IconCopy } from "../../components/icons"
 import { createClient, type RunSummary } from "../../sdk/client"
 import { useUi } from "../../state/ui"
 import type { RunView } from "../runs/eventReducer"
@@ -26,6 +25,42 @@ const TABS: { value: Tab; label: string }[] = [
 const PROFILE_TEXT: Record<string, string> = {
   confirm: "需要确认",
   full: "完全自动",
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    const done = () => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => undefined)
+    } else {
+      const area = document.createElement("textarea")
+      area.value = text
+      document.body.appendChild(area)
+      area.select()
+      try {
+        document.execCommand("copy")
+        done()
+      } catch {
+        // 剪贴板不可用 —— 静默失败
+      }
+      document.body.removeChild(area)
+    }
+  }
+  return (
+    <button
+      type="button"
+      aria-label={copied ? "已复制" : "复制"}
+      title={copied ? "已复制" : "复制"}
+      className="rounded p-1 text-muted hover:bg-sidebar"
+      onClick={copy}
+    >
+      {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+    </button>
+  )
 }
 
 function Field({ label, children }: { label: string; children?: ReactNode }) {
@@ -109,11 +144,7 @@ function RunTab({ runs, views }: { runs: RunSummary[]; views: RunView[] }) {
             <Field label="Run ID">
               <span className="flex items-center gap-1 font-mono">
                 <span className="min-w-0 truncate">{run.run_id}</span>
-                <CopyButton
-                  text={run.run_id}
-                  size={13}
-                  className="rounded p-1 text-muted hover:bg-sidebar"
-                />
+                <CopyButton text={run.run_id} />
               </span>
             </Field>
             <Field label="状态">
@@ -122,12 +153,8 @@ function RunTab({ runs, views }: { runs: RunSummary[]; views: RunView[] }) {
             <Field label="创建时间">
               {run.created_at ? new Date(run.created_at).toLocaleString() : "—"}
             </Field>
-            <Field label="续接次数">
-              <span className="rxy-tabular-nums">{resumes}</span>
-            </Field>
-            <Field label="最新 seq">
-              <span className="rxy-tabular-nums">{view?.lastSeq ?? "—"}</span>
-            </Field>
+            <Field label="续接次数">{resumes}</Field>
+            <Field label="最新 seq">{view?.lastSeq ?? "—"}</Field>
             <Field label="权限模式">
               {PROFILE_TEXT[run.permission_profile] ?? run.permission_profile ?? "—"}
             </Field>
@@ -184,16 +211,12 @@ function UsageTab({ runs, views }: { runs: RunSummary[]; views: RunView[] }) {
             </Field>
             <Field label="模型">{usage?.modelId || "未上报"}</Field>
             <Field label="Tokens">
-              <span className="rxy-tabular-nums">
-                {usage?.tokens !== undefined ? usage.tokens.toLocaleString() : "未上报"}
-              </span>
+              {usage?.tokens !== undefined ? usage.tokens.toLocaleString() : "未上报"}
             </Field>
             <Field label="金额">
-              <span className="rxy-tabular-nums">
-                {usage?.amount !== undefined
-                  ? `${usage.amount}${usage.currency ? ` ${usage.currency}` : ""}`
-                  : "未上报"}
-              </span>
+              {usage?.amount !== undefined
+                ? `${usage.amount}${usage.currency ? ` ${usage.currency}` : ""}`
+                : "未上报"}
             </Field>
           </dl>
         )
@@ -202,16 +225,12 @@ function UsageTab({ runs, views }: { runs: RunSummary[]; views: RunView[] }) {
         <dl className="space-y-1.5 rounded-lg border border-border bg-sidebar p-3">
           <p className="pb-0.5 text-xs font-medium text-muted">会话合计</p>
           <Field label="Tokens">
-            <span className="rxy-tabular-nums">
-              {anyTokens ? totalTokens.toLocaleString() : "未上报"}
-            </span>
+            {anyTokens ? totalTokens.toLocaleString() : "未上报"}
           </Field>
           <Field label="金额">
-            <span className="rxy-tabular-nums">
-              {anyAmount
-                ? `${Number(totalAmount.toFixed(6))}${currency ? ` ${currency}` : ""}`
-                : "未上报"}
-            </span>
+            {anyAmount
+              ? `${Number(totalAmount.toFixed(6))}${currency ? ` ${currency}` : ""}`
+              : "未上报"}
           </Field>
         </dl>
       ) : null}

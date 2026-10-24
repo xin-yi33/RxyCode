@@ -130,7 +130,7 @@ export function DialogMemory({
           borderColor: C.borderDim,
           borderStyle: "rounded",
           paddingLeft: 1,
-          backgroundColor: C.panel,
+          backgroundColor: C.bg,
         }}
       >
         <text fg={C.text} attributes={1}>

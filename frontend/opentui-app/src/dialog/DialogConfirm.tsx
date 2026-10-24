@@ -58,7 +58,7 @@ export function DialogConfirm({
         borderStyle: "rounded",
         paddingLeft: 1,
         paddingRight: 1,
-        backgroundColor: C.panel,
+        backgroundColor: C.bg,
       }}
     >
       <box style={{ flexDirection: "row", width: "100%", height: 1 }}>

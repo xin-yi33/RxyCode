@@ -14,7 +14,6 @@ import {
   LOGO_INK_BODY,
   LOGO_FIELD_BG,
 } from "./brand.ts";
-import { SURFACES, isPureBlack } from "./theme.ts";
 
 describe("classic brand freeze (Ink original)", () => {
   test("WORDMARK has 7 Unicode block lines", () => {
@@ -28,10 +27,7 @@ describe("classic brand freeze (Ink original)", () => {
     expect(LOGO_INK_BODY).toBe("#FF69B4");
     expect(BRAND_LIGHT).toBe("#FFB6C1");
     expect(BRAND_HOT).toBe("#FF69B4");
-    // 2026-10-24 UI polish: the logo field is a base surface — it uses the
-    // near-black app canvas token, never pure #000.
-    expect(LOGO_FIELD_BG).toBe(SURFACES.app);
-    expect(isPureBlack(LOGO_FIELD_BG)).toBe(false);
+    expect(LOGO_FIELD_BG).toBe("#000000");
     expect(logoInkForRow(0)).toBe("#FFB6C1");
     expect(logoInkForRow(1)).toBe("#FF69B4");
   });

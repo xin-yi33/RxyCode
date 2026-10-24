@@ -1,8 +1,7 @@
-import { useLayoutEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useParams } from "react-router"
 
-import { IconArrowDown } from "../../components/icons"
 import { Button } from "../../components/ui/button"
 import {
   createClient,
@@ -12,26 +11,13 @@ import {
 } from "../../sdk/client"
 import { isUnauthorized } from "../../sdk/errors"
 import { PreviewDrawer } from "../preview/PreviewDrawer"
-import { SplitWorkspace } from "../preview/SplitWorkspace"
 import { ArtifactRows } from "../runs/ArtifactRows"
 import { RunTimeline } from "../runs/RunTimeline"
 import { isActiveRunStatus } from "../runs/status"
-import {
-  useChatScrollController,
-  type ScrollAnchor,
-} from "../timeline/useChatScrollController"
 import { Composer } from "./Composer"
 import { SessionFiles } from "./SessionFiles"
 
 const api = createClient()
-
-// 历史分页按会话隔离：切到另一个会话时旧分页结果既不显示也不参与游标，
-// 避免旧会话的晚到数据混进新会话。
-type OlderPage = {
-  sessionId: string
-  runs: RunSummary[]
-  cursor: string | null
-}
 
 function RunCard({
   run,
@@ -66,15 +52,9 @@ function RunCard({
 
 export function SessionPage() {
   const { sessionId = "" } = useParams()
-  const [olderPage, setOlderPage] = useState<OlderPage | null>(null)
+  const [older, setOlder] = useState<RunSummary[]>([])
+  const [cursor, setCursor] = useState<string | null | undefined>(undefined)
   const [preview, setPreview] = useState<{ title: string; job: PreviewJob | null } | null>(null)
-  const pendingAnchorRef = useRef<ScrollAnchor | null>(null)
-
-  // 整个会话页只有这一个滚动容器（chat-scroll）：跟随底部、用户上滚暂停、
-  // jump-to-latest、会话切换重置都由控制器统一负责。
-  const scroll = useChatScrollController(sessionId)
-  const { restoreAnchor } = scroll
-
   const previewPoll = useQuery({
     queryKey: ["preview-job", preview?.job?.preview_id],
     enabled: Boolean(
@@ -106,32 +86,16 @@ export function SessionPage() {
     },
   })
 
-  const older = olderPage && olderPage.sessionId === sessionId ? olderPage : null
-  const nextCursor = older ? older.cursor : (runs.data?.next_cursor ?? null)
-
+  const nextCursor = cursor === undefined ? runs.data?.next_cursor ?? null : cursor
   const loadEarlier = () => {
     if (!nextCursor) return
-    // 上方插入历史前先记录视觉锚点：用户上滚阅读时加载更早，滚动位置不能跳。
-    pendingAnchorRef.current = scroll.isFollowing() ? null : scroll.captureAnchor()
-    const requestedFor = sessionId
     void api
-      .listSessionRuns(requestedFor, { limit: 20, before: nextCursor })
+      .listSessionRuns(sessionId, { limit: 20, before: nextCursor })
       .then((page) => {
-        setOlderPage((current) => ({
-          sessionId: requestedFor,
-          runs: [...(current?.sessionId === requestedFor ? current.runs : []), ...page.runs],
-          cursor: page.next_cursor,
-        }))
+        setOlder((current) => [...current, ...page.runs])
+        setCursor(page.next_cursor)
       })
   }
-
-  // 历史插入后恢复锚点（浏览器 scroll anchoring 已处理时保持在 2px 内不再写）。
-  useLayoutEffect(() => {
-    const anchor = pendingAnchorRef.current
-    pendingAnchorRef.current = null
-    if (!anchor) return
-    restoreAnchor(anchor)
-  }, [olderPage, restoreAnchor])
 
   if (session.isError && !isUnauthorized(session.error)) {
     return (
@@ -145,109 +109,70 @@ export function SessionPage() {
   }
 
   // Backend returns newest-first; render oldest-first like a chat log.
-  const ordered = [...(older?.runs ?? []), ...(runs.data?.runs ?? [])].reverse()
+  const ordered = [...older, ...(runs.data?.runs ?? [])].reverse()
   const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
   const archived = session.data?.archived === true || Boolean(session.data?.archived_at)
 
   return (
-    <SplitWorkspace
-      preview={
-        preview ? (
-          <PreviewDrawer
-            job={liveJob}
-            title={preview.title}
-            open={preview !== null}
-            onClose={() => setPreview(null)}
-          />
-        ) : null
-      }
-      onPreviewClose={() => setPreview(null)}
-    >
-      <div className="rxy-session relative flex h-full min-h-0 w-full flex-col">
-        <div className="relative min-h-0 flex-1">
-          <div
-            ref={scroll.scrollRef}
-            data-testid="chat-scroll"
-            role="log"
-            aria-label="会话消息"
-            tabIndex={0}
-            className={
-              "rxy-chat-scroll h-full min-h-0 overflow-y-auto overscroll-contain " +
-              "px-4 pb-6 pt-4 outline-none focus-visible:ring-2 focus-visible:ring-running/50"
-            }
-          >
-            <div ref={scroll.contentRef} className="mx-auto w-full max-w-3xl">
-              {archived ? (
-                <div
-                  role="status"
-                  className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-waiting/40 bg-waiting/10 px-3 py-2 text-sm text-waiting-ink"
-                >
-                  <span>此会话已归档，内容只读。取消归档后可继续对话。</span>
-                  <button
-                    type="button"
-                    className="shrink-0 underline"
-                    onClick={() => {
-                      void api
-                        .unarchiveSession(sessionId, {
-                          expected_revision: session.data?.revision,
-                        })
-                        .then(() => void session.refetch())
-                    }}
-                  >
-                    取消归档
-                  </button>
-                </div>
-              ) : null}
-              {runs.isPending ? (
-                <p className="py-8 text-center text-sm text-muted">正在加载任务…</p>
-              ) : null}
-              {ordered.length === 0 && runs.isSuccess ? (
-                <p className="py-8 text-center text-sm text-muted">
-                  这个会话还没有任务，从下方输入框开始。
-                </p>
-              ) : null}
-              {nextCursor ? (
-                <div className="pb-2 text-center">
-                  <Button variant="outline" size="sm" onClick={loadEarlier}>
-                    加载更早的任务
-                  </Button>
-                </div>
-              ) : null}
-              <ol className="flex-1 space-y-8 pb-6">
-                {ordered.map((run) => (
-                  <li key={run.run_id} id={`run-${run.run_id}`}>
-                    <RunCard run={run} onPreview={openPreview} />
-                  </li>
-                ))}
-              </ol>
-            </div>
-          </div>
+    <div className="mx-auto flex min-h-full max-w-3xl flex-col px-4 py-4">
+      {archived ? (
+        <div
+          role="status"
+          className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-waiting/40 bg-waiting/10 px-3 py-2 text-sm text-waiting-ink"
+        >
+          <span>此会话已归档，内容只读。取消归档后可继续对话。</span>
           <button
             type="button"
-            data-testid="chat-jump-to-latest"
-            onClick={scroll.scrollToLatest}
-            aria-label="回到最新消息"
-            className={
-              (scroll.showJumpToLatest ? "flex" : "hidden") +
-              " absolute bottom-4 left-1/2 z-10 -translate-x-1/2 items-center gap-1 " +
-              "rounded-full border border-border bg-card px-3 py-1.5 text-xs " +
-              "text-foreground shadow-sm"
-            }
+            className="shrink-0 underline"
+            onClick={() => {
+              void api
+                .unarchiveSession(sessionId, {
+                  expected_revision: session.data?.revision,
+                })
+                .then(() => void session.refetch())
+            }}
           >
-            <IconArrowDown size={13} />
-            回到最新
+            取消归档
           </button>
         </div>
+      ) : null}
+      {runs.isPending ? (
+        <p className="py-8 text-center text-sm text-muted">正在加载任务…</p>
+      ) : null}
+      {ordered.length === 0 && runs.isSuccess ? (
+        <p className="py-8 text-center text-sm text-muted">
+          这个会话还没有任务，从下方输入框开始。
+        </p>
+      ) : null}
+      {nextCursor ? (
+        <div className="pb-2 text-center">
+          <Button variant="outline" size="sm" onClick={loadEarlier}>
+            加载更早的任务
+          </Button>
+        </div>
+      ) : null}
+      <ol className="flex-1 space-y-8 pb-6">
+        {ordered.map((run) => (
+          <li key={run.run_id} id={`run-${run.run_id}`}>
+            <RunCard run={run} onPreview={openPreview} />
+          </li>
+        ))}
+      </ol>
+      <PreviewDrawer
+        job={liveJob}
+        title={preview?.title ?? ""}
+        open={preview !== null}
+        onClose={() => setPreview(null)}
+      />
+      <div className="sticky bottom-0 -mx-4 space-y-2 bg-background">
         {archived ? null : (
-          <div className="shrink-0 space-y-2 bg-background">
-            <div className="mx-auto w-full max-w-3xl px-4">
-              <SessionFiles sessionId={sessionId} hasActive={active !== null} />
-            </div>
+          <>
+            <SessionFiles sessionId={sessionId} hasActive={active !== null} />
             <Composer sessionId={sessionId} activeRun={active} />
-          </div>
+          </>
         )}
       </div>
-    </SplitWorkspace>
+    </div>
   )
 }

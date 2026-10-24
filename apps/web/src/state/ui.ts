@@ -44,7 +44,6 @@ type UiState = {
   setDraft: (sessionId: string, draft: ComposerDraft) => void
   patchDraft: (sessionId: string, patch: Partial<ComposerDraft>) => void
   clearDraft: (sessionId: string) => void
-  inheritModelRefIfUnset: (sessionId: string, modelRef: string) => void
   // 登出/换账号：清空全部草稿与登录意图（PRD §3.3.5 —— 草稿按身份隔离）。
   resetDrafts: () => void
 }
@@ -118,27 +117,10 @@ export const useUi = create<UiState>()((set, get) => ({
         [sessionId]: { ...EMPTY_DRAFT, ...get().drafts[sessionId], ...patch },
       },
     }),
-  clearDraft: (sessionId) =>
-    set((state) => {
-      const draft = state.drafts[sessionId]
-      if (!draft) return state
-      return {
-        drafts: {
-          ...state.drafts,
-          [sessionId]: { ...draft, text: "", requestId: "" },
-        },
-      }
-    }),
-  inheritModelRefIfUnset: (sessionId, modelRef) =>
-    set((state) => {
-      const draft = state.drafts[sessionId] ?? EMPTY_DRAFT
-      if (draft.modelRef !== undefined) return state
-      return {
-        drafts: {
-          ...state.drafts,
-          [sessionId]: { ...draft, modelRef, requestId: "" },
-        },
-      }
-    }),
+  clearDraft: (sessionId) => {
+    const drafts = { ...get().drafts }
+    delete drafts[sessionId]
+    set({ drafts })
+  },
   resetDrafts: () => set({ drafts: {}, pendingIntent: false }),
 }))
