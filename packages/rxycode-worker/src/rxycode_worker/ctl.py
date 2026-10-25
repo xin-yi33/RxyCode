@@ -238,11 +238,13 @@ class CtlServer:
             return {"ok": False, "error": {"type": "unknown_op", "message": op[:80]}}
         args = dict(args)
         # Kernel credentials, never client fields, scope process registration.
-        for key in ("_peer_pid", "_peer_uid", "_peer_gid"):
-            args.pop(key, None)
-        if peer_credentials is not None:
-            pid, uid, gid = peer_credentials
-            args.update({"_peer_pid": pid, "_peer_uid": uid, "_peer_gid": gid})
+        # Other control ops keep their payload exactly as supplied.
+        if op == "process_register":
+            for key in ("_peer_pid", "_peer_uid", "_peer_gid"):
+                args.pop(key, None)
+            if peer_credentials is not None:
+                pid, uid, gid = peer_credentials
+                args.update({"_peer_pid": pid, "_peer_uid": uid, "_peer_gid": gid})
         try:
             result = await asyncio.to_thread(handler, args)
         except Exception as exc:

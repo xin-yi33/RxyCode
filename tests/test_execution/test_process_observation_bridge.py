@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -470,17 +471,21 @@ def test_registration_helper_preserves_pid_and_exit_code(tmp_path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     executable = bin_dir / "rxy-path-exec"
+    python_code = (
+        "import os,pathlib,sys; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "raise SystemExit(7)"
+    )
     executable.write_text(
         "#!/bin/sh\n"
-        f"{sys.executable} -c 'import os,pathlib,sys; "
-        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))' \"$1\"\n",
+        f"exec {shlex.quote(sys.executable)} -c {shlex.quote(python_code)} \"$1\"\n",
         encoding="utf-8",
     )
     executable.chmod(0o700)
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     process = subprocess.Popen(command, env=env)
-    assert process.wait(timeout=10) == 0
+    assert process.wait(timeout=10) == 7
     assert int(output.read_text()) == process.pid
 
 

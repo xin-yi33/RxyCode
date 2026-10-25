@@ -55,6 +55,30 @@
   runner/result/candidate manifest 保存在任务私有 evidence 目录，不作为
   repo fixture 路径宣称。确定性 judge fixture 不是真实 owner BYOK LLM
   验收；本批无付费模型调用，15 秒和全部时钟未改。
+- GitHub Actions CI `40143602854` 的 py3.11 job `121020237286` 在 regression
+  lane 暴露两项真实失败：`test_w8_c01_ctl_roundtrip` 收到多出的
+  `_peer_pid/_peer_uid/_peer_gid`；`test_registration_helper_preserves_pid_and_exit_code`
+  得到 shell fork 后的 PID `19042`，而非 `Popen` 的 `19041`。前者根因是
+  `CtlServer._dispatch` 对所有 control op 都注入 kernel peer，破坏了既有 op
+  的载荷契约；现仅对 `process_register` 清理客户端伪造的 `_peer_*` 并注入
+  `SO_PEERCRED`，其他 op 原样透传，真实 Linux socket 的伪造注册拒绝路径不变。
+  后者以 `shlex.quote` 正确引用解释器与 `-c` 代码，显式 `exec` 到 Python，
+  继续严格断言目标 PID 等于 `Popen.pid`，并增加真实非零退出码 `7` 断言；
+  没有放宽 PID 或跳过用例。
+- 本修复的 Windows 本地验证：Ruff 通过；peer-scope acceptance 1 passed；
+  observation bridge `10 passed, 2 skipped`；lazy-import `3 passed`。W8
+  roundtrip 与上述两项 POSIX PID/helper 用例在 Windows 分别因 Unix socket /
+  POSIX-only 跳过，均不记为通过。受影响 Linux 测试与真实 `SO_PEERCRED`
+  acceptance 尚待运维实际执行；未部署、未提交、未推送，本次未调用付费 LLM。
+- Kuhn 已在 Linux 3.10 / Python 3.12.15 临时容器对最终落盘源码完成隔离 QA：
+  bundle `process-bridge-qa-01a17063.tar.gz` SHA-256
+  `0B2D798AEA2C423B708EABE0B3C40F0CDB1B97F652A60B361FB0588834C12B6D`；
+  容器基于候选 image ID `sha256:7b8531e37f3b3a6f982b33895d1377ce552149bb78e52bf9d5d0e19cd31fd7d1`，
+  `--network none` + `seccomp=unconfined`，依赖仅装入容器 `/tmp`。结果：
+  原两项失败用例 2 passed；真实 `SO_PEERCRED` + 伪造拒绝 1 passed；
+  全部 process bridge 12 passed；acceptance 5 passed；无 skip、无 DB、无 LLM。
+  候选镜像未重建或修改，未 push/deploy。该结果不等于 py3.11 GitHub Actions
+  CI 已通过，CI 仍需在 push 后另行观察。
 
 ### 思考过程与 BYOK 额度（2026-10-22 已部署）
 

@@ -144,6 +144,70 @@ def _state_commands(workspace: Path) -> tuple[str, str]:
 
 
 @pytest.mark.asyncio
+async def test_ctl_peer_credentials_scope_only_process_registration(
+    tmp_path: Path,
+) -> None:
+    def handler(args: dict[str, Any]) -> dict[str, Any]:
+        return dict(args)
+
+    server = CtlServer(
+        tmp_path / "ctl.sock",
+        {"echo": handler, "process_register": handler},
+    )
+    ordinary_args = {
+        "x": 5,
+        "_peer_pid": "client-pid",
+        "_peer_uid": "client-uid",
+        "_peer_gid": "client-gid",
+    }
+    ordinary = await server._dispatch(
+        json.dumps({"op": "echo", "args": ordinary_args}).encode(),
+        peer_credentials=(101, 202, 303),
+    )
+    assert ordinary == {"ok": True, "result": ordinary_args}
+
+    process_key = "a" * 64
+    registered = await server._dispatch(
+        json.dumps(
+            {
+                "op": "process_register",
+                "args": {
+                    "process_key": process_key,
+                    "_peer_pid": "client-pid",
+                    "_peer_uid": "client-uid",
+                    "_peer_gid": "client-gid",
+                },
+            }
+        ).encode(),
+        peer_credentials=(101, 202, 303),
+    )
+    assert registered == {
+        "ok": True,
+        "result": {
+            "process_key": process_key,
+            "_peer_pid": 101,
+            "_peer_uid": 202,
+            "_peer_gid": 303,
+        },
+    }
+
+    unavailable = await server._dispatch(
+        json.dumps(
+            {
+                "op": "process_register",
+                "args": {
+                    "process_key": process_key,
+                    "_peer_pid": 999,
+                    "_peer_uid": 999,
+                    "_peer_gid": 999,
+                },
+            }
+        ).encode()
+    )
+    assert unavailable == {"ok": True, "result": {"process_key": process_key}}
+
+
+@pytest.mark.asyncio
 async def test_default_managed_shell_keeps_state_for_real_five_second_probe(
     isolated_runtime,
     monkeypatch: pytest.MonkeyPatch,
