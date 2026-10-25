@@ -1070,16 +1070,15 @@
   observation `5.0s`、process count `3→3`、CPU `0.0%→0.0%`、
   IO `0KB→0KB`，判定为正常低活动等待并 `action=continue`。该反馈来自
   真实模型请求，不是 timeout/fallback；provider timeout/error 标记为 false。
-  主线程已人工查看 `liveness-180.png`，UI 中任务继续运行且最终自然完成。
+  主线程已人工查看 `liveness-180.png`，UI 有继续运行反馈，目标脚本自然完成；
+  整体 run 并未自然成功。
 - 分层结论必须同时保留：本次 watchdog 目标 `PASS (3/3)`，即执行
   `300.000691652298s` PASS、物理采样 PASS、真实 LLM feedback PASS；
   但整体 E2E **NOT GREEN**，因为目标完成后又出现下述未决额外审批。
 - 从 target `tool.started` SSE 接收到 liveness SSE 的 total judge window 为
-  `197.346s`；扣除 180.003 秒 elapsed 与 5.0 秒 observation 后的
-  `12.343s` 只是含排队、模型判断和传输代理的外部估算，不是纯模型耗时，
-  也不能单独证明线上单次请求大于 15 秒。16.1 秒挂起请求经真实 AgentV2
-  构造并越过 P6 15 秒的构造验收，加上 300 秒线上运行未在 15 秒取消，
-  才支持“不再固定 15 秒取消”的结论。
+  `197.346s`；真实 16.1 秒请求经 AgentV2 构造验收，生产 runtime/source
+  核对也证明不再配置额外 15 秒截止；本次线上约 `12.343s` 的 SSE 代理估算
+  仅证明真实反馈链有效，不单独验证单次请求大于 15 秒。
 - P6 的 `decision_timeout_seconds=15` 构造保持不变；全部任务/工具预算、
   续期、权限与杀进程规则、5 秒 observation 以及 `180/300/600` 检查点
   均未修改。用户明确同意的唯一语义变化仍是取消 liveness wrapper 的额外
