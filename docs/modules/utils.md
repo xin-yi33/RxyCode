@@ -100,6 +100,17 @@ artifacts. `append_capture_hints()` lets existing ShellExecutor consumers expose
 generated local artifact path lines (or a capture-failure notice) without
 reopening complete files.
 
+## Process-liveness model request lifetime
+
+`SessionLivenessJudge` has no default wrapper deadline (2026-10-25). It awaits
+the current session LLM's own `ainvoke` request, so the configured provider
+request timeout governs liveness rather than the separate P6
+`decision_timeout_seconds` clock. The explicit `timeout_seconds` constructor
+argument remains only for callers that intentionally request a compatibility
+boundary; the normal `AgentV2` construction does not pass it. Cancellation and
+command completion still invalidate and await the in-flight judge through the
+shared process-probe path.
+
 ## Web process-observation bridge
 
 The shared `ProcessProbeContext` can carry a Web-only physical observer without

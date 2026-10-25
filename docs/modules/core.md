@@ -145,8 +145,10 @@ fresh process).
   parent only returns sampled facts; checkpoint timing, five-second observation,
   current-session judgment, and user feedback remain in the shared Harness.
 - Normal `AgentV2` injects a `SessionLivenessJudge` backed by the current
-  session's already-routed `UsageTrackingLLM`. This is independent of the P6
-  timeout engine and its `enabled: false` default; it never consumes extension
+  session's already-routed `UsageTrackingLLM`. It adds no wrapper deadline:
+  the current model request's configured timeout applies. This is independent
+  of the P6 timeout engine, whose `decision_timeout_seconds` remains its own
+  decision clock (15 seconds by default). Liveness never consumes extension
   ledger grants, changes hard budgets, or starts a second provider.
 - Each probe is bound to `call_id + pid + generation + seq`; completion or
   cancellation invalidates the probe and cancels an in-flight judge. A late

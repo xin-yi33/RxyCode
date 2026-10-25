@@ -2597,19 +2597,13 @@ class AgentV2:
         except Exception:
             _logger.exception("timeout decision engine failed to build")
             raise
-        # 2026-10-24 user constraint: shell liveness is independent of the
-        # optional P6 timeout engine (default disabled). Reuse this session's
-        # already-routed, usage-tracked LLM so BYOK/model switching is honored.
-        try:
-            timeout_section = self._cfg.get("timeout_decision") or {}
-            liveness_timeout = float(
-                timeout_section.get("decision_timeout_seconds", 15.0)
-            )
-        except Exception:
-            liveness_timeout = 15.0
+        # 2026-10-25 protection: shell liveness is independent of the optional
+        # P6 timeout engine and its decision_timeout_seconds clock. Reuse this
+        # session's already-routed, usage-tracked LLM so BYOK/model switching is
+        # honored and its configured request timeout governs the request. Do
+        # not add a fixed wrapper deadline or bypass observation feedback here.
         self._liveness_judge = SessionLivenessJudge(
             lambda: getattr(self, "_llm", None),
-            timeout_seconds=liveness_timeout,
         )
 
         # Tell token_stats which model is active so billing_amount can look

@@ -942,3 +942,77 @@
 - 离线真实 resume 路径使用加速 checkpoint 验证实际 `_execute_approved_call -> bash -> run_process_probe`：probe 到达同一 TUI，reporter 收到注入 judge 的 `continue`；修复前同路径捕获为 `judge=None/TUI=None`。本项为代码与离线验证结果，尚不代表生产 r4 已完成真实 180 秒判活验收。
 - 独立 checkpoint 加速验收 `tests/acceptance/test_resume_liveness_independent.py` 覆盖真实 5 秒 observation、owner judge、TUI/RunEmit 投影、journal replay 不重复采样，以及真实 `CancelledError` 后恢复 `_CtlApproval` 并让下一 WRITE 继续 park。Aquinas fresh：3 个 acceptance 文件 `11 passed in 29.11s`，单 resume 文件 `2 passed in 22.12s`，ruff 绿。
 - worker 候选 `rxycode-worker:resume-liveness-67526809-r1`（`sha256:26136a00130802feb2506dc37ed01961cde8505107a65d8b943e4e0f108aa550`）严格 `FROM` 线上 r4，仅叠加入库 Session 修复 `8da05b47...` 与本次 drain 修复 `1623e25d...`；Linux 容器内 Session 6 例与 resume probe 1 例通过。尚未切换生产。
+
+### fe9 worker-only 发布与真实 225 验收边界（2026-10-25）
+
+- `fe9abdd014fb26533e0113f5dfe9686ccd6ae90b` 的 main CI
+  `40146422122` 全 6 job success，Web CI `40146422105` 全 4 job success。
+  新候选 `rxycode-worker:process-bridge-fe9abdd0-20261025-r1`
+  （`sha256:a409d412bd040109eaf7ae3d7f7484549d3b76c2587c0df64fcfdf38f655878a`）
+  严格 `FROM` 线上 worker `sha256:26136a00130802feb2506dc37ed01961cde8505107a65d8b943e4e0f108aa550`，
+  RootFS `50→51`，仅加入该 commit 的 7 个产品文件；三副本实际 runtime import
+  路径与 7 个 source SHA-256 均逐一核对一致。
+- 2026-10-25 `04:35:33Z`（北京时间 `12:35:33`）实际切换生产三 worker，
+  仅执行 `up -d --no-deps --force-recreate --scale worker=3 worker`：
+  worker-1 `a03f4d34cb59…`、worker-2 `aa3dfa72f27e…`、
+  worker-3 `a064c93db802…`，均 healthy；`/app` 与
+  `/api/v1/auth/csrf` 均 HTTP 200。API、Gateway、PostgreSQL、Redis、MinIO
+  容器 ID 未变，产品 API/frontend/DB/schema 未改。
+- 切换前后安全/环境/挂载使用顺序无关的语义摘要核对一致：env sorted SHA-256
+  `898edaecfc1ae565be289058386497d9030c7e9342d6b1ca191599a36e12ede7`、
+  security spec `5fc39ecc3bf247b84709c138a8ab5a8523decb0275c87edde66e2d7c007ef3db`、
+  canonical mounts `b6e504e0fc6d079750539cb41492603bd2727bb35494f5b1b52be080ed109296`。
+  旧镜像 `26136…` 保留；私有 compose/manifest、deployment result 与 `700`
+  回滚脚本保存在 `/opt/rxycode/backups/worker-fe9abdd0-20261025T042717Z`。
+- 首次运维切换命令触及 30 秒命令边界；随后一次验证把未排序的
+  `Config.Env` 数组顺序差异误报为 env value 变化，触发一次仅 worker 的
+  回滚。改为排序后的 env、规范化 mount 语义复核后重新切换并通过。该事件是
+  ops 命令边界与验证数组顺序问题，**不是产品 harness 超时被改**。
+- r2 post-deploy 真实验收 `run 9e53dad6620d467eb6c547284f506471`：
+  target `call_1bba8b7bc383ccffc5fc0da28ee796e6` 仅执行一次，
+  `BEGIN=1792904521.7507348`、`END=1792904746.7513466`，
+  elapsed `225.0006118s`；`tool.completed` seq 401 为 `status=success`，
+  trace 中没有 numeric `exit_code` 字段，不补造退出码。
+  `process.liveness` seq 373 为 elapsed `180.001s`、observation `5s`、
+  process count 2、CPU/IO 0 的正常睡眠反馈。物理观察与反馈 PASS；owner
+  verdict 为 `action=unknown/note=判活超时`，这是旧 15 秒 fallback 超时，
+  不是有效 LLM unknown，故 owner BYOK LLM 判活 **NOT PASS**。主审已查看
+  UI PNG；证据目录为
+  `C:/Users/Administrator/.rxycode/ops/postdeploy-fe9abdd0-r2-20261025`。
+- 上述 run 随后请求额外 trajectory 日志只读审批；main 通过正常 API 取消
+  自己的 run，从 `waiting` seq 857 到 `cancelled` seq 864，不记自然
+  succeeded。更早的 `run 9efe…` 在模型正常 `ls` 预检前被 main 过严验收规则
+  拒绝并取消，该次无人为目标执行、无 liveness；这是验收规则问题，不是产品
+  bug，不能把 pre-run 无事件计作 bridge 失败。
+- 本阶段仍保持 P6、任务/工具预算、续期、权限与杀进程规则不变；5 秒
+  observation、UI 反馈及 `180/300/600` 检查点也未改。
+
+### 判活请求跟随当前模型超时（2026-10-25；本地完成，未部署）
+
+- `utils/shell.py` 的 `SessionLivenessJudge` 默认不再增加 wrapper deadline，
+  直接等待当前会话模型自身 `ainvoke` 的配置请求超时；模型原生
+  `TimeoutError` 仍诚实映射为 `unknown`，取消继续传播，不转成 verdict。
+  显式 `timeout_seconds` 参数只保留给有意要求兼容边界的旧 caller。
+- `core/agent_v2.py` 以当前会话已路由、usage-tracked LLM 真实构造
+  `SessionLivenessJudge`，不再读取 P6 `timeout_decision` 的
+  `decision_timeout_seconds`。P6 自身仍保持 15 秒 decision clock，任务/工具
+  预算、续期 ledger、权限与进程终止规则均未借用或修改。
+- 同步更新 `docs/modules/utils.md` 与 `docs/modules/core.md` 的 module
+  contract。既有 command completion 与用户取消路径继续 invalidate 并 await
+  已挂起 judge，迟到 feedback 被丢弃；这不是延迟通知或第二套观察器。
+- 新增 `tests/acceptance/test_liveness_request_lifetime.py` 8 项本地验收，
+  覆盖真实 `AgentV2` 构造、16.1 秒挂起请求越过 P6 15 秒、原生模型超时、
+  取消传播、非法 JSON、命令完成/用户取消的 in-flight judge 收尾、慢 judge
+  下命令继续且 call/session feedback 隔离，以及 P6 decision clock/ledger
+  不变。Lovelace 本地 fresh：16.1 秒挂起最终 `continue` 的 1 项
+  `17.88s`，其余 7 项 `6.65s`；相邻 parity `14 passed`，P6
+  engine/accounting `8 passed`，lazy-import `180/181`，Ruff 通过。
+- 独立 Halley fresh 复验确认同一 16.1 秒请求寿命项 `1 passed`（`17.98s`），
+  其余 7 项通过；相邻进程观察/生命周期 `29 passed, 4 skipped`，P6
+  `8 passed`，额外 guards `32 passed`，lazy 定向 `3 passed`，Ruff 通过。
+  4 个 skip 是 POSIX-only 用例在当前 Windows 主机上的运行边界，不表示
+  POSIX 分支已执行。模块时钟、P6 `decision_timeout_seconds=15s` 与
+  extension ledger 均保持不变；这些仍是本地验证，不是线上 LLM 判活 PASS。
+- 该等待策略仅在本地源码与测试中，尚未部署；生产 worker 仍是上述
+  `a409…` r2 镜像。待源码进入正式 CI 全绿后，再按授权从当前 `a409…`
+  仅加入新的 2 个产品文件制作 worker 薄层，不回退旧 snapshot。

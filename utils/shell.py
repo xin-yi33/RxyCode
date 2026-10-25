@@ -257,27 +257,54 @@ def _llm_response_text(response: Any) -> str:
 
 
 class SessionLivenessJudge:
-    """Current-session model judge without the P6 decision/ledger path."""
+    """Current-session model judge without the P6 decision/ledger path.
+
+    By default this adds no wrapper deadline. The current session LLM keeps
+    ownership of its configured request timeout.
+    """
 
     def __init__(
         self,
         llm_provider: Callable[[], Any],
         *,
-        timeout_seconds: float = 15.0,
+        timeout_seconds: float | None = None,
     ) -> None:
         self._llm_provider = llm_provider
-        self._timeout_seconds = max(0.1, float(timeout_seconds))
+        self._timeout_seconds = (
+            None
+            if timeout_seconds is None
+            else max(0.1, float(timeout_seconds))
+        )
 
     async def __call__(self, probe: Mapping[str, Any]) -> LivenessVerdict:
         llm = self._llm_provider()
         if llm is None or not callable(getattr(llm, "ainvoke", None)):
             return LivenessVerdict("unknown", "本次未判定（无可用会话 LLM）")
         try:
-            response = await asyncio.wait_for(
-                llm.ainvoke([HumanMessage(content=build_liveness_prompt(probe))]),
-                timeout=self._timeout_seconds,
+            request = llm.ainvoke(
+                [HumanMessage(content=build_liveness_prompt(probe))]
             )
+            if self._timeout_seconds is None:
+                # 2026-10-25 protection: do not reintroduce a fixed wrapper
+                # timeout here (including 15 seconds), and do not bypass the
+                # five-second observation/feedback path as a latency rewrite.
+                # This default follows the current LLM request's own timeout.
+                # P6 TimeoutDecisionEngine has a separate decision clock and
+                # ledger; neither is borrowed by process liveness.
+                response = await request
+            else:
+                # Explicit callers retain the pre-2026-10-25 compatibility
+                # boundary. AgentV2 does not pass this argument.
+                response = await asyncio.wait_for(
+                    request,
+                    timeout=self._timeout_seconds,
+                )
         except asyncio.TimeoutError:
+            if self._timeout_seconds is None:
+                return LivenessVerdict(
+                    "unknown",
+                    "本次未判定（判活失败：TimeoutError）",
+                )
             return LivenessVerdict("unknown", "本次未判定（判活超时）")
         except asyncio.CancelledError:
             raise

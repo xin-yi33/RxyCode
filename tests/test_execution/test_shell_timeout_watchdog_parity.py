@@ -426,7 +426,7 @@ async def test_probe_reporter_stays_with_request_context():
     assert [item[1]["probe_id"] for item in second_tui.items] == ["request-b"]
 
 
-async def test_session_liveness_judge_does_not_depend_on_p6_enabled():
+async def test_session_liveness_judge_default_does_not_borrow_p6_clock():
     from RxyCode.RxyCode1_1_0.core.timeout_decision import (
         TIMEOUT_DECISION_DEFAULTS,
         SessionLivenessJudge,
@@ -440,8 +440,22 @@ async def test_session_liveness_judge_does_not_depend_on_p6_enabled():
             return _Response()
 
     assert TIMEOUT_DECISION_DEFAULTS["enabled"] is False
-    judge = SessionLivenessJudge(lambda: _LLM(), timeout_seconds=1.0)
+    judge = SessionLivenessJudge(lambda: _LLM())
     verdict = await judge({"cpu_start_percent": 10.0, "cpu_end_percent": 10.0})
 
     assert verdict.action == "continue"
     assert verdict.note == "active"
+
+
+async def test_session_liveness_judge_explicit_timeout_remains_compatible():
+    from RxyCode.RxyCode1_1_0.core.timeout_decision import SessionLivenessJudge
+
+    class _HangingLLM:
+        async def ainvoke(self, _messages):
+            await asyncio.sleep(60.0)
+
+    judge = SessionLivenessJudge(lambda: _HangingLLM(), timeout_seconds=0.05)
+    verdict = await judge({"cpu_start_percent": 10.0, "cpu_end_percent": 10.0})
+
+    assert verdict.action == "unknown"
+    assert verdict.note == "本次未判定（判活超时）"
