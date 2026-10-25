@@ -987,7 +987,7 @@
 - 本阶段仍保持 P6、任务/工具预算、续期、权限与杀进程规则不变；5 秒
   observation、UI 反馈及 `180/300/600` 检查点也未改。
 
-### 判活请求跟随当前模型超时（2026-10-25；本地完成，未部署）
+### 判活请求跟随当前模型超时（2026-10-25；实现阶段）
 
 - `utils/shell.py` 的 `SessionLivenessJudge` 默认不再增加 wrapper deadline，
   直接等待当前会话模型自身 `ainvoke` 的配置请求超时；模型原生
@@ -1005,7 +1005,9 @@
   取消传播、非法 JSON、命令完成/用户取消的 in-flight judge 收尾、慢 judge
   下命令继续且 call/session feedback 隔离，以及 P6 decision clock/ledger
   不变。Lovelace 本地 fresh：16.1 秒挂起最终 `continue` 的 1 项
-  `17.88s`，其余 7 项 `6.65s`；相邻 parity `14 passed`，P6
+  `17.88s`，其余 7 项 `6.65s`；相邻聚合 `14 passed`（parity 文件加
+  `tests/acceptance/test_process_liveness_independent.py`，不是 parity
+  单文件 14 项），P6
   engine/accounting `8 passed`，lazy-import `180/181`，Ruff 通过。
 - 独立 Halley fresh 复验确认同一 16.1 秒请求寿命项 `1 passed`（`17.98s`），
   其余 7 项通过；相邻进程观察/生命周期 `29 passed, 4 skipped`，P6
@@ -1013,6 +1015,103 @@
   4 个 skip 是 POSIX-only 用例在当前 Windows 主机上的运行边界，不表示
   POSIX 分支已执行。模块时钟、P6 `decision_timeout_seconds=15s` 与
   extension ledger 均保持不变；这些仍是本地验证，不是线上 LLM 判活 PASS。
-- 该等待策略仅在本地源码与测试中，尚未部署；生产 worker 仍是上述
-  `a409…` r2 镜像。待源码进入正式 CI 全绿后，再按授权从当前 `a409…`
-  仅加入新的 2 个产品文件制作 worker 薄层，不回退旧 snapshot。
+- 上述为部署前的本地实现与测试记录；实际提交、CI、候选和 worker-only
+  发布结果见下节。
+
+### Liveness timeout worker-only 发布（2026-10-25）
+
+- `247be96e31a41a85a3f185244d794e4da2f111b5` 的 main CI
+  `40166956475` 全 6 job success，包含 Linux Python 3.11/3.12；Web 源码未改，
+  沿用 fe9 的 Web CI `40146422105` 全 4 success。
+- 新候选 `rxycode-worker:liveness-timeout-247be96-20261025`
+  （`sha256:066e7048c9ea7da1852594adf3eaa168dd984ad7ef369deb14ae76005e863c69`）
+  的 parent 严格为当前生产 `sha256:a409d412bd040109eaf7ae3d7f7484549d3b76c2587c0df64fcfdf38f655878a`，
+  RootFS `51→52`，业务层仅覆盖该 commit 的 `utils/shell.py` 与
+  `core/agent_v2.py` 两个产品 blob，不回退或整文件覆盖旧 snapshot。
+  实际 runtime hash 为
+  `ba1b2b86579204abe64cf172dffc6e1179a23d11252de0434ec677c9ad2faf28`
+  与
+  `4975ff65530e08eeb80c0ec13d09e522e72ed9344f755edef88f98a89d160275`。
+- 2026-10-25 `14:35:02 CST`（`06:35:02Z`）实际切换，仅对 worker 执行
+  no-deps force recreate，三个副本均 healthy：
+  `a82cf410c128…`、`4f6f4834a188…`、`10723a3eb886…`。API、Gateway、
+  PostgreSQL、Redis、MinIO 容器 ID 均未变；`/app` 与
+  `/api/v1/auth/csrf` 均 HTTP 200，切换后无 active run。
+- 用户授权的唯一运行时语义变化是 liveness judge 等待当前模型自身的请求
+  超时：生产 `AgentV2` 实际构造 `SessionLivenessJudge` 时不传
+  `timeout_seconds`，也不读取 P6 `decision_timeout_seconds`。P6 的 15 秒
+  decision clock、任务/工具预算、续期、权限、杀进程规则、5 秒 observation
+  与 `180/300/600` 检查点均未修改。
+- 隔离 Linux 新 candidate 验收：liveness request lifetime `8 passed`；
+  `test_shell_timeout_watchdog_parity.py` 单文件 `10 passed`；process bridge
+  `12 passed`；bridge acceptance `5 passed`；approval resume `2 passed`。
+  前文 Lovelace 的 `14 passed` 是 parity 文件加
+  `test_process_liveness_independent.py` 的两文件聚合，与本次单文件 10
+  不冲突，不重跑凑数。
+- 首次切换后的 caller 验收由 ops 探针遗漏 `docker exec -i`，空 heredoc
+  返回空字符串，自动触发一次仅 worker 回滚到 parent `a409…`；隔离诊断确认
+  产品 caller 与 judge 配置正确。修正探针后重新切换同一已授权候选并全部
+  通过。这是运维探针误报，不是产品 bug。
+- 真实 300 秒运行、复审与清理结果见下节；本节只记录候选发布，不代表整体
+  E2E 已通过。
+
+### 300 秒真实运行最终验收与 OPEN（2026-10-25）
+
+- 线上真实 run `7d66a213314648ada8eec4aa112727d3` 使用 owner BYOK
+  `deepseek-v4.1-flash`、permission profile `confirm`。目标为已导入的
+  `delay_demo_300.py`，`execution_count=1`，唯一目标调用
+  `call_90d8b86f0876f70d0c3ae8f4421a62f0`；审批请求/批准/启动分别为
+  seq 88/92/108。`tool.completed` seq 432 为 `status=success`，
+  `tool.result` seq 433 返回同一 stdout：
+  `BEGIN=1792910857.712589`、`END=1792911157.7132807`、
+  `ELAPSED=300.000691652298`。trace 没有 numeric `exit_code` 字段；
+  本文只引用可核实的 `status=success` 与 UI 可见结果，不补造数字退出码。
+- `process.liveness` seq 294 在 elapsed `180.003s` 给出物理采样：
+  observation `5.0s`、process count `3→3`、CPU `0.0%→0.0%`、
+  IO `0KB→0KB`，判定为正常低活动等待并 `action=continue`。该反馈来自
+  真实模型请求，不是 timeout/fallback；provider timeout/error 标记为 false。
+  主线程已人工查看 `liveness-180.png`，UI 中任务继续运行且最终自然完成。
+- 分层结论必须同时保留：本次 watchdog 目标 `PASS (3/3)`，即执行
+  `300.000691652298s` PASS、物理采样 PASS、真实 LLM feedback PASS；
+  但整体 E2E **NOT GREEN**，因为目标完成后又出现下述未决额外审批。
+- 从 target `tool.started` SSE 接收到 liveness SSE 的 total judge window 为
+  `197.346s`；扣除 180.003 秒 elapsed 与 5.0 秒 observation 后的
+  `12.343s` 只是含排队、模型判断和传输代理的外部估算，不是纯模型耗时，
+  也不能单独证明线上单次请求大于 15 秒。16.1 秒挂起请求经真实 AgentV2
+  构造并越过 P6 15 秒的构造验收，加上 300 秒线上运行未在 15 秒取消，
+  才支持“不再固定 15 秒取消”的结论。
+- P6 的 `decision_timeout_seconds=15` 构造保持不变；全部任务/工具预算、
+  续期、权限与杀进程规则、5 秒 observation 以及 `180/300/600` 检查点
+  均未修改。用户明确同意的唯一语义变化仍是取消 liveness wrapper 的额外
+  15 秒，沿用模型自身 timeout，并在命令结束或用户 cancel 后立即收尾。
+- 目标完成后，模型又请求查找 workspace-root 脚本的额外审批
+  `ca7505f206d446169e16ff98ba0f38ed`（call
+  `call_515e7ae3d59e36f2937bb4734580b725`，seq 453），随后停在
+  `waiting_approval` seq 456。该审批未获批准，命令未执行。main 通过正常
+  cancel API 取消自己的 run：`cancel_requested` seq 457，最终 seq 463 为
+  `cancelled`，**不是自然 `succeeded`**。
+- 目标完成后的额外审批请求是 **OPEN 现象**，目前未核实根因，不将其命名为
+  确定性产品 bug，也不为凑 GREEN 盲改模块。该 OPEN 需要在后续独立范围中
+  用最小复现和事件链确认；本次不扩展产品修复。
+- 自有 session `a13fef5830c441b6914242912a62bd7f` 经正常 API 删除返回
+  204，随后 GET 为 404 `SESSION_NOT_FOUND`；语义为 soft deletion 加
+  tombstone/purge。自有 attachment
+  `9a4010a1a0e34d938b971bcc46e2553c` 删除返回 204，随后 GET 为 404
+  `ATTACHMENT_NOT_FOUND`，blob 已删除。更早的 225 秒历史失败、脱敏
+  trace、JSON/PNG/manifest 与 ops 回滚证据均保留。
+- 一次性 fixture、raw HAR、collector 与 sanitizer 已清理；任务独占的
+  agent-browser session `9f03…` 已正常关闭，状态为 active false、pid null，
+  未操作用户默认 Chrome 或 CDP。
+- 已按明确文件名核对本任务五份旧归档：candidate-context、candidate、
+  qa-bundle、tests 与 process-bridge QA。它们均无可见活跃引用且未锁定，
+  但删除操作被执行策略在启动前阻断，所以本次没有删除任何一份；文件原样
+  保留，未通过其他 API 或绕路重试。服务器 QA/manifest 与回滚根备份仍保留，
+  不 prune、不重启、不部署。
+- `D:\agent-demo\RxyCode-masterverify\.codex-tmp\resume_probe_proof`
+  先前已被策略阻断；本次仅只读确认其仍存在且当前仅含 `__pycache__`，
+  未尝试绕过。需要用户手动清理时可执行：
+  `Remove-Item -LiteralPath 'D:\agent-demo\RxyCode-masterverify\.codex-tmp\resume_probe_proof' -Recurse -Force`。
+- 本文件仍为 `1.4.5` 开发期 changelog，不 bump 版本、不打 tag、不发布
+  release。源码提交的 main CI `40166956475` 全 6 job success 只对应
+  `247be96…`；若本 docs-only 提交另行触发 CI，应单独报告其结果，不能把
+  源码 CI 结果误称为最新 docs commit 的 CI 结果。
