@@ -2,10 +2,33 @@
 
 > 历史部署快照（截至 2026-10-22 16:01 R4）：此前的 Web 手机认证/主题兼容、ALTCHA R1/R2 及移动端整页 CSS 兼容最终版 R4 已部署至 `https://rxycode.xyz`，产品版本号未修改；R3 是中间态，已被 R4 替代。思考过程与 BYOK 额度显示于 15:40 部署，并由 R4 保留。该快照不包含本文件末尾新增的“手机/电脑共用 ALTCHA 协议与 HTTPS 入口”工作：其 fresh 回归已由父代理完成，但生产入口尚未部署，匿名公网验证待部署后进行。下方 CI 修复批次是独立记录，不属于上述 Web 镜像部署范围；历史部署范围与记录见 [`OPS-LOG.md`](../deploy/OPS-LOG.md)。
 >
-> 1.4.5 尚未发版；本文件记录的部署不代表产品版本升级。此后新增先记在本文件。
+> 1.4.5 于 2026-10-26 汇总发版；下方历史部署记录仍按当时状态保留，不代表每一项都已进入 1.4.5 发布物。
 
 > 本文件按两部分组织：**RxyCode Web**（`apps/web`、`packages/rxycode-server`、`tests/web/*` 等 Web 产品面）与 **RxyCode CLI**（`core/`、`tools/`、`execution/`、`appserver/` 等 CLI/agent 内核）。新增条目请写入对应部分。
 
+
+## 1.4.5 发版汇总（2026-10-26）
+
+产品版本 **1.4.5**；JSON-RPC 仍是 `1.1.0`；稳定导入命名空间 `RxyCode1_1_0` 不变。GitHub Release 只发布 `rxycode-1.4.5.tar.gz`（sdist）；没有 wheel、没有新的 Desktop 安装包，也没有 PyPI 1.4.5。面向用户的说明见 [RELEASE_NOTES_v1.4.5.md](RELEASE_NOTES_v1.4.5.md)。
+
+按用户价值分组：
+
+- **CLI 持久 Shell**：按会话复用受管 Shell，保留 `export`/`cd`/venv/函数；每条命令仍走校验、风险分级、审批、journal、输出上限和 OS 沙箱；取消/崩溃清树并如实报告状态丢失。
+- **写后即时诊断**：`write`/`edit`/`patch` 共用一个入口；Python `compile()` + Ruff、JS `node --check`、TS/TSX 项目 `tsc`；状态 `pass`/`problems`/`unavailable`/`timeout`/`cancelled`/`stale`/`not_checked`，只有 `pass` 算通过；项目自带可执行检查器配置需要显式信任。
+- **子代理协作与归属**：`spawn_subagent` 的 `sync`/`async`/`stream`，以及 `send_message_to_subagent`/`list_agents`/`cancel_subagent`；独立上下文、权限和预算；父子归属由运行时决定。
+- **权限分档**：`confirm_all` 编辑与 shell 审批；`auto_edit` 编辑免审但 shell 仍审批；`full_auto` 除硬黑名单外免审；shell 审批至少 `WRITE`，READ 提升、DANGER 不降级；Plan 执行层只读；Web 的 `full` 只是审批语义，沙箱不变。
+- **MCP 与工具发现保持可用**：MCP/插件工具仍走 `ToolOrchestrator`、审批与审计；每个 server 的工具清单记录 schema 面并告警漂移；`tool_search` 仍按需发现定义并把完整 discovery 留在上下文；线协议不变。
+- **Web BYOK 工作区**：只用用户自己的模型连接；附件暂存/事务绑定/文档正文抽取；产物清单、签名下载、Range、图片/HTML/文本预览；问题卡单选；思考/任务时间线；390px 与 Chromium 90/98/148、Playwright Firefox/WebKit 覆盖。
+- **长任务判活**：线上 300 秒 run 目标完成（`ELAPSED=300.000691652298`），`180.003s` 检查点采到 5 秒观察、3 进程、CPU/IO 0，owner BYOK 返回 `continue` 且 UI 可见；经批准移除额外固定 15 秒等待，P6 15 秒 clock、预算、续期和权限不变。
+
+必须保留的边界：
+
+- 整体 Web E2E **NOT GREEN**：目标完成后又请求额外文件检查审批 `ca7505f206d446169e16ff98ba0f38ed`，最终由 owner 正常取消自己的 run，终态 `cancelled`，不是自然 `succeeded`；额外审批原因仍是 OPEN。
+- 判活只有一次 run、一个模型；Linux 3.10 容器（Python 3.12）和 Windows 有真实证据，macOS 实机未验；真实 iOS/Vivo/Safari 未验。
+- 历史 CI 基线：源码 `247be96e` 的 `40166956475` 为 6/6；docs `63fcde7b` 的 `40173191825` 为 6/6。它们不代表 v1.4.5 tag，tag 需要自己的新 CI。
+- 1.4.5 不发布新 Desktop 包、不发布 wheel、不上 PyPI。
+
+下方为 1.4.5 开发期的完整历史记录，失败、回滚和未部署项均按当时状态保留，不因本次发版汇总删除。
 
 ## RxyCode Web
 

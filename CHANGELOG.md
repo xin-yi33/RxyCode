@@ -13,6 +13,64 @@ No unreleased changes recorded.
 
 ---
 
+## [1.4.5] - 2026-10-26
+
+Product metadata is `1.4.5`. JSON-RPC remains `1.1.0`; the
+`RxyCode1_1_0` import namespace is unchanged. The GitHub Release publishes one
+source distribution, `rxycode-1.4.5.tar.gz`. It does not publish a wheel, a
+new Desktop installer, or a PyPI 1.4.5 upload.
+
+### Added
+
+- **Persistent managed shell** for the interactive `bash` tool: one shell per
+  session keeps `export`, `cd`, activated virtualenvs, and shell functions
+  across calls. Every command still passes the existing validation, risk
+  classification, approval, journal, bounded output, and OS-sandbox path.
+  Cancel or shell loss tears down the process tree and reports the lost state
+  instead of replaying the command. `RXYCODE_MANAGED_SHELL=0` disables it;
+  Docker mode keeps one container per command.
+- **Write-time diagnostics shared by write/edit/patch**: Python `compile()`
+  plus optional Ruff, JavaScript `node --check`, and project `tsc` for TS/TSX.
+  The report separates `written` from `diagnostics.status`; only `pass` counts
+  as a pass, and missing checkers report `unavailable`/`not_checked`. Project
+  executable checker config requires explicit trust.
+- **Subagent collaboration tools**: `spawn_subagent` (`sync`/`async`/`stream`),
+  `send_message_to_subagent`, `list_agents`, and `cancel_subagent`, with
+  runtime-owned parent/child attribution and isolated context, permissions,
+  and budgets.
+- **Three permission tiers aligned with code**: `confirm_all` asks for edits
+  and every shell call; `auto_edit` auto-approves file edits but still asks for
+  shell; `full_auto` skips ordinary prompts but never the hard denylist. Shell
+  approval is at least `WRITE`: READ is lifted to WRITE, while DANGER stays
+  DANGER and is never lowered. Plan mode is read-only at the execution layer.
+- **Web BYOK workspace**: user-owned model connections only (no platform
+  fallback), transactional attachment binding, built-in DOCX/XLSX/PPTX and
+  ODF text extraction, artifact manifests with signed/Range downloads,
+  image/HTML/text previews behind a CSP sandbox, single-select question cards,
+  expandable thinking/task blocks, and mobile/legacy-Chromium coverage.
+- **Long-task liveness**: a real 300-second Web run completed its target
+  (`ELAPSED=300.000691652298`); the `180.003s` checkpoint recorded a 5-second
+  observation, three processes, zero CPU/IO, an owner-BYOK `continue`, and a
+  visible UI update. The extra fixed 15-second liveness wait was removed with
+  approval; the P6 15-second decision clock, task/tool budgets, renewal,
+  permissions, and kill rules are unchanged.
+
+### Known boundaries
+
+- The overall 300-second Web E2E is **not green**: after the target completed,
+  the model requested an extra file-check approval
+  (`ca7505f206d446169e16ff98ba0f38ed`), and the run was cancelled by its owner
+  (`cancelled`, not natural `succeeded`). The extra-approval cause is OPEN.
+- The liveness evidence is one run and one model. macOS was not run on a real
+  machine for this release; Linux 3.10 container (Python 3.12) and Windows
+  have real evidence. Real iOS/Vivo/Safari devices were not verified.
+- Historical CI baselines: source `247be96e` passed `40166956475` (6/6 jobs);
+  docs `63fcde7b` passed `40173191825` (6/6). These are not a CI result for the
+  v1.4.5 tag, which needs its own new run.
+
+See [release notes](docs/release-notes/RELEASE_NOTES_v1.4.5.md) and the full
+[v1.4.5 development changelog](docs/release-notes/CHANGELOG_v1.4.5.md).
+
 ## [1.4.4] - 2026-10-22
 
 Web release: `feat/rxycode-web` lands the hosted product on top of the shared

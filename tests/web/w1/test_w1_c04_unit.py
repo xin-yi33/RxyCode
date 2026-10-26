@@ -14,7 +14,7 @@ LEGACY_PROMPT = {
 LEGACY_INITIALIZE = {
     "method": "initialize",
     "client_name": "cli",
-    "client_version": "1.4.4",
+    "client_version": "1.4.5",
     "protocol_version": "1.1.0",
 }
 LEGACY_APPROVAL = {

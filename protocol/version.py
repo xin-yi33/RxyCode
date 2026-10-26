@@ -3,7 +3,7 @@
 PROTOCOL_VERSION = "1.1.0"
 PROTOCOL_VERSION_MIN = "1.0.0"
 PROTOCOL_VERSION_MAX = "1.1.0"
-APPSERVER_VERSION = "1.4.4"
+APPSERVER_VERSION = "1.4.5"
 
 
 def parse_protocol_version(value: str) -> tuple[int, ...]:

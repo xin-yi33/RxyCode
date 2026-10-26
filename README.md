@@ -1,209 +1,137 @@
-<!-- README_SYNC: source=working-tree; updated=2026-10-22 -->
+<!-- README_SYNC: source=working-tree; updated=2026-10-26 -->
 <div align="center">
 
 **English** · [简体中文](./README.zh-CN.md)
 
-# 🚀 RxyCode
+# RxyCode
 
-**Open-source local AI coding agent. The app runs on your machine; model traffic follows the endpoint you configure.**
+**An MIT-licensed coding agent with a headless Python core. Run the CLI/OpenTUI on your machine, or use the same harness from a browser.**
 
-[⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, and asks before risky writes.
+[⭐ Star this repo](https://github.com/xin-yi33/RxyCode) if you want a local agent that plans, runs tools, checks its own writes, and asks before risky operations.
 
-[![Version](https://img.shields.io/badge/version-1.4.4-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4)
+[![Version](https://img.shields.io/badge/version-1.4.5-blue.svg)](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.5)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/ci.yml)
+[![Web CI](https://github.com/xin-yi33/RxyCode/actions/workflows/web-ci.yml/badge.svg)](https://github.com/xin-yi33/RxyCode/actions/workflows/web-ci.yml)
 [![Stars](https://img.shields.io/github/stars/xin-yi33/RxyCode?style=social)](https://github.com/xin-yi33/RxyCode/stargazers)
 
 <p>
-  <img src="docs/assets/cli-demo.gif" alt="RxyCode Terminal Demo" width="800">
+  <img src="docs/imgs/cli-demo-cover.png" alt="RxyCode OpenTUI session" width="800">
 </p>
 
-[⭐ Star](https://github.com/xin-yi33/RxyCode) &nbsp;·&nbsp; [⚡ Quick Start & Deployment](#-quick-start--deployment) &nbsp;·&nbsp; [🔑 Key Highlights](#-key-highlights) &nbsp;·&nbsp; [🖥️ How to Use](#️-how-to-use) &nbsp;·&nbsp; [Docs](docs/)
+<p align="center"><sub>Existing OpenTUI capture. v1.4.5 adds the terminal polish and engine changes listed below; the CLI entry point is unchanged.</sub></p>
+
+[⭐ Star](https://github.com/xin-yi33/RxyCode) &nbsp;·&nbsp; [⚡ Quick start](#-quick-start-five-steps) &nbsp;·&nbsp; [🔑 What is different](#-what-is-different) &nbsp;·&nbsp; [🖥️ Surfaces](#️-surfaces) &nbsp;·&nbsp; [Docs](docs/)
 
 </div>
 
-RxyCode is an autonomous coding agent running locally on your hardware. Bring an API key for any OpenAI-compatible model (DeepSeek, Qwen, Kimi, Claude, GPT, GLM, Doubao, or custom endpoints), and RxyCode takes over: decompose tasks, code solutions, execute commands, research the web, and mechanically verify the outcome. Terminal TUI out-of-the-box, optional Desktop GUI, and extensible with MCP and Skills.
+RxyCode is a coding agent you can run locally or from a browser. The core is a headless Python process (`Session` over `AgentV2`); OpenTUI, the Ink fallback, the Desktop shell, and the Web console are clients. The CLI runs on your machine. The hosted Web console runs each turn inside a cloud sandbox and cannot read your disk unless you explicitly pair a machine with `rxycode connect` or upload a file.
 
-**v1.4.4 ships RxyCode Web — the same headless agent, now reachable from a browser.** A live instance runs at [rxycode.xyz](https://rxycode.xyz): visitor shell, email-code auth with ALTCHA proof-of-work, single-device login lock, BYOK key vault, durable runs on PostgreSQL worker leases, per-run kernel sandboxes, and an explicit device bridge (`rxycode connect`) that lets a paired machine execute shell calls under a local approval gate. The deployment runs on a small community VM and the web surface is still early — expect rough edges, not SLAs. Product metadata is 1.4.4; JSON-RPC stays `1.1.0`. The CLI/OpenTUI/Desktop behavior is unchanged from v1.4.3; no new Desktop installer is published. Details are in the [release notes](docs/release-notes/RELEASE_NOTES_v1.4.4.md).
+The CLI is the primary surface for v1.4.5. It plans, calls tools, runs commands, and verifies the result. Bring an OpenAI-compatible model key; model traffic goes to the endpoint you configure, not through a mandatory relay.
 
-> 💡 **Want a quick test drive?** Run instantly without installation if you have Python 3.10+:  
-> `uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4" rxycode`
-> See [⚡ Quick Start & Deployment](#-quick-start--deployment) for complete install options, Desktop app, Docker, and Node.js frontend builds.
+> **v1.4.5 · 2026-10-26.** Persistent shell state, write-time diagnostics, subagent collaboration tools, stricter permission tiers, and the Web BYOK workspace with attachments, artifacts, and previews. Product metadata is `1.4.5`; JSON-RPC stays `1.1.0`; the import namespace `RxyCode1_1_0` is unchanged. The GitHub Release publishes one sdist, `rxycode-1.4.5.tar.gz` — no wheel, no new Desktop installer, and no PyPI 1.4.5 upload.
 
 ---
 
-## 🔑 Key Highlights
+## 🔑 What is different
 
-### 👥 Multi-Agent Architecture & Deterministic Expert Teams
+**1. A shell that keeps state, without keeping permission.**
+The agent's interactive `bash` now reuses one managed shell per session, so `export`, `cd`, `source venv/bin/activate`, and shell functions survive across calls. Every command still goes through the same argument validation, risk classification, approval gate, journal, output cap, and OS sandbox. Cancelling or losing the shell discards the process tree and reports the state loss honestly; it does not replay the command. `RXYCODE_MANAGED_SHELL=0` disables the path. Docker mode stays one-container-per-command.
 
-RxyCode goes far beyond a single-prompt ReAct loop.
+**2. Checks run when the file is written.**
+`write`, `edit`, and `patch` share one post-write entry. Python gets a real `compile()` plus an optional Ruff pass; JavaScript gets `node --check`; TS/TSX uses the project's own `tsc` configuration. The result has separate `written` and `diagnostics.status` fields, and only `pass` counts as a pass. Missing checkers report `unavailable` or `not_checked` instead of a fake success. Project-supplied executable checker config (for example ESLint flat config) requires explicit trust; the safe checks still run, and no dependencies are installed on demand.
 
-**Isolated Subagents**: For complex workloads, RxyCode spawns isolated child agents. Each child receives its own session, scoped tools, write permissions, and token budgets. Inspect the hierarchy with `/children` or dispatch tasks directly using `@agent` syntax.
+**3. Subagents you can address, not just spawn.**
+Built-in child agents (`explore`, `general`, `reviewer`, `scout`) run in isolated sessions with their own context, tool scope, permission policy, and budget. The model can call `spawn_subagent` in `sync`, `async`, or `stream` mode, then use `send_message_to_subagent`, `list_agents`, and `cancel_subagent`. Parent/child attribution comes from the runtime, not from text the child can forge. `/children` shows the tree; `@explore` routes a request; `RXYCODE_SUBAGENTS=0` restores the single-agent baseline.
 
-**Expert Team Mode**: Toggle `/agents on` to engage a full software organization rather than a lone agent. The built-in `software_dev` pack features 10 specialized roles across 7 stages:
+**4. Permission tiers with a hard floor.**
+`confirm_all` auto-approves reads, but every edit and every shell command asks. `auto_edit` also auto-approves file edits, while shell still asks. `full_auto` removes prompts for ordinary tools but never overrides the hard denylist. Shell approval is never below WRITE: a READ shell command is lifted to WRITE, while a DANGER command stays DANGER. Plan mode is read-only at the execution layer, not just in the prompt. Write targets stay inside the project root or the configured output directory; the audit log records the decision. On the hosted Web worker, `full` is only an approval profile: the turn still runs in the per-run sandbox with the same mounts, network policy, and writable domain.
 
-```text
-PM → Architect → Frontend Engineer ∥ Backend Engineer → QA Tester → Mechanical Gate → Security ∥ Quality ∥ Maintainability Audit → Documentation
+**5. One harness, several surfaces.**
+OpenTUI talks to the core over stdio JSON-RPC through `appserver`; the API server exposes HTTP + SSE; the Web worker calls the same `Session.prompt` path. The wire protocol is still `1.1.0`. Tool discovery follows the same contract: MCP/plugin schemas load on demand through `tool_search`, and every MCP tool call passes the same gate and audit path. This is why a fix in the agent loop or a tool contract applies to every surface instead of being re-implemented per client.
+
+**6. A cloud workspace that is explicit about the boundary.**
+The Web console requires a user-owned BYOK model key; there is no platform-model fallback. Runs, events, approvals, and artifacts are durable on PostgreSQL. Files can be uploaded into the tenant workspace; finished files appear in an artifact manifest with signed download links and image/HTML/text previews. A cloud run cannot touch your computer by default. Pairing a machine with `rxycode connect` is the explicit bridge, and every shell call still goes through a local approval inbox.
+
+---
+
+## ⚡ Quick start (five steps)
+
+### 1. Check the runtime
+
+Python 3.10+ is required. The CLI installer also provisions Bun for OpenTUI. Node.js 20+ is only needed for the Ink fallback or a Desktop source build.
+
+### 2. Run from the tagged source, or install the CLI
+
+```bash
+uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.5" rxycode
 ```
 
-Engineering design principles:
-- **Deterministic SOP State Machine**: Stage transitions are driven by code, not hallucinated LLM decisions. Unlike CrewAI's hidden prompt routing or AutoGen's runaway chat loops, RxyCode's SOP is fully auditable and predictable.
-- **Concurrent Implementation & 3-Perspective Auditing**: Frontend and backend coders implement concurrently; security, quality, and maintainability reviewers audit in parallel.
-- **Mechanical Verification Gate**: Code syntax, parsing, linting, and automated tests run first before invoking LLM auditors. Verdicts are cryptographically tied to the commit SHA-256.
-- **Four Cost Fuses (BudgetGuard)**: Enforces hard ceilings on token spend, wall-clock time, delegation hops, and consultation turns. If any fuse trips, execution halts gracefully and yields partial deliverables.
-- **Disabled by Default**: Benchmark evals show solo mode is faster and cheaper for standard tasks (team mode consumes ~3x tokens and ~2.5x time). Reserve team mode for large, modular projects.
+Install it permanently:
 
-You can also author custom teams by defining roles, SOP stages, and toolsets in a clean YAML specification validated by `validate_team`.
+```bash
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.5"
+```
 
-### 🧠 Plan → Execute → Verify Pipeline
+macOS / Linux installer:
 
-Complex work flows through an explicit LangGraph state machine:
+```bash
+curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.5/install.sh | sh
+```
 
-1. **Goal Planning**: Analyzes intent and constructs an executable `TaskTree` (up to 4 levels, 64 nodes max).
-2. **DAG Scheduling**: Resolves dependency graphs to dispatch independent read/write tasks concurrently.
-3. **Context-Isolated Execution**: Each subtask receives context strictly filtered through its ancestor chain, avoiding prompt clutter and token waste.
-4. **Deterministic Validation**: Runs deterministic checks (syntax parsing, file diffs, test runs), then reconciles outputs against original acceptance criteria. Failures are classified (planning vs. reasoning vs. tooling) to guide intelligent replanning.
-5. **Grounded Synthesis**: Every claim in the final answer must cite concrete tool evidence (file diffs or command exits). No hallucinations.
-
-Simple queries and greetings automatically take an optimized fast path backed by two-level caching (exact hash + semantic similarity).
-
-### 🛡️ Defense-in-Depth Safety Gate
-
-Every tool invocation passes through a policy gate before touching your system:
-
-| Risk Level | Operations | Policy |
-|---|---|---|
-| **READ** | File reading, grep, web fetching | Auto-approved |
-| **WRITE** | File modifications, code editing, standard shell commands | Requires approval (configurable to auto) |
-| **DANGER** | `git push --force`, installers | Always blocks for explicit user confirmation. `rm -rf /` and `format C:` are on the hard blacklist and never run |
-
-- **Dynamic Command Escalation**: Regular shell calls default to WRITE, but commands matching high-risk signatures automatically escalate to DANGER.
-- **Write Whitelist**: Enforces workspace confinement. Modifying paths outside project root or `~/.RxyCode/output/` fails closed.
-- **Dry-Run Mode**: Set `RXYCODE_DRY_RUN=1` to simulate actions without disk or network side effects.
-- **Audit Logging**: All actions append to `~/.RxyCode/logs/audit.jsonl` with credentials and API tokens masked.
-
-### 🏠 Local Runtime vs Model Traffic
-
-Claude Code requires an Anthropic subscription; Codex runs the agent loop on remote servers. RxyCode is MIT licensed: **the program, the git workspace, and encrypted API keys stay on your machine.** That is not the same as “no code ever leaves this computer.”
-
-| Stays on this machine | Leaves this machine when you use a cloud model |
-|---|---|
-| Desktop / TUI / CLI process | Current prompt and system instructions |
-| Files on disk until a tool reads them | Recent turns still in the context window |
-| Keys in `~/.RxyCode/` (Windows DPAPI / POSIX `0600`) | File excerpts, diffs, and command output already returned by tools this session |
-| Audit log `~/.RxyCode/logs/audit.jsonl` | Images, if you use vision |
-
-The whole repository is **not** uploaded automatically. Only content the agent actually read or produced, then placed into the model messages, is sent. `websearch` sends the query to DDGS; `webfetch` contacts the target URL; MCP servers see whatever those tools return. Bring your own keys—DeepSeek, Qwen, Kimi, Doubao, GLM, SiliconFlow, OpenAI, Anthropic proxies—with no middleware lock-in.
+Windows PowerShell installer:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.4/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.5/install.ps1 | iex"
+```
+
+The installer creates an isolated tool environment; it does not modify system Python packages. See [docs/quickstart.md](docs/quickstart.md) for the full matrix.
+
+### 3. Add a model
+
+```bash
 rxycode
 ```
 
-MCP tools share the same safety gate, audit log, and retry backoff as built-in tools.
+Inside OpenTUI, run `/addmodel`. The wizard stores the key with Windows DPAPI or a POSIX `0600` credential file, masks it in the UI, and never writes it to the transcript. `rxycode config add-model <id> <provider-model-id> --base-url <url>` is the headless equivalent; it reads the key from `RXYCODE_API_KEY`, never from argv.
 
-### 🧠 Tiered Memory Architecture & Codebase RAG
+### 4. Give it a task
 
-RxyCode remembers across sessions:
-- **Short-Term Memory**: Sliding window of recent message exchanges.
-- **Long-Term Compression**: Summarizes past reasoning and tool runs beyond threshold limits.
-- **User Knowledge**: Explicit persistent facts recorded via `/memory add`.
-- **Vector Experience Store**: Retrieves proven past plans and successful patterns for related queries.
-- **Codebase Vector RAG**: AST-guided chunking + float32 Numpy vector store + PageRank symbol repository map. Debounced background workers incrementally index on file save.
+Try a small one first:
+
+```text
+Create a single-file click-counter.html in this folder, then open it and verify the button increments.
+```
+
+Approve file writes or shell calls when the gate asks. In Plan mode the agent can read and propose, but writes are refused. In Build mode it can execute, and the result is checked before it is reported.
+
+### 5. Pick a surface
+
+- **CLI / OpenTUI:** `rxycode`
+- **Headless API:** `rxycode --api` (default port `8765`)
+- **Web:** [rxycode.xyz](https://rxycode.xyz) — early preview; sign in and bring your own model key
+- **Desktop:** source is under `frontend/desktop-app/`; v1.4.5 publishes no new Desktop binary. `rxycode gui` only launches an already installed Desktop tree.
 
 ---
 
-## ⚡ Quick Start & Deployment
+## 📦 Install and release artifacts
 
-Choose the installation or deployment method that best fits your workflow:
+v1.4.5 publishes exactly one GitHub Release asset: `rxycode-1.4.5.tar.gz` (source distribution). The v1.4.5 release does **not** include a wheel, `.exe`, `.dmg`, or `.AppImage`, and there is no PyPI 1.4.5 release. The `.github/workflows/release.yml` workflow rejects non-sdist artifacts before publishing.
 
-### 1. Instant Trial (Recommended)
-
-Requires only Python 3.10+. No global installation, instant execution:
+From a downloaded sdist:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xin-yi33/RxyCode/v1.4.4/install.sh | sh
-rxycode
+python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.5.tar.gz
 ```
 
-The installer bootstraps `uv` if needed, creates an isolated tool environment, and installs the pinned **`v1.4.4`** release. That is the **CLI / OpenTUI** package. It does not include the Electron Desktop app.
-
-The installer bootstraps `uv` (if missing) and configures an isolated runtime without touching system packages:
-
-**Downloads:** the latest release (**`v1.4.4`**) publishes **one** asset: `rxycode-1.4.4.tar.gz`. It does not ship a wheel or new Windows / macOS / Linux Desktop binaries. Desktop installers and portable zips stay on the still-open **[v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10)** release (`RxyCode.Desktop-1.2.10-win.zip`, setup.exe, dmg, AppImage). GitHub “Source code” zip/tar.gz is the full backend+frontend tree for building from source — it is not a ready-to-run Desktop install. More detail: [docs/quickstart.md](docs/quickstart.md).
-
-Upgrade from an older CLI install with:
+Upgrade an existing CLI install:
 
 ```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4"
-
-python -m pip install --no-cache-dir --force-reinstall rxycode-1.4.4.tar.gz
+uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.5"
 ```
 
-Launch anytime by running `rxycode`.
-
-### 3. Docker Container Deployment
-
-Ideal for sandbox isolation or hosting an always-on headless API service.
-
-**Step 1: Clone repo & prepare environment**
-```bash
-uvx --from "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4" rxycode
-```
-
-**Step 2: Start container**
-- **Option A: Headless API Service (Daemon)**
-```bash
-  docker compose up -d api
-```
-  Exposes the FastAPI HTTP + SSE streaming server on port 8765.
-- **Option B: Interactive Terminal TUI (Requires TTY)**
-```bash
-  docker compose run --rm tui
-```
-
-**Manual Single Image Build:**
-```bash
-uv tool install --force --refresh "git+https://github.com/xin-yi33/RxyCode.git@v1.4.4"
-rxycode
-```
-
-### 4. Node.js Frontend Development & Build
-
-RxyCode features decoupled frontend surfaces communicating via stdio JSON-RPC:
-
-- **Default OpenTUI (Bun + React 19)**:  
-  Source at `frontend/opentui-app/`. CLI installer bundles or installs Bun automatically. To develop:
-```bash
-  cd frontend/opentui-app
-  bun install
-  bun run build
-```
-- **Ink Fallback TUI (Node.js 20+ + React 18)**:  
-  Source at `frontend/`. If your environment prefers standard Node.js:
-```bash
-  cd frontend
-  npm install
-  npm run build
-  RXYCODE_TUI=ink rxycode
-```
-- **Desktop GUI (Electron 39 + Vite + React)**:  
-  Source at `frontend/desktop-app/`:
-```bash
-  cd frontend/desktop-app
-  npm install
-  npm run dev
-  npm run build
-```
-  > Everyday users do not need to compile the desktop client manually. Grab prebuilt installers from the [v1.3.0 Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0):
-  > - **Windows**: Run `rxycode-desktop-1.3.0-setup.exe` or extract portable `RxyCode.Desktop-1.3.0-win.zip`.
-  > - **Linux**: Run `rxycode-desktop-1.3.0.AppImage` (after `chmod +x`).
-  > - Launch anytime via `rxycode gui` once installed. *(Note: macOS prebuilt binary is omitted for v1.3.0; please use the CLI or run from source).*
-
-### 5. Python Source Installation
-
-For developers and contributors:
+From source:
 
 ```bash
 git clone https://github.com/xin-yi33/RxyCode.git
@@ -218,346 +146,231 @@ pip install -e .
 rxycode
 ```
 
----
+Docker:
 
-## 🤖 First Launch & Model Configuration
-
-After installation, run `rxycode` in any terminal:
-
-1. **Setup Wizard**: If no model is configured, the `/addmodel` setup dialog opens automatically.
-2. **Encrypted Storage**: Sensitive API keys are masked and encrypted using platform security (Windows DPAPI, POSIX `0600` files). Keys are never committed or printed.
-3. **Preset Providers**:
-
-| Provider | Typical Models | Integration Highlights |
-|---|---|---|
-| **DeepSeek** | `deepseek-v4`, `deepseek-v4-flash` | Native reasoning_content parsing & thinking effort levels |
-| **Moonshot (Kimi)** | `kimi-k3`, `kimi-k2.7-code` | Prompt cache support & reasoning_effort controls |
-| **Aliyun Qwen** | `qwen3.7-max`, `qwen3.8-max-preview` | Explicit prompt cache breakpoint control |
-| **Volcengine Doubao** | `doubao-seed-2.1-turbo` | Volcano Ark API integration |
-| **Zhipu GLM** | `glm-5.2` | GLM native streaming protocol |
-| **SiliconFlow** | Open-source models | Low latency high-throughput routing |
-| **OpenAI** | `gpt-4o`, `o1`, `o3` | Standard OpenAI endpoints |
-| **Anthropic** | `claude-sonnet-4.5` | Thinking blocks and explicit cache controls via proxy |
-| **OpenRouter / Groq** | Aggregated & fast models | Standard OpenAI format compatibility |
-
-Configuration resides in `~/.RxyCode/config.yaml`. Manage models anytime via `rxycode config list` or `/models` inside the TUI.
-
----
-
-## 🖥️ Surfaces & Experience
- 
-### Desktop GUI
- 
-v1.3.0 delivers a complete 3-column desktop workbench: session organization (pinned/project/recent), full-row running-task chrome, snapping sashes, permission presets, side chat, and plan / goal modes.
- 
-Here is a live recording of <code>rxycode gui</code> (RxyCode Desktop):
- 
-<p align="center">
-  <video width="800" controls muted playsinline preload="metadata">
-    <source src="docs/assets/gui-demo-v1.3.0.mp4" type="video/mp4">
-    <a href="docs/assets/gui-demo-v1.3.0.mp4">RxyCode Desktop 1.3.0 Live Recording (mp4)</a>
-  </video>
-</p>
- 
-| OS | Assets from [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) |
-|----|---------------------------------------------------------------------------------|
-| Windows | `rxycode-desktop-1.3.0-setup.exe` (installer wizard) or `RxyCode.Desktop-1.3.0-win.zip` (portable) |
-| Linux | `rxycode-desktop-1.3.0.AppImage` (`chmod +x` then run) |
-| macOS | Not packaged for v1.3.0. Use terminal CLI or `npm run dev` from source |
- 
-<code>rxycode gui</code> only launches an installed Desktop tree (recognizes <code>~/.rxycode/desktop</code>, <code>RXYCODE_DESKTOP_DIR</code>, or <code>--desktop-dir</code>). Composer sits at the bottom; clicking `+` attaches files, opens workspaces, or toggles plan mode. Plan cards offer "Build", "Revise", and "Skip". Permissions support Ask Before Change / Auto Edit / Full Access. See [docs/GUI.md](docs/GUI.md) for full details.
- 
-## CLI / OpenTUI
- 
-The default terminal interface is **OpenTUI**. In any terminal:
- 
 ```bash
-rxycode
+docker compose up -d api
+docker compose run --rm tui
 ```
- 
-<p align="center">
-  <video width="800" controls muted playsinline preload="metadata">
-    <source src="docs/assets/cli-demo-v1.3.0.mp4" type="video/mp4">
-    <a href="docs/assets/cli-demo-v1.3.0.mp4">RxyCode OpenTUI Live Recording (mp4)</a>
-  </video>
-</p>
- 
-Submit natural language prompts:
- 
-- `"Refactor auth service from session cookies to JWT with refresh tokens"`
-- `"Audit this repository for SQL injection or unsafe path traversal vulnerabilities"`
-- `"Generate a comprehensive test suite for user service using pytest"`
-- `"Summarize Python 3.13 free-threaded GIL changes and output to docs/python313.md"`
- 
-Key Shortcuts:
- 
+
+The compose stack listens on `8765` inside its network and requires `RXYCODE_API_TOKEN` in `.env`; add a `ports:` mapping if you need host access. The TUI service needs an interactive TTY.
+
+### Desktop
+
+There is no new Desktop installer for 1.4.5. The Electron source remains in `frontend/desktop-app/`; run it with `npm install && npm run dev`. For a packaged app, older releases such as [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) and [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) remain available; neither is a 1.4.5 build. The v1.2.10 Windows portable asset is `RxyCode.Desktop-1.2.10-win.zip`; its installer is `rxycode-desktop-1.2.10-setup.exe`. Both are historical and are not 1.4.5 installers. `rxycode gui` launches an installed tree from `~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`; a CLI-only install cannot start it. Details: [docs/GUI.md](docs/GUI.md).
+
+---
+
+## 🖥️ Surfaces
+
+### CLI / OpenTUI
+
+OpenTUI is the default terminal client. It shows streaming text, tool calls, approvals, the child-agent tree, thinking, and the todo list.
+
 | Key | Action |
 |---|---|
-| `Tab` | Toggle working mode (Build / Plan / Compose) |
-| `Ctrl+P` | Open command palette |
-| `Ctrl+T` | Toggle thinking / reasoning panel (OpenTUI) |
-| `Ctrl+E` | Toggle the Todo checklist (OpenTUI) |
-| `Esc` | Cancel running operation / dismiss dialogs |
- 
-<details>
-<summary>Common Slash Commands</summary>
- 
+| `Tab` | Switch Build / Plan / Compose |
+| `Ctrl+P` | Command palette |
+| `Ctrl+T` | Toggle thinking |
+| `Ctrl+E` | Toggle the todo checklist |
+| `Enter` | Send |
+| `Shift+Enter` / `Ctrl+Enter` | Newline |
+| `Esc` | Cancel or dismiss |
+| `Ctrl+C` | Copy / cancel / clear; twice within 2s to quit |
+
 | Command | Action |
 |---|---|
-| `/build` | Plan → execute → verify (default autonomous mode) |
-| `/plan` | Read-only analysis and plan generation; no file modifications |
-| `/compose` | Streamlined plan + execute pipeline |
-| `/addmodel` | Interactive model provider setup wizard |
-| `/models` | List and switch configured models |
-| `/agents on` | Enable multi-agent expert team mode |
-| `/team <task>` | Assign task directly to the expert team |
-| `/memory add/list/search` | Manage cross-session persistent facts |
-| `/children` `/child` `/parent` | Inspect and navigate child agent tree |
-| `/language` | Switch UI language (`zh` / `en`) |
-| `/help` | Display comprehensive command reference |
-</details>
+| `/build` | Plan, execute, verify |
+| `/plan` | Read-only analysis and plan |
+| `/compose` | Plan then build in one flow |
+| `/addmodel` | Add a provider |
+| `/models` `/model <name>` | List / switch models |
+| `/permission` | `confirm_all` / `auto_edit` / `full_auto` |
+| `/agents on` `/team <task>` | Expert team (off by default) |
+| `/children` `/child` `/parent` | Child-agent tree |
+| `/memory add/list/search` | Cross-session facts |
+| `/language` | UI language |
+| `/help` | Full command reference |
 
-### Headless API Service
+The default work mode is Build. Plan is read-only at the execution layer. Compose is a plan followed by a build. The expert team is off by default and is intended for modular work, not everyday edits.
 
-```bash
-rxycode --api
-```
+### Web
 
----
-
-| Command | What opens |
-|---------|------------|
-| `rxycode` or `python -m RxyCode` | Default **OpenTUI** |
-| `rxycode --version` | Package version, no runtime init |
-| `rxycode gui` | Desktop **only after** you install a Desktop build (not part of the CLI/`uv` install) |
-| `rxycode --api` | API server only (`api_server.py`) |
-| `RXYCODE_TUI=ink rxycode` | Ink fallback TUI |
-
-1. Run `rxycode`. The TUI opens even with no model configured.
-2. If the model list is empty, OpenTUI shows a welcome hint and opens `/addmodel` (credentials are masked).
-3. If at least one model is already in `~/.RxyCode/config.yaml`, there is no extra hint.
-4. Type a natural-language task. Example: write a single-file `click-counter.html` in the current folder.
-5. Headless (`rxycode --api`): set `RXYCODE_API_KEY` and run `rxycode config add-model <id> <provider-model-id> --base-url <url>`. The key is never accepted on the command line.
-
-OpenTUI talks to the core over **stdio JSON-RPC**: the frontend spawns `python -m appserver`, which hosts `Session` → `AgentV2`. You see streaming tokens, tool calls, approval prompts when needed, and a final answer.
-
-## Desktop GUI
-
-v1.4.4 does **not** republish Desktop. Download the still-open [v1.2.10 GitHub Release](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10):
-
-| OS | Asset |
-|----|--------|
-| Windows | `rxycode-desktop-1.2.10-setup.exe` (installer) or `RxyCode.Desktop-1.2.10-win.zip` (portable) |
-| macOS | `.dmg` (unsigned) |
-| Linux | `.AppImage` (`chmod +x`; if it exits immediately, `APPIMAGE_EXTRACT_AND_RUN=1 ./rxycode-desktop-1.2.10.AppImage`) |
-
-`rxycode gui` only launches that installed app (`~/.rxycode/desktop`, `RXYCODE_DESKTOP_DIR`, or `--desktop-dir`). A CLI-only install cannot start Desktop. Composer sits at the bottom of the task pane. The `+` button opens:
-
-| Menu item | What it does |
-|-----------|----------------|
-| 文件和文件夹 | Attach a local file; the path is written into the prompt |
-| 在项目中使用 | Pick a workspace and start a new chat |
-| 目标 | Open the Goal dialog (Escape or overlay click closes it) |
-| 计划模式 | Toggle Plan mode (agent stays on the plan document) |
-
-Plan cards offer **是，实施此计划**, a **补充说明** field, and **跳过**. Permission labels in the UI are 更改前询问 / 自动编辑 / 完全访问. Switching to 完全访问 asks for confirmation (Escape cancels). Packaged v1.2.10 Desktop shows **1.2.10** in Settings. Full GUI notes: [docs/GUI.md](docs/GUI.md).
-
-<p align="center">
-  <img src="docs/imgs/gui-shell.png" alt="RxyCode Desktop chat shell" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plus-menu.png" alt="Composer plus menu: attach, workspace, goal, plan" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-goal-dialog.png" alt="Goal dialog" width="800">
-</p>
-<p align="center">
-  <img src="docs/imgs/gui-plan-card.png" alt="Plan card with Build, Revise, and Skip" width="800">
-</p>
-
-## Architecture
-
-```text
-rxycode (OpenTUI) / rxycode gui (Desktop) / rxycode --api
-                     │
-                     ▼ (stdio JSON-RPC / HTTP SSE)
-       appserver (Worker subprocess isolation / Watchdog)
-                     │
-                     ▼
-         Session (Headless facade, zero UI imports)
-                     │
-                     ▼
-                 AgentV2
-  ┌─────────────────────────────────────────────────────────┐
-  │  Simple queries → Fast path + SHA-256 / semantic cache  │
-  │                                                         │
-  │  Complex coding → LangGraph DAG pipeline:               │
-  │  [Goal Planner] → [Decomposer] → [Parallel Exec] →      │
-  │  [Validator] → [Reflection] → [Synthesis]               │
-  │                                                         │
-  │  Multi-Agent Subsystems:                                │
-  │  ├─ Isolated Child Sessions (Scoped tools & budgets)   │
-  │  └─ Expert Teams (Coordinator + Deterministic SOP):     │
-  │       pm → architect → coder(∥) → tester → verifier     │
-  │          → 3-way audit(∥) → doc                         │
-  │                                                         │
-  │  Tiered Infrastructure:                                 │
-  │  ├─ Memory (Short-term / Compressed / Vector store)     │
-  │  ├─ Code RAG (AST chunking / Numpy store / PageRank map)│
-  │  └─ 30+ Tools + Safety Gate + Side-Effect Journal       │
-  └─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🌐 RxyCode Web (multi-tenant cloud workspace — `feat/rxycode-web`)
-
-**Live instance: [rxycode.xyz](https://rxycode.xyz)** — hosted on a small
-community VM and still early in development; treat it as a working preview,
-not a production SLA.
+The live instance is [rxycode.xyz](https://rxycode.xyz). It is a small community deployment and an early preview, not a production SLA.
 
 <p>
   <img src="docs/assets/rxycode-web-console-v1.4.4.png" alt="RxyCode Web console" width="800">
 </p>
 
-This branch adds a deployable multi-tenant web surface on top of the same
-headless core: PostgreSQL-backed durable runs, an SSE event spine, a
-React/Vite workbench, and a worker that executes each turn inside a real
-kernel boundary (Linux user/pid/IPC/UTS namespaces via bubblewrap). Status
-below is honest: `shipped` rows cite the evidence dir and test file on this
-checkout; `experimental` works but is not release-hardened; `planned` has
-no running code path; `blocked` names its blocker.
+<p align="center"><sub>Existing v1.4.4 console capture; v1.4.5 adds the interaction and attachment changes below.</sub></p>
 
-| Capability | Status | Evidence | Verification |
+- **BYOK only.** The console lists only user-owned model connections. A platform model reference is rejected; there is no admin bypass.
+- **Durable runs.** PostgreSQL stores runs, events, approvals, and leases. Redis is used for SSE fan-out, not as the source of truth.
+- **Attachments.** Upload, paste, or drop a file; the run binds the staged attachment to the task transactionally. DOCX/XLSX/PPTX and ODT/ODS/ODP text extraction is built in; a failed import fails the run instead of silently dropping the file.
+- **Artifacts and previews.** A finished turn registers changed files in a manifest with signed download links. HTML/text previews are served from a private bucket with a CSP sandbox; images stream as images. PDF/Office preview is not claimed.
+- **Questions and timeline.** Question cards are ordered, single-select, and post exactly once. Thinking and task-list blocks are expandable. These are model output and run events, not hidden host state.
+- **Mobile and older Chromium.** The console is tested at a 390px viewport and on Chromium 90/98/148; Playwright Firefox/WebKit also cover key paths. Real iOS/Vivo devices are not verified.
+- **Device bridge.** `rxycode connect --url <wss-url> --code <one-time-code> --device-id <name> --capability shell` pairs a local machine over outbound WSS. The cloud can then send shell calls to that machine through an approval inbox, confined to the directory where `connect` was started.
+
+The public worker executes only `cloud:{tenant}:{workspace}` targets inside the per-run sandbox. A cloud run cannot read your home directory. Uploading a file or pairing a device is an explicit action. Self-hosting and boundaries: [docs/deploy/web-runbook.md](docs/deploy/web-runbook.md); user guide: [docs/product/web-user-guide.md](docs/product/web-user-guide.md); design: [docs/architecture/web-system-design.md](docs/architecture/web-system-design.md).
+
+### Headless API
+
+```bash
+rxycode --api
+```
+
+This is the FastAPI HTTP + SSE adapter, not an interactive TUI. It uses the same `Session` and protocol mapping as the other clients.
+
+---
+
+## 🏗️ Architecture
+
+```text
+rxycode (OpenTUI) / rxycode gui / rxycode --api / Web browser
+                     │
+                     ▼  stdio JSON-RPC / HTTP+SSE / Web SSE
+     appserver (worker subprocess + watchdog)   rxycode_server + worker
+                     │                                   │
+                     └─────────────────┬─────────────────┘
+                                       ▼
+                          Session (headless facade, no UI)
+                                       │
+                                       ▼
+                                   AgentV2
+   ┌──────────────────────────────────────────────────────────┐
+   │ Simple query → fast path + exact-hash / semantic cache   │
+   │                                                          │
+   │ Daily Build → streaming tool loop + build workflow/       │
+   │               verification                               │
+   │ /full or /pipeline, complex Compose → LangGraph DAG:     │
+   │ goal planner → decomposer → parallel executor →           │
+   │ validator → reflection → grounded synthesis               │
+   │                                                          │
+   │ Subagents: isolated child sessions + collaboration tools  │
+   │ Expert team: Coordinator + deterministic SOP (off)        │
+   │                                                          │
+   │ Tools: built-ins + MCP + plugins, all via ToolOrchestrator│
+   │ Safety: risk tiers, approval, hard denylist, audit,       │
+   │         write whitelist, optional OS sandbox              │
+   │ Memory: short-term / compressed / vector / code RAG       │
+   └──────────────────────────────────────────────────────────┘
+```
+
+`appserver` isolates each session in a worker subprocess. The Web worker adds a per-run Linux user/PID/IPC/UTS namespace sandbox and refuses to run on the host if the sandbox is unavailable. The CLI's optional OS sandbox (`execution.os_sandbox.enabled`, default off) is a separate boundary; the permission tier is not a sandbox switch.
+
+MCP servers stay stdio. Their tools go through the same `ToolOrchestrator`, approval gate, audit log, and retry policy as built-ins. Per-server tool manifests record the schema surface and warn on drift. Tool schemas can be discovered on demand with `tool_search`; the full discovery stays in the message context instead of being re-sent every turn. Plugin skills and MCP entries are listed through `plugin/list`.
+
+---
+
+## 🛡️ Safety and permissions
+
+Every tool call is classified before it runs.
+
+| Risk | Examples | Default policy |
+|---|---|---|
+| READ | read, grep, glob, web fetch | auto-approved |
+| WRITE | file edits, ordinary shell commands | approval, subject to tier |
+| DANGER | installers, `git push --force`, destructive shell | approval; hard-denied patterns never run |
+
+The three permission tiers are:
+
+| Tier | Reads | File edits | Shell |
 |---|---|---|---|
-| Tenant auth (local password / GitHub OAuth), CSRF+Origin write gate | shipped | evidence/web/WEB-W2-C02 | tests/web/w2/test_w2_c02_module.py |
-| Durable runs + fenced worker lease (crash-safe reclaim) | shipped | evidence/web/WEB-W2-C03 | tests/web/w2/test_w2_c03_module.py |
-| EventStore + Outbox + SSE replay/reconnect (seq exactly-once) | shipped | evidence/web/WEB-W7-C02 | tests/web/w7/test_w7_c02_module.py |
-| Persisted approvals/questions + cross-day resume (API surface; the deployed public worker has no approval-answer channel — confirm_all runs fail honestly at run_timeout) | shipped | evidence/web/WEB-W2-C06 | tests/web/w2/test_w2_c06_unit.py |
-| React workbench: login, sessions, diff review, PTY, workbench | shipped | evidence/web/WEB-W3-C06 | tests/web/w3/test_w3_c06_module.py |
-| Local Full runner + device pairing + emergency stop | shipped | evidence/web/WEB-W4-C06 | tests/web/w4/test_w4_c06_module.py |
-| Email-code auth + ALTCHA PoW + per-IP/per-mailbox rate ceilings | shipped | evidence/web/WEB-W9-C01 | tests/web/w9/test_rate_and_device.py, tests/web/w9/test_email_codes.py |
-| Single-device login lock + 409 takeover modal | shipped | evidence/web/WEB-W9-C01 | tests/web/w9/test_rate_and_device.py |
-| BYOK key vault (AES-256-GCM) + provider discovery + composer model picker | shipped | evidence/web/WEB-W10-C01 | tests/web/w9/test_byok_api.py, tests/web/w9/test_byok_crypto.py |
-| Session workspace file list/download API + panel | shipped | evidence/web/WEB-W12-C01 | tests/web/w9/test_session_files.py |
-| Device bridge: `rxycode connect` + invoke + approval inbox | shipped | evidence/web/WEB-W13-C01 | tests/web/w4/test_w4_c05_module.py |
-| Cloud sandbox control plane; tenant fs isolation shipped in the deployed per-run sandbox (net isolation is standalone-path only — the deployed turn needs DB/LLM egress) | shipped | evidence/web/WEB-W5-C02 | tests/web/w5/test_w5_c02_unit.py |
-| Reproducible agent evals + baseline compare | shipped | evidence/web/WEB-W7-C03 | tests/web/w7/test_w7_c03_unit.py |
-| OpenTelemetry spans + per-run cost ledger | shipped | evidence/web/WEB-W7-C04 | tests/web/w7/test_w7_c04_unit.py |
-| Compose deploy (two-step: `up -d` + repo-seed into `repo-src`) + HTTPS gateway + confined turns | shipped | evidence/web/WEB-W7-C05 | tests/web/w7/test_w7_c05_module.py |
-| Security review corpus (auth/injection/leak sweeps) | shipped | evidence/web/WEB-W7-C01 | tests/web/w7/test_w7_c01_unit.py |
-| Public demo full-stack browser E2E | shipped: manual browser E2E on the live site (visitor shell, login modal, BYOK CRUD, device lock takeover, cancel, file panel) | evidence/web/WEB-W10-C02, docs/deploy/OPS-LOG.md | tests/web/w9/test_e2e.py |
-| Anonymous visitor cloud run over HTTP | blocked: visitors get the app shell, but sending a task requires login | — | — |
-| Hosted public demo URL | shipped: [rxycode.xyz](https://rxycode.xyz) — small community VM, early development | evidence/web/WEB-W10-C02, docs/deploy/OPS-LOG.md | tests/web/w9/test_version.py |
+| `confirm_all` | auto | ask | ask |
+| `auto_edit` | auto | auto | ask |
+| `full_auto` | auto | auto | auto, except hard-denied patterns |
 
-Deploy it yourself: `docs/deploy/web-runbook.md` (bring-up, migrations,
-upgrade/rollback, boundaries). User guide: `docs/product/web-user-guide.md`.
-Architecture + ADR chain: `docs/architecture/web-system-design.md`.
+Shell approval is at least `WRITE`: a READ shell command is lifted to `WRITE`, and a DANGER command keeps `DANGER` instead of being lowered. This is why `auto_approve: ["write"]` cannot run a destructive command.
 
-> Scope note: the public worker executes only `cloud:{tenant}:{workspace}`
-> targets inside the per-turn sandbox — never a local Full run. Full
-> permission is a local-runner feature (W4), refused on the shared worker.
+Additional boundaries:
+
+- **Hard denylist before approval.** Catastrophic patterns are rejected before the approval prompt, including recursive deletion of system roots, disk formatting, raw device writes, and shutdown/reboot commands. This is a pattern-based safety net, not a proof; keep the OS sandbox and approval gate enabled for untrusted work.
+- **Write whitelist.** Writes outside the project root and the configured output directory fail closed.
+- **Plan mode is read-only.** The execution layer refuses writes in Plan, even if a model asks for one.
+- **Audit log.** Decisions and tool calls append to `~/.RxyCode/logs/audit.jsonl` with credentials and API tokens redacted.
+- **Dry run.** `RXYCODE_DRY_RUN=1` simulates actions without disk or network side effects.
+- **Web sandbox.** The hosted worker always runs a turn inside the per-run sandbox. `full` on Web only removes approval prompts inside that sandbox; it does not add host mounts or network access.
+- **Device bridge.** A paired machine runs shell calls locally under its own approval inbox and is confined to the directory where `rxycode connect` was started.
+
+### Model traffic
+
+The program, workspace, keys, and audit log stay on your machine. When you call a cloud model, the request contains the current prompt and system instructions, recent turns still in the context window, file excerpts/diffs/tool output already returned this session, and images if you use vision. The whole repository is not uploaded automatically. `websearch` sends the query to the configured search provider; `webfetch` contacts the target URL; MCP servers see what their tools return.
+
+---
+
+## ⚙️ Configuration
+
+Configuration lives in `~/.RxyCode/config.yaml`; the output directory is `~/.RxyCode/output/` by default.
+
+| Variable | Purpose |
+|---|---|
+| `RXYCODE_DATA_DIR` | Override the data/config directory |
+| `RXYCODE_OUTPUT_DIR` | Override generated-file output |
+| `RXYCODE_API_KEY` | Key used by `rxycode config add-model` |
+| `RXYCODE_DRY_RUN=1` | Simulate actions without side effects |
+| `RXYCODE_MANAGED_SHELL=0` | Disable the persistent shell |
+| `RXYCODE_SUBAGENTS=0` | Disable subagent dispatch |
+| `RXYCODE_TUI=ink` | Use the Ink fallback instead of OpenTUI |
+| `RXYCODE_DESKTOP_DIR` | Point `rxycode gui` at an installed Desktop tree |
+
+Provider presets include DeepSeek, Moonshot/Kimi, Alibaba Qwen, Volcengine Doubao, Zhipu GLM, SiliconFlow, OpenAI, Anthropic-compatible proxies, OpenRouter, and Groq. Model identifiers and capabilities are data-driven; use `rxycode config list` or `/models` to see what is configured.
 
 ---
 
 ## 📦 Requirements
 
-| Requirement | Recommended Version | Notes |
+| Requirement | Version | Notes |
 |---|---|---|
-| **Python** | 3.10+ | Core agent backend |
-| **Bun** | latest | Default OpenTUI runtime (installer configures automatically) |
-| **Node.js** | 20+ | Required only for Ink fallback or Electron desktop development |
-| **API Key** | — | Any OpenAI-compatible provider credentials |
+| Python | 3.10+ | Core agent |
+| Bun | latest | Default OpenTUI runtime; installer provisions it |
+| Node.js | 20+ | Ink fallback or Desktop source |
+| API key | — | Any OpenAI-compatible provider |
+| Docker | current | Optional: Docker deployment and Web self-hosting |
+
+CI covers Linux Python 3.11/3.12 and Windows. macOS is not exercised on a real machine for this release.
 
 ---
 
-## 📋 Release History
+## 📋 Release history
 
-| Version | Release Date | Key Features |
+| Version | Date | Highlights |
 |---|---|---|
-| [v1.4.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4) | 2026-10-22 | RxyCode Web lands: hosted console at rxycode.xyz, durable multi-tenant runs, BYOK vault, device bridge for paired local machines, 3-worker ceiling, backup cron. Product metadata 1.4.4; protocol 1.1.0; no new Desktop installer |
-| [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | On-demand MCP schemas, write-time lint feedback, hard shell blacklist, 200-line output spill, and tool audit metrics. Product metadata 1.4.3; protocol 1.1.0; no new Desktop installer |
-| [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo ledger/dock, model-facing status band, incremental compaction, output spill, and default-off timeout decisions. Product metadata 1.4.2; protocol 1.1.0; no new Desktop installer |
-| [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | CLI maintenance: optional OS sandbox, Windows venv Job binding, log retention, retry/circuit-breaker and session/build fixes. No new Desktop installer |
-| [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | CLI / OpenTUI only: sessions, `/effort`, plan approval, shared model/tool retry, Shift+Enter newline. No new Desktop installer |
-| [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | Major Desktop workbench release: 3-column session & project workspace, plugin rail, permission tiers; Windows installer & portable zip, Linux AppImage; fixes Windows worker bootstrap deadlock |
-| [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 10-role 7-stage SOP expert teams; Windows encoding improvements; 8MB stdio JSON-RPC throughput |
-| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Electron desktop app (`rxycode gui`), Plan mode, Goal dialog, Composer plus menu |
-| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Phase C isolated child agents: `@agent` dispatch, Task tool, OpenTUI subagent tree |
-| [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute pipeline, tiered memory, codebase RAG |
-| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial public release: basic toolchain and native MCP integration |
+| [v1.4.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.5) | 2026-10-26 | Persistent shell, write-time diagnostics, subagent collaboration, permission tiers, Web BYOK workspace with attachments/artifacts/previews. Product metadata 1.4.5; protocol 1.1.0; sdist only |
+| [v1.4.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4) | 2026-10-22 | RxyCode Web lands: hosted console, durable runs, BYOK vault, device bridge, 3-worker ceiling. Product metadata 1.4.4; protocol 1.1.0 |
+| [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | On-demand MCP schemas, write-time lint, hard shell blacklist, 200-line output spill, tool audit metrics |
+| [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo ledger/dock, status band, incremental compaction, output spill, default-off timeout decisions |
+| [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | CLI maintenance: optional OS sandbox, Windows venv Job binding, log retention, retry/circuit breaker |
+| [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | CLI/OpenTUI only: sessions, `/effort`, plan approval, shared retry, Shift+Enter |
+| [v1.3.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.3.0) | 2026-09 | Desktop workbench: three-column workspace, permission tiers; Windows/Linux packages |
+| [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | 10-role, 7-stage expert team; Windows encoding; 8MB stdio throughput |
+| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Electron Desktop, Plan mode, Goal dialog, composer menu |
+| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated child agents: `@agent`, Task tool, child tree |
+| [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, tiered memory, code RAG |
+| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial public release: toolchain and MCP |
 
-Full changelog: [CHANGELOG.md](CHANGELOG.md).
+Full changelog: [CHANGELOG.md](CHANGELOG.md). Per-version notes: [docs/release-notes/](docs/release-notes/). The v1.4.5 copy is [RELEASE_NOTES_v1.4.5.md](docs/release-notes/RELEASE_NOTES_v1.4.5.md).
+
+---
+
+## ⚠️ Known limitations
+
+- **Web E2E is not fully green for v1.4.5.** The 300-second acceptance run completed its target (`ELAPSED=300.000691652298`) and produced a real 180.003s liveness checkpoint (5s observation, 3 processes, CPU/IO 0, owner-BYOK `continue`, UI visible). After that, the model asked for an extra file-check approval (`ca7505f206d446169e16ff98ba0f38ed`); the run was cancelled by its owner and ended `cancelled`, not natural `succeeded`. The extra-approval cause is **OPEN** and not named as a confirmed product bug.
+- **That liveness result is one run and one model.** It is not a general guarantee for every model, provider, or long command. The extra fixed 15s liveness wait was removed with approval; the P6 15s decision clock, task/tool budgets, renewal, permissions, and kill rules are unchanged.
+- **Platform coverage is uneven.** A Linux 3.10 container (Python 3.12) and Windows have real evidence. macOS was not run on a real machine for this release. Do not read the CI badges as an all-platform hardware claim.
+- **The Web console is an early preview.** It runs on a small VM with a three-worker ceiling and no SLA. PDF/Office preview is not supported. Real iOS/Vivo/Safari devices were not verified; Chromium 90/98/148 and Playwright Firefox/WebKit are the tested browser engines.
+- **BYOK-only is a policy change on Web.** Platform-model fallback is removed; a hosted run needs a user-owned model connection. Local CLI behavior is unchanged.
+- **Release scope.** v1.4.5 publishes one sdist and no Desktop binary. There is no PyPI 1.4.5 upload. Existing Desktop packages on older releases are not 1.4.5 builds.
+- **CI baseline.** Historical baselines: source `247be96e` passed CI `40166956475` (6/6 jobs); docs `63fcde7b` passed CI `40173191825` (6/6). Those runs do not prove the v1.4.5 tag; the tag needs its own CI result before release.
+
+---
 
 ## 🤝 Contributing
 
-Review [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines. Issues and pull requests are warmly welcomed!
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Issues and focused bug reports are welcome. For agent-facing module notes, start at [docs/agent/README.md](docs/agent/README.md).
 
 ## 📄 License
 
-- **READ** — inspect only (`read`, `grep`, `glob`, `webfetch`, …)
-- **WRITE** — reversible side effects (`write`, `edit`, most `bash`)
-- **DANGER** — installer-like commands and `git push --force` still ask. Catastrophic shell commands (`rm -rf /`, `format C:`, and the Linux / macOS / Windows blacklist) never run.
-
-Writes outside the whitelist are blocked. The TUI and Desktop raise an approval dialog; the audit log is `~/.RxyCode/logs/audit.jsonl` with sensitive keys redacted. Default Desktop permission is 更改前询问.
-
-## Commands and shortcuts (OpenTUI)
-
-| Command | Description |
-|---------|-------------|
-| `/help` | All commands (includes expert-team / subagent usage) |
-| `/agents on` `/team <task>` | Expert team (off by default; everyday coding stays solo) |
-| `/addmodel` | Add a model (masked credentials) |
-| `/models` / `/model <name>` | List / switch models |
-| `/build` `/plan` `/compose` | Work mode |
-| `/clear` | Clear conversation context |
-| `/memory add/list/search` | Memory |
-| `/queue add/run` | Task queue |
-| `/cache` | Cache stats |
-| `/language` | UI language |
-| `/thinking` | Thinking panel |
-| `/children` `/child` `/parent` | Isolated child-agent tree (on by default; `RXYCODE_SUBAGENTS=0` disables) |
-
-| Shortcut | Action |
-|----------|--------|
-| `Tab` | Switch work mode |
-| `Ctrl+P` | Command palette |
-| `Ctrl+T` | Toggle thinking (OpenTUI) |
-| `Ctrl+E` | Toggle the Todo checklist (OpenTUI) |
-| `Enter` | Send the prompt |
-| `Shift+Enter` / `Ctrl+Enter` | Insert a newline (Windows ConPTY Shift+Enter arrives as CRLF and is not sent) |
-| `Esc` | Cancel |
-| `Ctrl+C` | Copy / cancel stream / clear input; twice within 2s to quit |
-
-## Version history
-
-| Version | Date | Highlights |
-|---------|------|------------|
-| [v1.4.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.4) | 2026-10-22 | RxyCode Web lands: hosted console at rxycode.xyz, durable multi-tenant runs, BYOK vault, device bridge for paired local machines, 3-worker ceiling, backup cron. Product metadata 1.4.4; protocol 1.1.0; no new Desktop installer |
-| [v1.4.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.3) | 2026-10-14 | On-demand MCP schemas, write-time lint feedback, hard shell blacklist, 200-line output spill, and tool audit metrics. Product metadata 1.4.3; protocol 1.1.0; no new Desktop installer |
-| [v1.4.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.2) | 2026-10-09 | Todo ledger/dock, model-facing status band, incremental compaction, output spill, and default-off timeout decisions. Product metadata 1.4.2; protocol 1.1.0; no new Desktop installer |
-| [v1.4.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.1) | 2026-10-07 | Product version **1.4.1** across CLI, OpenTUI, Ink, Desktop metadata, MCP identification, installers, and appserver. Protocol stays `1.1.0`. |
-| [v1.4.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.4.0) | 2026-09 | Product version **1.4.0** across CLI, OpenTUI, Ink, Desktop metadata, and appserver. Protocol stays `1.1.0`. |
-| [v1.2.11](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.11) | 2026-08 | Expert teams (off by default); CLI reliability; GitHub Release is `rxycode-1.2.11.tar.gz` only — Desktop stays on v1.2.10 |
-| [v1.2.10](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.10) | 2026-08 | Desktop Plan / Goal / `+` menu; plan card Build/Revise/Skip; default CLI remains OpenTUI (`rxycode`) |
-| [v1.2.9](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.9) | 2026-08 | Isolated subagents (Phase C): independent child sessions; `@agent` mention, Task tool, `subtask=true`; OpenTUI child tree |
-| [v1.2.8](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.8) | 2026-08 | Model adaptation: DeepSeek v4, Doubao (ark), Anthropic Claude 5 family; exact capability isolation |
-| [v1.2.7](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.7) | 2026-08 | Completed answers no longer discarded by failed read-only probes; smarter web-research queries; Doubao provider |
-| [v1.2.6](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.6) | 2026-08 | webfetch decoding, MCP mis-routing, Windows shell/encoding, web search hardening |
-| [v1.2.5](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.5) | 2026-08 | DeepSeek / Qwen / Claude adaptation; lazy imports; explicit request routing; stdio transport |
-| [v1.2.4](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.4) | 2026-08 | Add-model polish; eval harness; typed protocol + TypeScript client |
-| [v1.2.3](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.3) | 2026-07 | 10 provider presets, auto discovery, batch add |
-| [v1.2.2](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.2) | 2026-07 | Auto-install Bun + OpenTUI deps; empty-model `/addmodel` |
-| [v1.2.1](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.1) | 2026-07 | Ship OpenTUI sources in the wheel |
-| [v1.2.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.2.0) | 2026-07 | OpenTUI default TUI (Ink fallback) |
-| [v1.1.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.1.0) | 2026-07 | Ink TUI, SSE, Docker, CI, one-command installers |
-| [v1.0.0](https://github.com/xin-yi33/RxyCode/releases/tag/v1.0.0) | 2026-06 | LangGraph rewrite: plan-and-execute, tools, tiered memory |
-| [v0.3.3](https://github.com/xin-yi33/RxyCode/releases/tag/v0.3.3) | 2025-12 | Initial release: verification + MCP |
-
-Full notes: [CHANGELOG.md](CHANGELOG.md). Per-version copy: [docs/release-notes/](docs/release-notes/). Expert teams: [docs/agent/README.md](docs/agent/README.md).
-
-## License
-
-[MIT](LICENSE) © RxyCode contributors
+[MIT](LICENSE) © RxyCode contributors.
 
 If RxyCode is useful, [star the repo](https://github.com/xin-yi33/RxyCode) so you can find it again. Bugs and ideas: [Issues](https://github.com/xin-yi33/RxyCode/issues).

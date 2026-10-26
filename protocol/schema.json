@@ -8481,7 +8481,7 @@
           "type": "string"
         },
         "server_version": {
-          "default": "1.4.4",
+          "default": "1.4.5",
           "title": "Server Version",
           "type": "string"
         },

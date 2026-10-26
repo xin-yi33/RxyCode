@@ -17,7 +17,7 @@ and `api_server.py` can share one schema instead of ad-hoc SSE field names.
 |------|------|
 | `__init__.py` | Package marker；产品包 `__init__.py` 把裸名 `protocol`（以及 `core` / `utils` 等）统一到 `RxyCode.RxyCode1_1_0.*`，避免两套 class |
 | `version.py` | `PROTOCOL_VERSION` (currently `1.1.0`; `PROTOCOL_VERSION_MIN` `1.0.0`) |
-| Product release metadata | v1.4.2 changes `APPSERVER_VERSION` and `InitializeResult.server_version`, not the wire protocol. Keep `packaging/runtimes/*.json` appserver versions and normalized schema SHA-256 in sync; regenerate TypeScript after schema export. |
+| Product release metadata | v1.4.5 changes `APPSERVER_VERSION` and `InitializeResult.server_version`, not the wire protocol. Keep `packaging/runtimes/*.json` appserver versions and normalized schema SHA-256 in sync; regenerate TypeScript after schema export. |
 | `requests.py` | Client -> server (`initialize`, `session/*` incl. `set_thinking_expanded` / `warm`, `shutdown`, `models/*` incl. `ModelsSetActiveRequest.effort`（2026-08-12：optional_field，全局思考强度档位）） |
 | `notifications.py` | Server -> client one-way events |
 | `server_requests.py` | Server -> client messages that need a reply (approval, question) |
@@ -37,7 +37,7 @@ for `/chat` and `/chat/stream`; both surfaces enter `Session.prompt()`.
 Only path/name metadata is recorded for replay and idempotency. Image bytes
 are reopened and validated in the worker and are never written to the event
 log. This is an additive optional field: protocol stays 1.1.0 and product
-version stays 1.4.2.
+version stays 1.4.5.
 
 The appserver initialize response advertises support in its existing object:
 `result.capabilities.prompt_attachments === true`. Clients should check this

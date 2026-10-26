@@ -5,7 +5,7 @@
   "appserver_entry": "python -m appserver",
   "artifact": "rxycode-appserver-macos",
   "protocol_version": "1.1.0",
-  "appserver_version": "1.4.4",
+  "appserver_version": "1.4.5",
   "schema_digest_source": "protocol/schema.json",
-  "schema_digest": "sha256:06364fb08f435ee41b388601db20e6770b5d55d54a6d249041b08ddacd3ca0bb"
+  "schema_digest": "sha256:54c82a1c0fe5790cf2631517d4359f0979185c77272ed4bd489e72166b292cba"
 }
