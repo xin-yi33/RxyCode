@@ -29,6 +29,16 @@ const CODE_TEXT: Record<string, string> = {
   BILLABLE_TEST_NOT_CONFIRMED: "请先确认计费测试",
   CONNECTION_NOT_FOUND: "连接不存在",
   DEVICE_IN_USE: "该账号正在另一台设备上使用",
+  FEEDBACK_IMAGE_TYPE: "只支持 PNG / JPEG / WebP 图片",
+  FEEDBACK_IMAGE_TOO_LARGE: "图片超出大小或尺寸限制",
+  FEEDBACK_IMAGE_INVALID: "图片已失效，请重新添加",
+  FEEDBACK_DUPLICATE: "内容与最近提交的反馈重复",
+  FEEDBACK_BUSY: "反馈服务繁忙，请稍后再试",
+  FEEDBACK_TOO_LARGE: "反馈内容过大",
+  CAPTCHA_REQUIRED: "请完成人机验证后重试",
+  CAPTCHA_INVALID: "人机验证失败，请重试",
+  BATCH_CLOSED: "该批次已关闭",
+  STORAGE_UNAVAILABLE: "存储暂不可用",
   UNAVAILABLE: "服务暂不可用",
 }
 

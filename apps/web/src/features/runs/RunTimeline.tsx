@@ -1,15 +1,38 @@
+import { useEffect, useRef } from "react"
+
 import type { RunSummary } from "../../sdk/client"
 import { Timeline } from "../timeline/Timeline"
+import { signalFromRunView } from "../feedback/useAutoFeedbackPrompt"
+import type { RunTerminalSignal } from "../feedback/autoPrompt"
 import { useRunEvents } from "./useRunEvents"
+import { isTerminalRunStatus } from "./status"
 
 // W9-F4 真时间线：run.created→user、delta→text、tool.*→工具行、
 // approval/question→交互卡、assistant.final→Markdown。已结束的 run
 // 只回放一次（follow=0），活跃 run 走 SSE。
-export function RunTimeline({ run }: { run: RunSummary }) {
+export function RunTimeline({
+  run,
+  onTerminal,
+}: {
+  run: RunSummary
+  // v1.4.6 自动反馈询问：挂载期间观察到 非终态→终态 的真实转换时上报
+  // （历史回放 run.status 一开始就是终态，不会触发）。
+  onTerminal?: (signal: RunTerminalSignal) => void
+}) {
   const { view, connected, notFound, cursorExpired, snapshotSeq } = useRunEvents(
     run.run_id,
     run.status,
   )
+  const prevStatusRef = useRef(run.status)
+  useEffect(() => {
+    const prev = prevStatusRef.current
+    const status = view.status
+    prevStatusRef.current = status
+    if (!isTerminalRunStatus(prev) && isTerminalRunStatus(status) && onTerminal) {
+      onTerminal(signalFromRunView(run, view))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.status])
   if (notFound) {
     return (
       <p role="alert" className="mt-2 text-sm text-failure">

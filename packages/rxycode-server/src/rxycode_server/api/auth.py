@@ -622,6 +622,12 @@ def _capabilities(request: Request) -> dict[str, object]:
     }
 
 
+def _feedback_admin(email: str | None) -> bool:
+    from rxycode_server.feedback.service import is_admin_email
+
+    return is_admin_email(email)
+
+
 def _me_body(record: AuthRecord, db: Session) -> dict[str, object]:
     user = db.get(User, record.user_id)
     if user is None:
@@ -650,6 +656,9 @@ def _me_body(record: AuthRecord, db: Session) -> dict[str, object]:
         },
         "membership": {"role": role or ""},
         "default_project_id": default_project_id,
+        # feedback.service imports _Window from this module — a top-level
+        # import here would be a cycle, so resolve lazily per /me call.
+        "feedback_admin": _feedback_admin(user.email),
     }
 
 

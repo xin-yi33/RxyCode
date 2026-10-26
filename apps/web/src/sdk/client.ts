@@ -22,6 +22,65 @@ export type Me = {
   membership: { role: string }
   default_project_id: string | null
   web_capabilities?: WebCapabilities
+  // v1.4.6 反馈库：email ∈ RXYCODE_FEEDBACK_ADMIN_EMAILS 才为真。
+  feedback_admin?: boolean
+}
+
+export type FeedbackItem = {
+  id: string
+  batch_seq: number
+  kind: string
+  module: string
+  severity: string | null
+  title: string
+  body: string
+  source: string
+  trigger_reasons: string[]
+  state: string
+  run_id: string | null
+  session_id: string | null
+  created_at: string | null
+  images: { id: string; width: number; height: number }[]
+}
+
+export type FeedbackBatchSummary = {
+  seq: number
+  label: string
+  status: string
+  build_commit: string
+  capacity: number
+  item_count: number
+  opened_at: string | null
+  closed_at: string | null
+  summary: {
+    items?: number
+    by_module?: Record<string, number>
+    by_kind?: Record<string, number>
+    by_severity?: Record<string, number>
+    by_source?: Record<string, number>
+    by_trigger_reason?: Record<string, number>
+    duplicate_groups?: { content_sha256: string; count: number }[]
+  } | null
+}
+
+export type FeedbackSubmitBody = {
+  request_id: string
+  kind: string
+  module: string
+  severity?: string
+  title: string
+  body: string
+  image_ids?: string[]
+  run_id?: string
+  session_id?: string
+  page_path?: string
+  source?: string
+  trigger_reasons?: string[]
+  client_build?: string
+  viewport?: string
+  locale?: string
+  website?: string
+  captcha?: string
 }
 
 // API-WEB-CAP：服务端真实能力 —— 前端据此隐藏不可兑现的入口。
@@ -1390,6 +1449,88 @@ export function createClient() {
         exit_code: number | null
         scrollback: string
       }>
+    },
+    // ---- 反馈库（v1.4.6）：图片先暂存、随提交绑定；管理端 email 门 ----------
+    uploadFeedbackImage(
+      file: Blob,
+      onProgress?: (received: number, total: number) => void,
+      signal?: AbortSignal,
+    ): Promise<{ image_id: string; width: number; height: number; size_bytes: number; content_type: string }> {
+      return fetchCsrfToken().then(
+        (token) =>
+          new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open("POST", "/api/v1/feedback/images")
+            xhr.withCredentials = true
+            xhr.setRequestHeader("content-type", "application/octet-stream")
+            xhr.setRequestHeader("x-csrf-token", token)
+            xhr.responseType = "json"
+            xhr.upload.onprogress = (event) => {
+              if (onProgress) onProgress(event.loaded, event.total || file.size)
+            }
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(xhr.response)
+                return
+              }
+              const body = (xhr.response ?? {}) as { code?: string; detail?: string }
+              reject(new ApiError(xhr.status, String(body.code ?? body.detail ?? "UNAVAILABLE")))
+            }
+            xhr.onerror = () => reject(new ApiError(0, "UNAVAILABLE"))
+            xhr.onabort = () => reject(new ApiError(0, "ABORTED"))
+            if (signal) {
+              if (signal.aborted) {
+                xhr.abort()
+                return
+              }
+              signal.addEventListener("abort", () => xhr.abort(), { once: true })
+            }
+            xhr.send(file)
+          }),
+      )
+    },
+    deleteFeedbackImage(imageId: string): Promise<void> {
+      const path = `/api/v1/feedback/images/${encodeURIComponent(imageId)}`
+      return writeJson(path, {}, {}, "DELETE").then(() => undefined)
+    },
+    submitFeedback(body: FeedbackSubmitBody): Promise<FeedbackItem> {
+      return writeJson("/api/v1/feedback", body) as Promise<FeedbackItem>
+    },
+    listMyFeedback(
+      opts: { limit?: number; cursor?: string; signal?: AbortSignal } = {},
+    ): Promise<{ items: FeedbackItem[]; next_cursor: string | null }> {
+      const params = new URLSearchParams()
+      if (opts.limit) params.set("limit", String(opts.limit))
+      if (opts.cursor) params.set("cursor", opts.cursor)
+      const qs = params.toString() ? `?${params}` : ""
+      return readJson(`/api/v1/feedback/mine${qs}`, opts.signal) as Promise<{
+        items: FeedbackItem[]
+        next_cursor: string | null
+      }>
+    },
+    // 管理端 —— 非管理员服务端一律 404，前端只在 me.feedback_admin 时调用。
+    listFeedbackBatches(signal?: AbortSignal): Promise<{ batches: FeedbackBatchSummary[] }> {
+      return readJson("/api/v1/admin/feedback/batches", signal) as Promise<{
+        batches: FeedbackBatchSummary[]
+      }>
+    },
+    getFeedbackBatch(
+      seq: number,
+      signal?: AbortSignal,
+    ): Promise<FeedbackBatchSummary & { groups: Record<string, unknown[]>; items: unknown[] }> {
+      return readJson(`/api/v1/admin/feedback/batches/${seq}`, signal) as Promise<
+        FeedbackBatchSummary & { groups: Record<string, unknown[]>; items: unknown[] }
+      >
+    },
+    closeFeedbackBatch(seq: number): Promise<FeedbackBatchSummary> {
+      return writeJson(`/api/v1/admin/feedback/batches/${seq}/close`, {}) as Promise<FeedbackBatchSummary>
+    },
+    patchFeedbackItem(itemId: string, body: { state: string }): Promise<FeedbackItem> {
+      const path = `/api/v1/admin/feedback/items/${encodeURIComponent(itemId)}`
+      return writeJson(path, body, {}, "PATCH") as Promise<FeedbackItem>
+    },
+    feedbackBatchExportUrl(seq: number, format: "md" | "json"): string {
+      return `/api/v1/admin/feedback/batches/${seq}/export?format=${format}`
     },
   }
 }

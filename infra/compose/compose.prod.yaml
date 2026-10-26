@@ -121,6 +121,9 @@ services:
       # Session-workspace files API (W12): worker-data is mounted at
       # /workspaces-ro read-only via the base compose volumes merge.
       RXYCODE_WORKSPACES_ROOT: /workspaces-ro/runs
+      # Feedback library (v1.4.6): admin dashboard emails + batch capacity.
+      RXYCODE_FEEDBACK_ADMIN_EMAILS: ${RXYCODE_FEEDBACK_ADMIN_EMAILS:-}
+      RXYCODE_FEEDBACK_BATCH_SIZE: ${RXYCODE_FEEDBACK_BATCH_SIZE:-20}
     volumes:
       - ${RXYCODE_BYOK_KEYRING_HOST:-/opt/rxycode/secrets/byok-keyring.json}:/run/secrets/byok-keyring.json:ro
       # W12 files API: read-only view of the runs workspaces (base volumes

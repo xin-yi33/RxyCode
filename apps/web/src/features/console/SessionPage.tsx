@@ -1,9 +1,10 @@
-import { useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useParams } from "react-router"
 
 import { IconArrowDown } from "../../components/icons"
 import { Button } from "../../components/ui/button"
+import { Modal } from "../../components/ui/dialog"
 import {
   createClient,
   type ArtifactItem,
@@ -11,11 +12,16 @@ import {
   type RunSummary,
 } from "../../sdk/client"
 import { isUnauthorized } from "../../sdk/errors"
+import FeedbackForm, { type FeedbackPrefill } from "../feedback/FeedbackForm"
+import { AutoPromptCard } from "../feedback/AutoPromptCard"
+import { useAutoFeedbackPrompt } from "../feedback/useAutoFeedbackPrompt"
+import { useUi } from "../../state/ui"
 import { PreviewDrawer } from "../preview/PreviewDrawer"
 import { SplitWorkspace } from "../preview/SplitWorkspace"
 import { ArtifactRows } from "../runs/ArtifactRows"
 import { RunTimeline } from "../runs/RunTimeline"
-import { isActiveRunStatus } from "../runs/status"
+import { isActiveRunStatus, isTerminalRunStatus } from "../runs/status"
+import type { RunTerminalSignal } from "../feedback/autoPrompt"
 import {
   useChatScrollController,
   type ScrollAnchor,
@@ -36,9 +42,13 @@ type OlderPage = {
 function RunCard({
   run,
   onPreview,
+  onTerminal,
+  onFeedback,
 }: {
   run: RunSummary
   onPreview: (artifact: ArtifactItem) => void
+  onTerminal: (signal: RunTerminalSignal) => void
+  onFeedback: () => void
 }) {
   // W9-F4: 用户消息气泡、状态行、工具/审批/问题/Final 全部由 RunTimeline
   // 渲染 —— 这里不再画重复的状态行。模型行回显提交时的解析快照
@@ -57,8 +67,20 @@ function RunCard({
             {model.credential_source === "platform" ? "平台" : "个人"}
           </span>
         ) : null}
+        {isTerminalRunStatus(run.status) ? (
+          <button
+            type="button"
+            className="rxy-ghost-control rounded px-1 text-muted-ink"
+            title="反馈此回答"
+            aria-label="反馈此回答"
+            data-testid="run-feedback-btn"
+            onClick={onFeedback}
+          >
+            ⚑
+          </button>
+        ) : null}
       </p>
-      <RunTimeline run={run} />
+      <RunTimeline run={run} onTerminal={onTerminal} />
       <ArtifactRows runId={run.run_id} status={run.status} onPreview={onPreview} />
     </article>
   )
@@ -71,7 +93,22 @@ export function SessionPage() {
   // Preview data alone must not reopen a user-collapsed pane, but clicking an
   // artifact again must — this nonce is that explicit open signal.
   const [previewNonce, setPreviewNonce] = useState(0)
+  const [feedbackTarget, setFeedbackTarget] = useState<FeedbackPrefill | null>(null)
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null)
+  const seenRunsRef = useRef<Set<string>>(new Set())
+
+  // v1.4.6 自动反馈询问：RunTimeline 上报实时终态信号；本层观察新 run
+  // 的用户消息补充后续信号（repeated_prompt / negative_followup）。
+  const autoPrompt = useAutoFeedbackPrompt(sessionId)
+  const draftText = useUi((s) => s.drafts[sessionId]?.text ?? "")
+  const prevDraftRef = useRef(draftText)
+  useEffect(() => {
+    const prev = prevDraftRef.current
+    prevDraftRef.current = draftText
+    if (prev.trim() === "" && draftText.trim() !== "") {
+      autoPrompt.observeComposerActivity()
+    }
+  }, [draftText, autoPrompt])
 
   // 整个会话页只有这一个滚动容器（chat-scroll）：跟随底部、用户上滚暂停、
   // jump-to-latest、会话切换重置都由控制器统一负责。
@@ -152,6 +189,18 @@ export function SessionPage() {
   const ordered = [...(older?.runs ?? []), ...(runs.data?.runs ?? [])].reverse()
   const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
+  // 新出现的 run = 用户发出的下一条消息 —— 自动询问的“后续消息信号”
+  // 只看首次进入列表的 run_id（历史回放不重复计入）。
+  useEffect(() => {
+    const seen = seenRunsRef.current
+    for (const run of ordered) {
+      if (seen.has(run.run_id)) continue
+      seen.add(run.run_id)
+      const at = run.created_at ? Date.parse(run.created_at) : Date.now()
+      autoPrompt.observeFollowup(run.message, at)
+    }
+  }, [ordered, autoPrompt])
+
   const archived = session.data?.archived === true || Boolean(session.data?.archived_at)
 
   return (
@@ -222,7 +271,20 @@ export function SessionPage() {
               <ol className="flex-1 space-y-8 pb-6">
                 {ordered.map((run) => (
                   <li key={run.run_id} id={`run-${run.run_id}`}>
-                    <RunCard run={run} onPreview={openPreview} />
+                    <RunCard
+                      run={run}
+                      onPreview={openPreview}
+                      onTerminal={autoPrompt.observeTerminal}
+                      onFeedback={() =>
+                        setFeedbackTarget({
+                          run_id: run.run_id,
+                          session_id: sessionId,
+                          module: "run_output",
+                          kind: "content_quality",
+                          source: "manual",
+                        })
+                      }
+                    />
                   </li>
                 ))}
               </ol>
@@ -252,6 +314,35 @@ export function SessionPage() {
             <Composer sessionId={sessionId} activeRun={active} />
           </div>
         )}
+        {autoPrompt.card ? (
+          <AutoPromptCard
+            card={autoPrompt.card}
+            onRespond={() => {
+              const card = autoPrompt.respond()
+              if (card) {
+                setFeedbackTarget({
+                  run_id: card.runId,
+                  session_id: card.sessionId,
+                  module: "run_output",
+                  kind: "content_quality",
+                  source: "auto_prompt",
+                  trigger_reasons: card.reasons,
+                })
+              }
+            }}
+            onDismiss={autoPrompt.dismiss}
+            onNever={autoPrompt.disableAutoPrompt}
+          />
+        ) : null}
+        {feedbackTarget ? (
+          <Modal onClose={() => setFeedbackTarget(null)} label="反馈此回答" className="max-w-lg">
+            <h3 className="mb-3 text-base font-semibold">反馈此回答</h3>
+            <FeedbackForm
+              prefill={feedbackTarget}
+              onClose={() => setFeedbackTarget(null)}
+            />
+          </Modal>
+        ) : null}
       </div>
     </SplitWorkspace>
   )

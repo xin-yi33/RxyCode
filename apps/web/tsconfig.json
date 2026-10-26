@@ -24,5 +24,7 @@
   "include": [
     "src",
     "../../frontend/desktop-app/src/renderer/src/components/sessionVisualState.ts"
-  ]
+  ],
+  // *.test.ts 由 `bun test` 直跑（bun:test 模块无 tsc 类型），不进 typecheck。
+  "exclude": ["src/**/*.test.ts"]
 }

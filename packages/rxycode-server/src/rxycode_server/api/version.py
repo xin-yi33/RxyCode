@@ -43,6 +43,11 @@ def _commit() -> str:
     return env_commit or _git_commit()
 
 
+def build_commit() -> str:
+    """Serving build id — also the version key feedback batches roll on."""
+    return _commit()
+
+
 def _built_at(request: Request) -> str:
     env_time = os.environ.get("RXYCODE_BUILD_TIME", "").strip()
     if env_time:

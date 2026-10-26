@@ -1,0 +1,255 @@
+/* v1.4.6 反馈库 —— UI-01/02 规范：单层外壳 + inset 环、内部 ghost
+   控件（.rxy-ghost-control 复用）、.rxy-tabular-nums 计数、减弱动效瞬时。 */
+
+/* 单层输入外壳（与 .rxy-composer-shell 同一套规则） */
+.rxy-input-shell {
+  border-radius: var(--rxy-composer-radius, 1rem);
+  border: 0;
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+  background-color: var(--rxy-card);
+  display: flex;
+  gap: 2px;
+}
+
+.rxy-input-shell:focus-within {
+  box-shadow:
+    inset 0 0 0 1px var(--rxy-border),
+    0 0 0 3px rgba(var(--rxy-running-rgb), 0.18);
+}
+
+.rxy-input-shell:has(:focus-visible) {
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--rxy-running-rgb), 0.6),
+    0 0 0 3px rgba(var(--rxy-running-rgb), 0.28);
+}
+
+.rxy-input-shell .rxy-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  color: var(--rxy-fg);
+  resize: vertical;
+}
+
+/* 分段选择（kind/severity） */
+.rxy-seg-option {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  color: var(--rxy-muted);
+  border-radius: calc(var(--rxy-composer-radius, 1rem) - 4px);
+  cursor: pointer;
+}
+
+.rxy-seg-option:hover {
+  color: var(--rxy-fg);
+}
+
+.rxy-seg-option.active {
+  background-color: var(--rxy-bubble);
+  color: var(--rxy-fg);
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+}
+
+/* 状态/统计 chip（UI-02 的 ink 文本变体保证对比度） */
+.rxy-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.1rem 0.55rem;
+  font-size: 12px;
+  background-color: var(--rxy-bubble);
+  color: var(--rxy-muted-ink);
+}
+
+.feedback-state-new { color: var(--rxy-running-ink); }
+.feedback-state-triaged { color: var(--rxy-waiting-ink); }
+.feedback-state-in_progress { color: var(--rxy-running-ink); }
+.feedback-state-resolved { color: var(--rxy-success-ink); }
+.feedback-state-wontfix { color: var(--rxy-muted-ink); }
+.feedback-state-spam { color: var(--rxy-failure-ink); }
+
+/* 主按钮 —— 与发送键同一色系 */
+.rxy-primary-btn {
+  border: 0;
+  border-radius: 9999px;
+  background-color: var(--rxy-running);
+  color: #fff;
+  padding: 0.5rem 1.25rem;
+  font: inherit;
+  font-weight: var(--weight-medium, 500);
+  cursor: pointer;
+}
+
+.rxy-primary-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* honeypot：移出可视区但留在 DOM（display:none 会被部分 bot 识别） */
+.rxy-honeypot {
+  position: absolute;
+  left: -10000px;
+  top: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.feedback-field { margin-bottom: 0.9rem; }
+.feedback-label {
+  display: block;
+  font-size: 13px;
+  color: var(--rxy-muted);
+  margin-bottom: 0.35rem;
+}
+.feedback-muted { font-size: 12px; color: var(--rxy-muted); }
+.feedback-error { font-size: 13px; color: var(--rxy-failure-ink); margin-top: 0.5rem; }
+.feedback-context-note { font-size: 12px; color: var(--rxy-muted); margin: 0.5rem 0; }
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.feedback-images { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.feedback-image-card {
+  border-radius: calc(var(--rxy-composer-radius, 1rem) - var(--rxy-composer-gap, 0.5rem));
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+  overflow: hidden;
+  width: 88px;
+}
+.feedback-thumb { width: 88px; height: 66px; object-fit: cover; display: block; }
+.feedback-image-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.15rem 0.35rem;
+  font-size: 11px;
+  color: var(--rxy-muted-ink);
+}
+.feedback-image-error { color: var(--rxy-failure-ink); font-size: 11px; }
+.feedback-add-image {
+  border-radius: calc(var(--rxy-composer-radius, 1rem) - var(--rxy-composer-gap, 0.5rem));
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+  padding: 0 0.8rem;
+  font-size: 12px;
+  color: var(--rxy-muted-ink);
+  min-height: 90px;
+}
+
+.feedback-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  font-size: 13px;
+  color: var(--rxy-muted-ink);
+}
+
+.feedback-mine h3, .feedback-admin h3 { font-size: 14px; margin: 1.25rem 0 0.5rem; }
+.feedback-mine-item {
+  border-radius: var(--rxy-composer-radius, 1rem);
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.5rem;
+}
+.feedback-mine-item header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.feedback-mine-thumbs { display: flex; gap: 0.35rem; margin-top: 0.35rem; }
+.feedback-mine-thumbs img { border-radius: 6px; object-fit: cover; }
+
+.feedback-batch {
+  border-radius: var(--rxy-composer-radius, 1rem);
+  box-shadow: inset 0 0 0 1px var(--rxy-border);
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.5rem;
+}
+.feedback-batch header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.feedback-batch-detail { margin-top: 0.5rem; }
+.feedback-batch-detail h4 { font-size: 13px; margin: 0.5rem 0 0.25rem; }
+.feedback-admin-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  font-size: 13px;
+}
+.feedback-admin-item select { max-width: 140px; padding: 0.15rem 0.4rem; }
+
+/* ---- 自动询问卡（非阻塞，右下角；移动端底部全宽） ------------------------- */
+.feedback-auto-prompt {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  width: min(340px, calc(100vw - 32px));
+  border-radius: var(--rxy-composer-radius, 1rem);
+  background-color: var(--rxy-card);
+  color: var(--rxy-fg);
+  box-shadow:
+    inset 0 0 0 1px var(--rxy-border),
+    0 8px 30px rgba(0, 0, 0, 0.18);
+  padding: 0.75rem 0.9rem;
+  animation: feedback-prompt-in 180ms cubic-bezier(0.215, 0.61, 0.355, 1) both;
+}
+
+@keyframes feedback-prompt-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.feedback-auto-prompt .reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.45rem 0;
+}
+
+.feedback-auto-prompt .row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+}
+
+.feedback-auto-prompt .never {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 12px;
+  color: var(--rxy-muted);
+  margin-top: 0.45rem;
+}
+
+@media (max-width: 767px) {
+  .feedback-auto-prompt {
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    border-radius: var(--rxy-composer-radius, 1rem)
+      var(--rxy-composer-radius, 1rem) 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedback-auto-prompt { animation: none; }
+}
