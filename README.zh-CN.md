@@ -194,7 +194,15 @@ OpenTUI 是默认终端客户端，显示流式文本、工具调用、审批、
 
 默认工作模式是 Build。Plan 在执行层只读。Compose 是先计划再构建。专家团默认关闭，适合可拆分的大型工作，不是日常编辑的默认路径。
 
-### Web
+### 无头 API
+
+```bash
+rxycode --api
+```
+
+这是 FastAPI 的 HTTP + SSE 适配层，不是交互式 TUI。它和其他客户端共用同一个 `Session` 和协议映射。
+
+## 🌐 RxyCode Web
 
 线上实例是 [rxycode.xyz](https://rxycode.xyz)。它跑在一台资源有限的社区 VM 上，属于早期预览，不是生产 SLA。
 
@@ -212,15 +220,37 @@ OpenTUI 是默认终端客户端，显示流式文本、工具调用、审批、
 - **移动端与旧 Chromium。** 控制台在 390px 视口和 Chromium 90/98/148 上验证过；Playwright 的 Firefox/WebKit 也覆盖关键路径。真实 iOS/Vivo 真机没有验证。
 - **设备桥。** `rxycode connect --url <wss-url> --code <one-time-code> --device-id <name> --capability shell` 让本机主动外拨 WSS 配对。之后云端可以把 shell 调用下发到这台机器，每条都要过审批收件箱，而且被约束在 `connect` 启动时的目录内。
 
+下表是发布证据映射，不承诺所有部署形态能力一致。`shipped` 行必须同时能定位磁盘证据目录和测试；`experimental` 表示代码与测试已存在，但还没有独立发布证据包；`blocked` 行直接写明当前限制。
+
+| 能力 | 状态 | 证据 | 验证 |
+|---|---|---|---|
+| 租户登录与 CSRF/Origin 写入门 | shipped | `evidence/web/WEB-W2-C02` | `tests/web/w2/test_w2_c02_module.py` |
+| 带 fencing worker lease 的持久 run | shipped | `evidence/web/WEB-W2-C03` | `tests/web/w2/test_w2_c03_module.py` |
+| Event Store、outbox、SSE 重放与重连 | shipped | `evidence/web/WEB-W7-C02` | `tests/web/w7/test_w7_c02_module.py` |
+| 审批/问题状态持久化与跨天恢复契约 | shipped | `evidence/web/WEB-W2-C06` | `tests/web/w2/test_w2_c06_unit.py` |
+| React 工作台：登录、会话、diff、PTY 与产物 | shipped | `evidence/web/WEB-W3-C06` | `tests/web/w3/test_w3_c06_module.py` |
+| 本机 Full Runner、设备配对与急停 | shipped | `evidence/web/WEB-W4-C06` | `tests/web/w4/test_w4_c06_module.py` |
+| 邮箱验证码、ALTCHA 与限频 | shipped | `evidence/web/WEB-W9-C01` | `tests/web/w9/test_rate_and_device.py`, `tests/web/w9/test_email_codes.py` |
+| 单设备登录锁 | shipped | `evidence/web/WEB-W9-C01` | `tests/web/w9/test_rate_and_device.py` |
+| BYOK 密钥库与模型选择器 | shipped | `evidence/web/WEB-W10-C01` | `tests/web/w9/test_byok_api.py`, `tests/web/w9/test_byok_crypto.py` |
+| 附件暂存、事务绑定与文档正文抽取 | experimental | — | `tests/web/w11/test_w11_c07_unit.py`, `tests/web/w11/test_w11_attachments_staging.py` |
+| 产物清单、签名下载与 Range | shipped | `evidence/web/WEB-W3-C06` | `tests/web/w11/test_w11_c07_unit.py` |
+| 图片、HTML 与文本预览 | experimental | — | `tests/web/w11/test_w11_c09_unit.py` |
+| 会话工作区文件列表与下载 | shipped | `evidence/web/WEB-W12-C01` | `tests/web/w9/test_session_files.py` |
+| 设备桥与本机审批收件箱 | shipped | `evidence/web/WEB-W13-C01` | `tests/web/w4/test_w4_c05_module.py` |
+| per-run 云沙箱与租户文件系统隔离 | shipped | `evidence/web/WEB-W5-C02` | `tests/web/w5/test_w5_c02_unit.py` |
+| 可复现 Agent 评测与基线对照 | shipped | `evidence/web/WEB-W7-C03` | `tests/web/w7/test_w7_c03_unit.py` |
+| OpenTelemetry span 与 per-run 费用账本 | shipped | `evidence/web/WEB-W7-C04` | `tests/web/w7/test_w7_c04_unit.py` |
+| Compose 部署、HTTPS 网关与受限 turn | shipped | `evidence/web/WEB-W7-C05` | `tests/web/w7/test_w7_c05_module.py` |
+| 认证、注入与数据泄漏安全审查语料 | shipped | `evidence/web/WEB-W7-C01` | `tests/web/w7/test_w7_c01_unit.py` |
+| 公网人工浏览器冒烟：登录、BYOK、接管、取消、文件 | shipped | `evidence/web/WEB-W10-C02` | `tests/web/w9/test_e2e.py`, `tests/web/w9/test_version.py` |
+| 托管 Demo URL | shipped | `evidence/web/WEB-W10-C02` | `tests/web/w9/test_version.py` |
+| 匿名 HTTP 云端 run | blocked: 访客必须先登录才能发送任务 | — | — |
+| 公共 worker 执行 `local:*` 目标 | blocked: cloud-only 放置闸拒绝本机目标 | — | — |
+| PDF 与 Office 产物预览 | blocked: capability 如实返回 `pdf=false`, `office=false` | — | — |
+| `apps/web` 独立 Playwright npm E2E target | blocked: 尚未提供独立 target 或依赖；`tests/web` 的 Python 浏览器测试仍然存在 | — | — |
+
 公共 worker 只执行 `cloud:{tenant}:{workspace}` 目标，而且 turn 在 per-run 沙箱里跑。云 run 读不到你的 home 目录；上传文件或配对设备都是显式动作。自部署与边界见 [docs/deploy/web-runbook.md](docs/deploy/web-runbook.md)；用户指南见 [docs/product/web-user-guide.md](docs/product/web-user-guide.md)；设计见 [docs/architecture/web-system-design.md](docs/architecture/web-system-design.md)。
-
-### 无头 API
-
-```bash
-rxycode --api
-```
-
-这是 FastAPI 的 HTTP + SSE 适配层，不是交互式 TUI。它和其他客户端共用同一个 `Session` 和协议映射。
 
 ---
 

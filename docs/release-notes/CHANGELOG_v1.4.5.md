@@ -1137,3 +1137,20 @@
   release。源码提交的 main CI `40166956475` 全 6 job success 只对应
   `247be96…`；若本 docs-only 提交另行触发 CI，应单独报告其结果，不能把
   源码 CI 结果误称为最新 docs commit 的 CI 结果。
+
+### 文档契约：恢复 Web 能力矩阵（2026-10-26）
+
+- `4886f8ef` 的新版 README 删除了独立 `## … Web …` 二级章节，
+  导致 `WEB-W7-C06` 无法发现能力矩阵；父提交 `63fcde7b` 的矩阵仍可作为
+  已验收口径参考。
+- `README.md`、`README.zh-CN.md` 恢复独立 Web 二级章节，保留 BYOK、
+  持久 run、附件、产物、预览、设备桥、沙箱、CLI 主线和已知限制。
+- `shipped` 行逐项绑定现存 evidence 目录与测试文件；附件暂存与图片/
+  HTML/文本预览因没有独立 W11 发布证据包而标为 `experimental`，
+  不冒充发布硬化。匿名 HTTP run、公共 worker 的 `local:*`、
+  PDF/Office 预览与 `apps/web` 独立 Playwright npm E2E target/依赖保留命名
+  `blocked` 边界；`tests/web` 的 Python 浏览器测试仍然存在。
+- 验证：`tests/web/w7/test_w7_c06_unit.py` **2 passed**；
+  `tests/unit/test_packaging_contract.py` **19 passed**；
+  qiangshou README pair validator **PASS**。未改生产、权限、timeout
+  或测试，未 commit/push/tag。

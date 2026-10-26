@@ -194,7 +194,15 @@ OpenTUI is the default terminal client. It shows streaming text, tool calls, app
 
 The default work mode is Build. Plan is read-only at the execution layer. Compose is a plan followed by a build. The expert team is off by default and is intended for modular work, not everyday edits.
 
-### Web
+### Headless API
+
+```bash
+rxycode --api
+```
+
+This is the FastAPI HTTP + SSE adapter, not an interactive TUI. It uses the same `Session` and protocol mapping as the other clients.
+
+## 🌐 RxyCode Web
 
 The live instance is [rxycode.xyz](https://rxycode.xyz). It is a small community deployment and an early preview, not a production SLA.
 
@@ -212,15 +220,37 @@ The live instance is [rxycode.xyz](https://rxycode.xyz). It is a small community
 - **Mobile and older Chromium.** The console is tested at a 390px viewport and on Chromium 90/98/148; Playwright Firefox/WebKit also cover key paths. Real iOS/Vivo devices are not verified.
 - **Device bridge.** `rxycode connect --url <wss-url> --code <one-time-code> --device-id <name> --capability shell` pairs a local machine over outbound WSS. The cloud can then send shell calls to that machine through an approval inbox, confined to the directory where `connect` was started.
 
+The table is a release-evidence map, not a promise of uniform deployment. `shipped` rows cite an on-disk evidence directory and test file; `experimental` means the path is present and tested but lacks a dedicated release-evidence package; `blocked` names the current limitation.
+
+| Capability | Status | Evidence | Verification |
+|---|---|---|---|
+| Tenant login and CSRF/Origin write gate | shipped | `evidence/web/WEB-W2-C02` | `tests/web/w2/test_w2_c02_module.py` |
+| Durable runs with fenced worker leases | shipped | `evidence/web/WEB-W2-C03` | `tests/web/w2/test_w2_c03_module.py` |
+| Event store, outbox, SSE replay and reconnect | shipped | `evidence/web/WEB-W7-C02` | `tests/web/w7/test_w7_c02_module.py` |
+| Persisted approval/question state and cross-day resume contract | shipped | `evidence/web/WEB-W2-C06` | `tests/web/w2/test_w2_c06_unit.py` |
+| React workbench: login, sessions, diffs, PTY and artifacts | shipped | `evidence/web/WEB-W3-C06` | `tests/web/w3/test_w3_c06_module.py` |
+| Local Full runner, device pairing and emergency stop | shipped | `evidence/web/WEB-W4-C06` | `tests/web/w4/test_w4_c06_module.py` |
+| Email-code auth, ALTCHA and rate ceilings | shipped | `evidence/web/WEB-W9-C01` | `tests/web/w9/test_rate_and_device.py`, `tests/web/w9/test_email_codes.py` |
+| Single-device login lock | shipped | `evidence/web/WEB-W9-C01` | `tests/web/w9/test_rate_and_device.py` |
+| BYOK key vault and model picker | shipped | `evidence/web/WEB-W10-C01` | `tests/web/w9/test_byok_api.py`, `tests/web/w9/test_byok_crypto.py` |
+| Attachment staging, transactional binding and document text extraction | experimental | — | `tests/web/w11/test_w11_c07_unit.py`, `tests/web/w11/test_w11_attachments_staging.py` |
+| Artifact manifest, signed download and Range support | shipped | `evidence/web/WEB-W3-C06` | `tests/web/w11/test_w11_c07_unit.py` |
+| Image, HTML and text previews | experimental | — | `tests/web/w11/test_w11_c09_unit.py` |
+| Session workspace file list and download | shipped | `evidence/web/WEB-W12-C01` | `tests/web/w9/test_session_files.py` |
+| Device bridge and local approval inbox | shipped | `evidence/web/WEB-W13-C01` | `tests/web/w4/test_w4_c05_module.py` |
+| Per-run cloud sandbox with tenant filesystem isolation | shipped | `evidence/web/WEB-W5-C02` | `tests/web/w5/test_w5_c02_unit.py` |
+| Reproducible agent evals and baseline comparison | shipped | `evidence/web/WEB-W7-C03` | `tests/web/w7/test_w7_c03_unit.py` |
+| OpenTelemetry spans and per-run cost ledger | shipped | `evidence/web/WEB-W7-C04` | `tests/web/w7/test_w7_c04_unit.py` |
+| Compose deployment, HTTPS gateway and confined turns | shipped | `evidence/web/WEB-W7-C05` | `tests/web/w7/test_w7_c05_module.py` |
+| Security review corpus for auth, injection and data leaks | shipped | `evidence/web/WEB-W7-C01` | `tests/web/w7/test_w7_c01_unit.py` |
+| Manual public browser smoke: login, BYOK, takeover, cancel, files | shipped | `evidence/web/WEB-W10-C02` | `tests/web/w9/test_e2e.py`, `tests/web/w9/test_version.py` |
+| Hosted public demo URL | shipped | `evidence/web/WEB-W10-C02` | `tests/web/w9/test_version.py` |
+| Anonymous cloud run over HTTP | blocked: visitors must sign in before sending a task | — | — |
+| Public worker executing `local:*` targets | blocked: cloud-only placement gate rejects local targets | — | — |
+| PDF and Office artifact preview | blocked: capability reports `pdf=false`, `office=false` | — | — |
+| Standalone Playwright npm E2E in `apps/web` | blocked: `apps/web` has no independent Playwright npm E2E target or dependency; Python browser tests under `tests/web` exist | — | — |
+
 The public worker executes only `cloud:{tenant}:{workspace}` targets inside the per-run sandbox. A cloud run cannot read your home directory. Uploading a file or pairing a device is an explicit action. Self-hosting and boundaries: [docs/deploy/web-runbook.md](docs/deploy/web-runbook.md); user guide: [docs/product/web-user-guide.md](docs/product/web-user-guide.md); design: [docs/architecture/web-system-design.md](docs/architecture/web-system-design.md).
-
-### Headless API
-
-```bash
-rxycode --api
-```
-
-This is the FastAPI HTTP + SSE adapter, not an interactive TUI. It uses the same `Session` and protocol mapping as the other clients.
 
 ---
 
