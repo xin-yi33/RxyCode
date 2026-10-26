@@ -52,6 +52,22 @@
 - 真实全链路：本地起 api(:8000)+vite(:5173)+pg(:55441)，浏览器真实注册/登录 → 表单提交带 PNG → toast FB-0001 与「我的反馈」；4 次提交链 `[201,201,400 CAPTCHA_REQUIRED,429…]`、图片洪泛真实 429；admin `/me.feedback_admin=true`、批次 FB-0001 计数正确、md 导出 200 且原文在围栏中（截图见报告）。
 - 回归：`tsc --noEmit` 干净、`vite build` 干净、`ruff check` 干净；`tests/web/w2`（WEB_TABLES/迁移断言）绿；w3 聊天契约三件套 52 passed；`w9` 158 passed，2 个 live-LLM e2e 用例（`test_e2_main_task` 无 tool row、`test_e3_approval` 无审批卡）为既有模型行为型失败，与本 diff 无关（未触 drain/worker/审批渲染）；`/me` 响应新增 `feedback_admin` 键后，`test_w9_b1_register_and_me` 的键集合断言已同步为合法新契约。
 
+### 反馈功能审查修复（2026-10-27，同分支复审批次）
+
+对 `b9c7a9b0` 的复审共修复 9 项，全部带回归测试：
+
+1. **自动询问自引用加分**：`reevaluate` 原先在候选命中 `negative_followup` 时立刻写 `previousNegativeFollowup`，同一候选的后续重评（第二条消息、tick）会把自己当「上一 run」多加 +1.5 `repeated_dissatisfaction`（「还是不行」score 2 → 3.5 误弹）。改为候选创建时快照 `previousNegative`；本候选的 negative 只记到 `candidate.negativeFollowup`，仅在候选结束（被替换 / 窗到期 / markAsked / dismissed / responded / ignored）时以 true/false 全量提交 map。
+2. **`sessionDaily` 跨会话丢失**：`markAsked` 原先把整个计数表重写成只剩当前会话 —— 切一次会话 G4 上限即失效。现在只裁非当天条目，当天所有会话计数保留。
+3. **hook 副作用与陈旧计时器**：`dismiss` 把 `policy.dismissed()` 从 `setCard` updater 中移出（StrictMode 双调用会让一次点击记两次 streak）；`dismiss`/`disableAutoPrompt`/`respond` 统一清 20s `hideTimerRef`（否则迟到的 `policy.ignored()` 会清掉后来的新候选）；`disableAutoPrompt` 补 `persistPolicy`。
+4. **`stoppedByUser` 语义**：原先 `status === "cancelled"` 把系统取消（配额/超时）也算用户停止。改为事件流中出现过 `cancel_requested`（RunTimeline 在状态转换中捕获 prev/status）才算 `user_stopped`。
+5. **新语料**：N15（「还是不行」+ 180s 内第二条无抱怨消息 → 不弹）、N16（上一 run 无抱怨、本 run「还是不行」→ 不弹）、G10（会话 A 当天 2 次 → 切 B 问 1 次 → 回 A 仍不弹）、G11（「不需要」后旧收尾不影响新候选）。矩阵仍为 `should-show:8/8 should-hide:16/16 FP=0 FN=0`（36 用例全过）。
+6. **并发绕过验证码升级/日上限**：锁外计数对并发不可信 —— `assign_batch` 拿到 `pg_advisory_xact_lock` 之后在 `submit_item` 内复查 `check_daily_user_cap`（→429）与 `captcha_required`（未过 captcha →400 `CAPTCHA_REQUIRED`，端点把 `_require_captcha` 是否已过作为 `captcha_ok` 传入）；锁外快速检查保留。测试：DB 直插 2 条后 4 线程无 captcha 并发 → 恰 1×201 + 3×400。
+7. **上传路径省流/省内存**：staged 满额（`sweep` + count≥10 →429）移到 `_read_capped` 之前（不读 body 不解码）；解码套全局 `threading.BoundedSemaphore(2)`。
+8. **images.py 预算前置**：`Image.open` 后先查头部 `size` 超预算 →413，再到 `load()` 分配；`DecompressionBombWarning`（0.5×–2× 警告窗）升成错误同等 413；`convert`/`save` 包 try，mode 转换失败 →415 不 500。测试：假 IDAT 头声明 30000×30000 →413（证明未进 load）；`I;16` PNG →201 或 415。
+9. **过期 staged 存储泄漏**：`sweep_expired_images` 从「改 state」改为删 blob + 删行，且每次上传做全局清扫（不限当前用户、`LIMIT 50`）；blob 删除失败不阻塞行删除。测试：sweep 后 `open_read` `FileNotFoundError` 且行不存在。
+
+回归：`bun test autoPrompt.test.ts` 36 pass（矩阵行见上）；`pytest tests/web/w12` **42 passed**；`pytest tests/web/w3/test_feedback_e2e.py` 12 passed；`tsc --noEmit` 干净；`ruff check` 干净。
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。

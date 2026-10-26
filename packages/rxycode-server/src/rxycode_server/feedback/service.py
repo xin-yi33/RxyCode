@@ -263,7 +263,7 @@ def assign_batch(db: Session, item: FeedbackItem) -> FeedbackBatch:
 
 
 def submit_item(
-    db: Session, item: FeedbackItem
+    db: Session, item: FeedbackItem, *, captcha_ok: bool = False
 ) -> tuple[FeedbackItem, int, bool]:
     """Idempotency + batch assignment with integrity-retry (concurrent open).
 
@@ -272,6 +272,10 @@ def submit_item(
     second pass the earlier transaction's row is visible, so a duplicate
     request returns the existing item and a batch race finds the new open
     batch. Returns ``(item, batch_seq, is_duplicate)``.
+
+    ``captcha_ok``：本请求是否已在端点层通过 ``_require_captcha``。日上限
+    与验证码升级在拿到 batch 级 advisory lock 之后复查 —— 并发请求在
+    锁外看到的是同一份旧计数，锁内复查才是串行真值。
     """
     for _attempt in range(MAX_SUBMIT_ATTEMPTS):
         existing = db.scalars(
@@ -287,6 +291,10 @@ def submit_item(
             return existing, int(seq), True
         try:
             batch = assign_batch(db, item)
+            # advisory lock 仍持有（xact 级）——此时对计数的读是串行点。
+            check_daily_user_cap(db, item.user_id)
+            if captcha_required(db, item.user_id) and not captcha_ok:
+                raise HTTPException(400, detail="CAPTCHA_REQUIRED")
             db.add(item)
             db.flush()
             return item, int(batch.seq), False
@@ -303,14 +311,38 @@ def submit_item(
     raise HTTPException(503, detail="FEEDBACK_BUSY")
 
 
-def sweep_expired_images(db: Session, user_id: str) -> None:
+def sweep_expired_images(
+    db: Session, store, user_id: str | None = None, limit: int = 50
+) -> int:
+    """过期 staged 图片：删 blob + 删行（只改 state 会泄漏存储）。
+
+    ``user_id=None`` 时是全局清扫（每次上传顺带跑一趟，LIMIT 50
+    防大清扫阻塞请求）。blob 删除失败不阻塞行删除 —— 孤儿 blob 由
+    下一轮清扫兜底，行必须先走，否则引用会永久悬挂。
+    """
     now = datetime.now(timezone.utc)
-    db.query(FeedbackImage).filter(
-        FeedbackImage.user_id == user_id,
-        FeedbackImage.state == "staged",
-        FeedbackImage.expires_at.is_not(None),
-        FeedbackImage.expires_at < now,
-    ).update({"state": "expired"}, synchronize_session=False)
+    query = (
+        select(FeedbackImage)
+        .where(
+            FeedbackImage.state == "staged",
+            FeedbackImage.expires_at.is_not(None),
+            FeedbackImage.expires_at < now,
+        )
+        .order_by(FeedbackImage.expires_at)
+        .limit(limit)
+    )
+    if user_id is not None:
+        query = query.where(FeedbackImage.user_id == user_id)
+    rows = list(db.scalars(query))
+    for row in rows:
+        try:
+            store.delete(row.blob_key)
+        except Exception:
+            pass
+        db.delete(row)
+    if rows:
+        db.flush()
+    return len(rows)
 
 
 def staged_image_count(db: Session, user_id: str) -> int:

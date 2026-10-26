@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -50,6 +51,15 @@ router = APIRouter()
 
 _MAX_BODY_BYTES = 64 * 1024
 _DEDUPE_HOURS = 24
+
+# 解码是全内存操作（25MP 图 ≈ 百 MB 级工作集）——多用户同时上传会叠
+# 内存。全局闸只允许同时 2 个解码，其余在 to_thread 里排队。
+_DECODE_SEM = threading.BoundedSemaphore(2)
+
+
+def _decode_guarded(raw: bytes):
+    with _DECODE_SEM:
+        return sanitize_image(raw)
 
 
 def _now() -> datetime:
@@ -117,18 +127,19 @@ async def upload_image(
     require_write(request)
     record = current_record(request)
     svc.check_image_limit(request, record.user_id, client_ip(request))
-    raw = await _read_capped(request, MAX_IMAGE_BYTES, "FEEDBACK_IMAGE_TOO_LARGE")
-    try:
-        image = await asyncio.to_thread(sanitize_image, raw)
-    except ImageRejected as exc:
-        raise _image_map(exc) from exc
-
-    svc.sweep_expired_images(db, record.user_id)
+    # 满额时直接拒 —— 不读 body、不解码（省下的内存和带宽都是攻击面）。
+    store = _store(request)
+    svc.sweep_expired_images(db, store)  # 全局过期清扫（每上传顺带，LIMIT 50）
     if svc.staged_image_count(db, record.user_id) >= svc.STAGED_IMAGE_LIMIT:
         raise HTTPException(429, detail="RATE_LIMITED", headers={"Retry-After": "60"})
 
+    raw = await _read_capped(request, MAX_IMAGE_BYTES, "FEEDBACK_IMAGE_TOO_LARGE")
+    try:
+        image = await asyncio.to_thread(_decode_guarded, raw)
+    except ImageRejected as exc:
+        raise _image_map(exc) from exc
+
     image_id = uuid.uuid4().hex
-    store = _store(request)
     blob_key = f"feedback/{record.tenant_id}/{image_id}"
     try:
         store.put_stream(blob_key, io.BytesIO(image.blob), content_type=image.content_type)
@@ -331,10 +342,12 @@ async def submit(request: Request, db: Session = Depends(db_session)) -> Respons
     ) is not None:
         raise HTTPException(409, detail="FEEDBACK_DUPLICATE")
 
+    captcha_ok = False
     if svc.captcha_required(db, record.user_id):
         if not str(body.get("captcha") or "").strip():
             raise HTTPException(400, detail="CAPTCHA_REQUIRED")
         _require_captcha(request, body)
+        captcha_ok = True
 
     item = FeedbackItem(
         id=uuid.uuid4().hex,
@@ -361,7 +374,7 @@ async def submit(request: Request, db: Session = Depends(db_session)) -> Respons
         ip_hmac=svc.ip_hmac(request.app.state.secret, ip),
         state="new",
     )
-    saved, batch_seq, duplicated = svc.submit_item(db, item)
+    saved, batch_seq, duplicated = svc.submit_item(db, item, captcha_ok=captcha_ok)
     if not duplicated:
         for row in images:
             row.state = "bound"

@@ -24,12 +24,18 @@ export function RunTimeline({
     run.status,
   )
   const prevStatusRef = useRef(run.status)
+  // 事件流里出现过 cancel_requested 才算“用户点了停止”——终态
+  // cancelled 也可能是系统取消（配额/超时），不算 user_stopped。
+  const sawCancelRequestedRef = useRef(false)
   useEffect(() => {
     const prev = prevStatusRef.current
     const status = view.status
     prevStatusRef.current = status
+    if (status === "cancel_requested" || prev === "cancel_requested") {
+      sawCancelRequestedRef.current = true
+    }
     if (!isTerminalRunStatus(prev) && isTerminalRunStatus(status) && onTerminal) {
-      onTerminal(signalFromRunView(run, view))
+      onTerminal(signalFromRunView(run, view, sawCancelRequestedRef.current))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.status])

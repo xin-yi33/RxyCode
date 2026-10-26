@@ -25,9 +25,12 @@ export type AutoPromptCardState = {
 }
 
 // RunView → 打分输入。live = 组件挂载期间观察到 非终态→终态 的真实转换。
+// stoppedByUser 由调用方从事件流判定（出现过 cancel_requested），
+// 不能用终态 cancelled —— 系统取消（配额/超时）也会落到 cancelled。
 export function signalFromRunView(
   run: RunSummary,
   view: RunView,
+  stoppedByUser = false,
 ): RunTerminalSignal {
   let finalText = ""
   for (const item of view.timeline) {
@@ -46,7 +49,7 @@ export function signalFromRunView(
     status: view.status,
     finalText,
     toolFailures,
-    stoppedByUser: view.status === "cancelled",
+    stoppedByUser,
     durationMs: createdAt > 0 ? Math.max(0, Date.now() - createdAt) : 0,
     leaseEpochs: view.leaseEpochs.length,
     prompt: run.message,
@@ -173,25 +176,30 @@ export function useAutoFeedbackPrompt(sessionId: string) {
     dispatch(policy.composerActivity())
   }, [policy, dispatch])
 
-  const dismiss = useCallback(() => {
-    setCard((current) => {
-      if (current) policy.dismissed(current.runId)
-      return null
-    })
-    persistPolicy(policy)
-  }, [policy])
-
-  const respond = useCallback(() => {
-    const current = card
-    setCard(null)
+  const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current) {
       window.clearTimeout(hideTimerRef.current)
       hideTimerRef.current = 0
     }
+  }, [])
+
+  const dismiss = useCallback(() => {
+    // policy 更新放在 setCard updater 外 —— StrictMode 双调用会让
+    // 一次点击记两次 dismissStreak。
+    if (card) policy.dismissed(card.runId)
+    clearHideTimer() // 否则 20s 后的 ignored() 会清掉后来的新候选
+    setCard(null)
+    persistPolicy(policy)
+  }, [card, policy, clearHideTimer])
+
+  const respond = useCallback(() => {
+    const current = card
+    setCard(null)
+    clearHideTimer()
     policy.responded()
     persistPolicy(policy)
     return current
-  }, [card, policy])
+  }, [card, policy, clearHideTimer])
 
   const disableAutoPrompt = useCallback(() => {
     try {
@@ -199,9 +207,11 @@ export function useAutoFeedbackPrompt(sessionId: string) {
     } catch {
       // 同 persistPolicy 的尽力而为语义。
     }
+    clearHideTimer()
     setCard(null)
     policy.responded()
-  }, [policy])
+    persistPolicy(policy)
+  }, [policy, clearHideTimer])
 
   return {
     card,

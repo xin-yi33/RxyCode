@@ -130,6 +130,50 @@ def test_decompression_bomb_rejected() -> None:
     assert err.value.status == 413
 
 
+def _png_header(w: int, h: int) -> bytes:
+    """IHDR 声明 w×h 但 IDAT 极小的 PNG —— Pillow open() 能通过
+    （chunk 扫描只认 IDAT 标记存在），走到 load() 才必然失败。"""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00" * 64)  # 内容无所谓 —— load 前已被拦
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", idat)
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_header_only_pixel_bomb_rejected_before_load() -> None:
+    # 30000×30000 只有头 + 假 IDAT —— 413 证明 size 预算在 load() 分配前命中
+    # （若走到 load，IDAT 内容不足只会报 415 损坏）。
+    with pytest.raises(ImageRejected) as err:
+        sanitize_image(_png_header(30_000, 30_000))
+    assert err.value.status == 413
+
+
+def test_i16_png_never_500() -> None:
+    # 16-bit 灰度 PNG —— mode 转换可能失败，但只能得 201/415，不能 500。
+    buf = io.BytesIO()
+    Image.new("I;16", (8, 8)).save(buf, "PNG")
+    try:
+        out = sanitize_image(buf.getvalue())
+    except ImageRejected as err:
+        assert err.status == 415
+    else:
+        assert out.content_type in ("image/png", "image/jpeg")
+
+
 # ---- normalize / hash --------------------------------------------------------
 
 

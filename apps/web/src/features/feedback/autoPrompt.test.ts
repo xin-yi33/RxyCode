@@ -265,6 +265,42 @@ describe("不弹语料 N1–N14", () => {
   }
 })
 
+const EXTRA_NEGATIVES = 2 // N15/N16 —— 需多条 followup / 前置 run，不进表
+
+describe("不弹语料 N15–N16", () => {
+  test("N15 仅「还是不行」+ 180s 内第二条无抱怨消息 → 不弹（score 保持 2）", () => {
+    now = 0
+    const { policy } = harness()
+    const signal = mkSignal({ prompt: "帮我写一个快速排序" })
+    policy.runTerminal(signal, now)
+    now += 30_000
+    expect(policy.followupSent("还是不行", now).kind).toBe("none") // score=2
+    now += 40_000 // 仍 <180s 窗
+    // 第二条消息不替换第一条，但会触发重评 —— 重评不得把本候选自己的
+    // negative_followup 当“上一 run”自加 repeated_dissatisfaction。
+    const ev = policy.followupSent("另外帮我看下部署脚本", now)
+    expect(ev.kind).toBe("none")
+    now += 200_000
+    expect(policy.tick().kind).toBe("none")
+    expect(policy.askedRunIds).not.toContain(signal.runId)
+    tn += 1
+  })
+
+  test("N16 上一 run 无抱怨、本 run 后续「还是不行」→ 不弹", () => {
+    now = 0
+    const { policy, drive } = harness()
+    drive(mkSignal()) // 上一个 run 干净结束，不种 negative 标记
+    now += 60_000
+    const shown = showAfter(
+      policy,
+      mkSignal({ prompt: "帮我写一个快速排序" }),
+      { text: "还是不行", elapsedMs: 30_000 },
+    )
+    expect(shown).toBe(false)
+    tn += 1
+  })
+})
+
 // ---- 门（G1–G9） ------------------------------------------------------------
 
 describe("门", () => {
@@ -354,12 +390,40 @@ describe("门", () => {
     expect(policy.tick().kind).toBe("none")
     expect(policy.askedRunIds).not.toContain(signal.runId)
   })
+
+  test("G10 会话 A 当天 2 次后切到 B 再问 1 次，回 A 仍不弹", () => {
+    now = 0
+    const { policy, drive } = harness()
+    const inA = () => mkSignal({ status: "failed", sessionId: "sess-a" })
+    const inB = () => mkSignal({ status: "failed", sessionId: "sess-b" })
+    expect(drive(inA())).toBe(true)
+    advance(31 * 60_000)
+    expect(drive(inA())).toBe(true)
+    advance(31 * 60_000)
+    expect(drive(inB())).toBe(true) // B 的 1 次不得把 A 的计数清掉
+    advance(31 * 60_000)
+    expect(showAfter(policy, inA())).toBe(false)
+    expect(policy.sessionDailyCount("sess-a")).toBe(2)
+    expect(policy.sessionDailyCount("sess-b")).toBe(1)
+  })
+
+  test("G11 点「不需要」后的旧收尾不得影响之后的新候选", () => {
+    now = 0
+    const { policy, drive } = harness()
+    expect(drive(mkSignal({ status: "failed" }))).toBe(true)
+    policy.dismissed("r1") // 结束旧候选（提交其轨迹）
+    advance(25_000) // 模拟旧 20s 自动收起计时器已过的时刻
+    advance(31 * 60_000) // 越过 30min 重显示间隔
+    const next = mkSignal({ status: "failed" })
+    expect(drive(next)).toBe(true)
+    expect(policy.askedRunIds).toContain(next.runId)
+  })
 })
 
 test("混淆矩阵汇总", () => {
   console.log(
-    `MATRIX should-show:${tp}/${POSITIVE.length} should-hide:${tn}/${NEGATIVE.length} ` +
-      `FP=${fp} FN=${fn}`,
+    `MATRIX should-show:${tp}/${POSITIVE.length} ` +
+      `should-hide:${tn}/${NEGATIVE.length + EXTRA_NEGATIVES} FP=${fp} FN=${fn}`,
   )
   expect(fp).toBe(0)
   expect(fn).toBe(0)

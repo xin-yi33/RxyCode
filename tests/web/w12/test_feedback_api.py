@@ -14,6 +14,7 @@ import json
 import sys
 import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -553,4 +554,102 @@ def test_migration_downgrade_upgrade(postgres_url: str):
     command.upgrade(cfg, "head")
     names = set(sa_inspect(engine).get_table_names())
     assert {"feedback_batches", "feedback_items", "feedback_images"} <= names
+    engine.dispose()
+
+
+def _seed_items(postgres_url: str, user_id: str, tenant_id: str, count: int) -> None:
+    """直接插行（绕过内存窗/端点）——构造并发升级场景的基线计数。"""
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        seq = db.scalar(text("SELECT COALESCE(MAX(seq), 0) FROM feedback_batches")) or 0
+        batch = FeedbackBatch(
+            id=uuid.uuid4().hex,
+            seq=int(seq) + 1,
+            status="closed",
+            build_commit="seed",
+            capacity=20,
+            item_count=count,
+            opened_at=datetime.now(timezone.utc),
+        )
+        db.add(batch)
+        for _ in range(count):
+            db.add(
+                FeedbackItem(
+                    id=uuid.uuid4().hex,
+                    batch_id=batch.id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    request_id=uuid.uuid4().hex,
+                    kind="bug",
+                    module="chat",
+                    title="seed",
+                    body="seeded feedback row " + uuid.uuid4().hex[:8],
+                    source="manual",
+                    content_sha256=uuid.uuid4().hex,
+                    ip_hmac="",
+                    state="new",
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+        db.commit()
+    engine.dispose()
+
+
+def test_captcha_escalation_is_serialized(postgres_url: str):
+    """并发绕过验证码升级：DB 里已有 2 条（锁外计数 <3 都放行），
+    4 个线程无 captcha 并发 —— 锁内复查后恰 1 个 201、其余 400。"""
+    client, me = _client(postgres_url, "fb-caprace@example.com")
+    user_id = me["user"]["id"]
+    tenant_id = me["organization"]["tenant_id"]
+    _seed_items(postgres_url, user_id, tenant_id, 2)
+
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def send() -> None:
+        try:
+            results.append(_submit(client, _submit_body()).status_code)
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=send) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert sorted(results) == [201, 400, 400, 400]
+    cap = _submit(client, _submit_body(captcha=_solve_captcha(client)))
+    assert cap.status_code == 201, cap.text
+
+
+def test_expired_staged_sweep_deletes_blob_and_row(postgres_url: str):
+    """过期 staged：sweep 后 blob 与行都不存在 —— 不能只改 state 留孤儿。"""
+    app = _app(postgres_url)
+    client, _ = _client(postgres_url, "fb-sweep@example.com", app=app)
+    resp = _upload(client, _png())
+    assert resp.status_code == 201
+    image_id = resp.json()["image_id"]
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        row = db.get(FeedbackImage, image_id)
+        assert row is not None
+        blob_key = row.blob_key
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.commit()
+
+        # 上传触发的全局清扫等价物 —— 直接调服务层验证语义。
+        from rxycode_server.attachments.store import open_store
+        import rxycode_server.feedback.service as svc
+
+        store = open_store(app.state.attachment_blobs)
+        swept = svc.sweep_expired_images(db, store)
+        assert swept == 1
+        db.commit()
+
+        assert db.get(FeedbackImage, image_id) is None
+        with pytest.raises(FileNotFoundError):
+            with store.open_read(blob_key):
+                pass
     engine.dispose()

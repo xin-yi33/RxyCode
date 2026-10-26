@@ -148,6 +148,10 @@ type Candidate = {
   signal: RunTerminalSignal
   terminalAt: number
   best: PromptScore
+  // 候选创建时快照「上一 run 是否有 negative_followup」——打分只用它，
+  // 防止本候选自己的 negative 在重评时被当成“上一 run”自引用加分。
+  previousNegative: boolean
+  // 本候选是否命中过 negative_followup；只在候选结束时提交到 map。
   negativeFollowup: boolean
   followup: { text: string; elapsedMs: number } | null
 }
@@ -202,13 +206,16 @@ export class AutoPromptPolicy {
 
   /** run 进入终态（或事件回放补齐）时被调用。live=false 的历史 run 直接忽略。 */
   runTerminal(signal: RunTerminalSignal, terminalAt: number): PromptEvent {
-    this.candidate = null
+    // 新 run 终态替换旧候选 —— 先提交旧候选的 negative 轨迹，再丢弃。
+    if (this.candidate) this.finishCandidate(this.candidate)
     this.pendingShow = null
     if (!signal.live || this.askedSet.has(signal.runId)) return { kind: "none" }
     const candidate: Candidate = {
       signal,
       terminalAt,
       best: { score: 0, reasons: [], negativeFollowup: false },
+      previousNegative:
+        this.previousNegativeFollowup.get(signal.sessionId) === true,
       negativeFollowup: false,
       followup: null,
     }
@@ -259,7 +266,7 @@ export class AutoPromptPolicy {
       this.state.cooldownUntil = this.now() + DISMISS_COOLDOWN_MS
       this.state.dismissStreak = 0
     }
-    this.candidate = null
+    if (this.candidate) this.finishCandidate(this.candidate)
     this.pendingShow = null
     void runId
   }
@@ -267,13 +274,13 @@ export class AutoPromptPolicy {
   /** 用户点了「反馈」或完成提交 —— 重置连续拒绝计数。 */
   responded(): void {
     this.state.dismissStreak = 0
-    this.candidate = null
+    if (this.candidate) this.finishCandidate(this.candidate)
     this.pendingShow = null
   }
 
   /** 20s 无操作自动收起 —— 不计 dismiss、不计 responded。 */
   ignored(): void {
-    this.candidate = null
+    if (this.candidate) this.finishCandidate(this.candidate)
     this.pendingShow = null
   }
 
@@ -281,12 +288,10 @@ export class AutoPromptPolicy {
     const score = scoreTerminalRun(
       candidate.signal,
       candidate.followup,
-      this.previousNegativeFollowup.get(candidate.signal.sessionId) === true,
+      candidate.previousNegative,
     )
     candidate.best = score
-    if (score.negativeFollowup) {
-      this.previousNegativeFollowup.set(candidate.signal.sessionId, true)
-    }
+    if (score.negativeFollowup) candidate.negativeFollowup = true
     if (score.score < PROMPT_THRESHOLD) {
       // 分数不足但窗还没关 —— 保留候选，等待后续消息补足。
       if (this.now() - candidate.terminalAt > FOLLOWUP_WINDOW_MS) {
@@ -361,23 +366,34 @@ export class AutoPromptPolicy {
     const now = this.now()
     this.state.lastShownAt = now
     const day = dayKey(now)
-    const daily = this.state.sessionDaily[sessionId] ?? {}
+    // 每个会话各自记当天次数；只裁掉非当天的条目，其他会话当天计数保留。
+    const daily = { ...(this.state.sessionDaily[sessionId] ?? {}) }
     daily[day] = (daily[day] ?? 0) + 1
-    // 只保留当天的条目，避免无限增长。
-    this.state.sessionDaily = { [sessionId]: { [day]: daily[day] } }
+    const nextDaily: Record<string, Record<string, number>> = {}
+    for (const [sid, days] of Object.entries(this.state.sessionDaily)) {
+      const today = Object.fromEntries(
+        Object.entries(days).filter(([d]) => d === day),
+      )
+      if (Object.keys(today).length > 0) nextDaily[sid] = today
+    }
+    nextDaily[sessionId] = daily
+    this.state.sessionDaily = nextDaily
     this.askedRuns.push(runId)
     if (this.askedRuns.length > ASKED_RUN_CAP) {
       this.askedRuns = this.askedRuns.slice(-ASKED_RUN_CAP)
     }
     this.askedSet = new Set(this.askedRuns)
-    this.candidate = null
+    if (this.candidate) this.finishCandidate(this.candidate)
   }
 
+  /** 候选结束：提交其 negative_followup 轨迹（true/false 都写——
+   *  「上一 run 有没有抱怨」是完整记录，不是累积标记）。 */
   private finishCandidate(candidate: Candidate): void {
     if (this.candidate === candidate) this.candidate = null
-    if (candidate.negativeFollowup) {
-      this.previousNegativeFollowup.set(candidate.signal.sessionId, true)
-    }
+    this.previousNegativeFollowup.set(
+      candidate.signal.sessionId,
+      candidate.negativeFollowup,
+    )
   }
 
   /** 同会话当天已展示次数（G4 用）。 */

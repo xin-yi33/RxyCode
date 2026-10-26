@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import warnings
 from dataclasses import dataclass
 
 from PIL import Image
@@ -69,44 +70,61 @@ def sanitize_image(raw: bytes) -> SanitizedImage:
         raise ImageRejected(415, "FEEDBACK_IMAGE_TYPE", "unrecognized image bytes")
 
     try:
-        image = Image.open(io.BytesIO(raw))
-        image.load()  # force full decode now — truncated/polyglot tails fail here
-    except Image.DecompressionBombError:
+        with warnings.catch_warnings():
+            # 0.5×–2× 预算之间的「警告」窗口在 Pillow 里照常放行并分配 ——
+            # 升级成错误，与硬上限同等待遇。
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            image = Image.open(io.BytesIO(raw))
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
         raise ImageRejected(413, "FEEDBACK_IMAGE_TOO_LARGE", "pixel budget exceeded") from None
     except Exception:
         raise ImageRejected(415, "FEEDBACK_IMAGE_TYPE", "corrupt or truncated image") from None
 
+    # 头部声明的尺寸在 load() 分配内存之前先拦。
     width, height = image.size
     if width < 1 or height < 1:
         raise ImageRejected(415, "FEEDBACK_IMAGE_TYPE", "empty image")
     if width * height > MAX_IMAGE_PIXELS:
         raise ImageRejected(413, "FEEDBACK_IMAGE_TOO_LARGE", "pixel budget exceeded")
 
-    if max(width, height) > MAX_EDGE:
-        scale = MAX_EDGE / max(width, height)
-        image = image.resize(
-            (max(1, round(width * scale)), max(1, round(height * scale))),
-            Image.Resampling.LANCZOS,
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            image.load()  # force full decode — truncated/polyglot tails fail here
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+        raise ImageRejected(413, "FEEDBACK_IMAGE_TOO_LARGE", "pixel budget exceeded") from None
+    except Exception:
+        raise ImageRejected(415, "FEEDBACK_IMAGE_TYPE", "corrupt or truncated image") from None
+
+    width, height = image.size
+    if width * height > MAX_IMAGE_PIXELS:
+        raise ImageRejected(413, "FEEDBACK_IMAGE_TOO_LARGE", "pixel budget exceeded")
+
+    try:
+        if max(width, height) > MAX_EDGE:
+            scale = MAX_EDGE / max(width, height)
+            image = image.resize(
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            width, height = image.size
+
+        has_alpha = image.mode in ("RGBA", "LA", "PA") or (
+            image.mode == "P" and "transparency" in image.info
         )
-        width, height = image.size
-
-    has_alpha = image.mode in ("RGBA", "LA", "PA") or (
-        image.mode == "P" and "transparency" in image.info
-    )
-    if has_alpha or source_kind in ("png", "webp"):
-        out = image.convert("RGBA") if has_alpha else image.convert("RGB")
-        fmt = "PNG"
-        content_type = "image/png"
-    else:
-        out = image.convert("RGB")
-        fmt = "JPEG"
-        content_type = "image/jpeg"
-
-    buffer = io.BytesIO()
-    if fmt == "PNG":
-        out.save(buffer, "PNG", optimize=True)
-    else:
-        out.save(buffer, "JPEG", quality=85)
+        buffer = io.BytesIO()
+        if has_alpha or source_kind in ("png", "webp"):
+            out = image.convert("RGBA") if has_alpha else image.convert("RGB")
+            out.save(buffer, "PNG", optimize=True)
+            content_type = "image/png"
+        else:
+            out = image.convert("RGB")
+            out.save(buffer, "JPEG", quality=85)
+            content_type = "image/jpeg"
+    except Exception:
+        # 16-bit PNG（I;16）等 mode 转换/编码失败按无效图片处理 ——
+        # 上传路径不能漏 500。
+        raise ImageRejected(415, "FEEDBACK_IMAGE_TYPE", "unsupported image mode") from None
     blob = buffer.getvalue()
     return SanitizedImage(
         content_type=content_type,
