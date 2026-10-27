@@ -120,6 +120,7 @@ const DICT = {
   "settings.security": { "zh-CN": "账户安全与登录", en: "Account security & sign-in" },
   "settings.archived": { "zh-CN": "已归档的聊天", en: "Archived chats" },
   "settings.addmodel": { "zh-CN": "模型添加", en: "Add model" },
+  "settings.feedback": { "zh-CN": "反馈", en: "Feedback" },
   "settings.general.blurb": { "zh-CN": "应用界面语言", en: "App display language" },
   "settings.appearance.blurb": {
     "zh-CN": "主题、颜色与字号",
@@ -140,6 +141,10 @@ const DICT = {
   "settings.addmodel.blurb": {
     "zh-CN": "连接自有 API Key",
     en: "Connect your own API keys",
+  },
+  "settings.feedback.blurb": {
+    "zh-CN": "报告问题或建议改进",
+    en: "Report bugs or suggest improvements",
   },
   "settings.backToApp": { "zh-CN": "返回应用", en: "Back to app" },
   "settings.nav.search": { "zh-CN": "搜索设置", en: "Search settings" },

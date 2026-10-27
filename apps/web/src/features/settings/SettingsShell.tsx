@@ -13,6 +13,7 @@ import {
 } from "./SettingsSections"
 import { SecuritySection } from "./SecuritySection"
 import { ModelsSection } from "./ModelsSection"
+import FeedbackSection from "../feedback/FeedbackSection"
 
 // 私有分区：访客看到登录入口而非空数据/401（§01 路由表）。
 function PrivateSetting({ children }: { children: React.ReactNode }) {
@@ -51,6 +52,7 @@ const SECTIONS = [
     blurb: "settings.archived.blurb",
   },
   { id: "addmodel", key: "settings.addmodel", blurb: "settings.addmodel.blurb" },
+  { id: "feedback", key: "settings.feedback", blurb: "settings.feedback.blurb" },
 ] as const
 
 type SectionId = (typeof SECTIONS)[number]["id"]
@@ -161,6 +163,11 @@ export function SettingsShell() {
         {section === "addmodel" ? (
           <PrivateSetting>
             <ModelsSection />
+          </PrivateSetting>
+        ) : null}
+        {section === "feedback" ? (
+          <PrivateSetting>
+            <FeedbackSection />
           </PrivateSetting>
         ) : null}
       </div>

@@ -312,3 +312,11 @@ final-answer behavior remains unchanged.
 2026-10-24 user protection: without explicit user confirmation, no Web
 consumer or future refactor may bypass the five-second observation,
 current-session model judgment, or per-result user feedback.
+
+### 反馈功能（feedback，2026-10-27）
+
+- **设置页 tab**：`/settings/feedback`（`features/feedback/FeedbackSection.tsx`）= 共用表单 `FeedbackForm.tsx` + 「我的反馈」列表 + `feedback_admin` 批次管理子区；honeypot `name=website` + `CAPTCHA_REQUIRED` 时内联 `AltchaWidget`；图片走 XHR `/api/v1/feedback/images`（选择/拖拽/粘贴，≤5 张，≤5MB，png/jpeg/webp，前端先验后传）。
+- **RunCard 入口**：`SessionPage` 为每个 RunCard 传 `onFeedback`（打开预填 `module=run_output`/`kind=content_quality` 的 Modal）与 `onTerminal`。
+- **自动询问**：`features/feedback/autoPrompt.ts` 是零依赖纯函数策略（`AutoPromptPolicy` + `signalFromRunView`），`useAutoFeedbackPrompt.ts` 只做粘合（storage/时钟/visibility/composer 焦点/Modal 门全部可注入）。RunTimeline 的 `onTerminal` 只在本页面真实观察到 非终态→终态 转换时回调——历史回放不触发，这是「实时性」门的第一道。
+- **评分/门细节**：权重表与阈值（score≥3）、九道门、1500ms 延迟窗 + 输入取消、20s 自动收起，均见 `docs/release-notes/CHANGELOG_v1.4.6.md` 反馈一节与 `autoPrompt.test.ts` 固定语料（`MATRIX should-show:8/8 should-hide:14/14 FP=0 FN=0`，不得为迁就实现改标注）。
+- **测试**：`tests/web/w3/test_feedback_e2e.py`（复用 `_chat_case.py` 桩 + MockEventSource；注意 reducer 的 seq 缺口等待——SSE 注入必须用连续 seq）。

@@ -14,6 +14,26 @@ __version__ = "1.4.5"
 
 __all__ = ["__version__", "unify_bare_package_aliases", "install_test_import_unify_hook"]
 
+
+def _sanitize_proxy_env() -> None:
+    """Rewrite host proxy-bypass vars before any httpx client is built.
+
+    ``httpx`` rejects ``NO_PROXY`` entries such as ``[::1]`` with
+    ``InvalidURL: Invalid port: ':1]'``, which makes ``ChatOpenAI`` (and thus
+    ``AgentV2``) fail at construction time on machines whose proxy manager
+    writes bracketed IPv6 literals.  Done here because package import always
+    precedes the provider layer; stdlib-only, idempotent, never raises.
+    """
+    try:
+        from .utils.proxy_env import sanitize_no_proxy_env
+
+        sanitize_no_proxy_env()
+    except Exception:  # pragma: no cover - startup must never fail here
+        pass
+
+
+_sanitize_proxy_env()
+
 _CANONICAL_PREFIX = "RxyCode.RxyCode1_1_0"
 _CHECKOUT_ROOT = __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0]
 _BARE_PACKAGES = frozenset(

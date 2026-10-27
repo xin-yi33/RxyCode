@@ -15,6 +15,12 @@ export type LiveRun = {
   notFound: boolean
   cursorExpired: boolean
   snapshotSeq: number | null
+  // 自动反馈门（v1.4.6 修复）：loaded = 首批历史事件已回放；
+  // terminalViaEvent = 终态来自事件流本身（run.status），不是 /runs 探测。
+  // 探测先把 baseStatus 拉成终态、回放未到时 view.status 已是终态但
+  // timeline 还是空的 —— 那时打分会误判空回答。
+  loaded: boolean
+  terminalViaEvent: boolean
 }
 
 type ParsedStream = {
@@ -101,6 +107,8 @@ export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
   const [notFound, setNotFound] = useState(false)
   const [cursorExpired, setCursorExpired] = useState(false)
   const [snapshotSeq, setSnapshotSeq] = useState<number | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [terminalViaEvent, setTerminalViaEvent] = useState(false)
 
   useEffect(() => {
     let source: EventSource | null = null
@@ -117,6 +125,8 @@ export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
     setNotFound(false)
     setCursorExpired(false)
     setSnapshotSeq(null)
+    setLoaded(false)
+    setTerminalViaEvent(false)
 
     const redirectLogin = () => {
       dead = true
@@ -185,7 +195,11 @@ export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
       // 游标是连续水位，不是最大值 —— 中间漏掉的 seq 靠重连回放补上。
       while (seenSeq.has(cursor + 1)) cursor += 1
       setEvents((current) => [...current, ...fresh])
-      if (hitTerminal) void finish()
+      setLoaded(true)
+      if (hitTerminal) {
+        setTerminalViaEvent(true)
+        void finish()
+      }
     }
 
     // 每次重连前先 GET /runs/{id}：401 跳登录、404 任务不存在、终态收尾。
@@ -311,5 +325,5 @@ export function useRunEvents(runId: string, seedStatus = ""): LiveRun {
     [events, runId, baseStatus],
   )
 
-  return { view, connected, notFound, cursorExpired, snapshotSeq }
+  return { view, connected, notFound, cursorExpired, snapshotSeq, loaded, terminalViaEvent }
 }

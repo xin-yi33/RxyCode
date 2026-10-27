@@ -859,6 +859,102 @@ class SecurityEvent(Base):
     ip_hint: Mapped[str] = mapped_column(String(64), default="")
 
 
+class FeedbackBatch(Base):
+    """定量批次：反馈按部署版本归桶，供运维按批统计与导出。
+
+    部分唯一索引 ``uq_feedback_batches_open`` 保证任何时刻至多一个
+    open 批次 —— 并发提交抢批时撞索引回滚重试。
+    """
+
+    __tablename__ = "feedback_batches"
+    __table_args__ = (
+        Index(
+            "uq_feedback_batches_open",
+            "status",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    build_commit: Mapped[str] = mapped_column(String(64), default="")
+    capacity: Mapped[int] = mapped_column(Integer, default=20)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class FeedbackItem(Base):
+    """一条用户反馈。``(user_id, request_id)`` 幂等去重；
+    ``content_sha256`` 是规范化正文的 24h 去重键。IP 只存 keyed HMAC。"""
+
+    __tablename__ = "feedback_items"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_id", name="uq_feedback_user_request"),
+        Index("ix_feedback_items_user_created", "user_id", "created_at"),
+        Index("ix_feedback_items_batch", "batch_id"),
+        Index("ix_feedback_items_sha", "content_sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("feedback_batches.id"))
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(64))
+    request_id: Mapped[str] = mapped_column(String(64), default="")
+    kind: Mapped[str] = mapped_column(String(24))
+    module: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    title: Mapped[str] = mapped_column(String(120))
+    body: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    trigger_reasons: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    page_path: Mapped[str] = mapped_column(String(300), default="")
+    build_commit: Mapped[str] = mapped_column(String(64), default="")
+    client_build: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+    viewport: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    locale: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), default="")
+    ip_hmac: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String(16), default="new")
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class FeedbackImage(Base):
+    """反馈截图。staged 行 24h 过期；提交反馈时绑定 item_id 转 bound。
+    blob 只存服务端重编码后的像素（无 EXIF/ICC/缩略图）。"""
+
+    __tablename__ = "feedback_images"
+    __table_args__ = (Index("ix_feedback_images_user", "user_id", "state"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[str] = mapped_column(String(64))
+    item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("feedback_items.id"), nullable=True
+    )
+    state: Mapped[str] = mapped_column(String(16), default="staged")
+    blob_key: Mapped[str] = mapped_column(String(500), default="")
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    content_type: Mapped[str] = mapped_column(String(32))
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 WEB_TABLES = (
     "users",
     "organizations",
@@ -898,6 +994,9 @@ WEB_TABLES = (
     "totp_enrollments",
     "sms_enrollments",
     "recovery_codes",
+    "feedback_batches",
+    "feedback_items",
+    "feedback_images",
     "security_events",
     "authorized_apps",
 )

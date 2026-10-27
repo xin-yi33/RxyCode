@@ -20,6 +20,7 @@ from rxycode_server.api.artifacts import router as artifacts_router
 from rxycode_server.api.attachments import router as attachments_router
 from rxycode_server.api.files import router as files_router
 from rxycode_server.api.auth import AuthRateLimit, router as auth_router
+from rxycode_server.api.feedback import router as feedback_router
 from rxycode_server.api.models import router as models_router
 from rxycode_server.api.projects import router as projects_router
 from rxycode_server.api.runs import router as runs_router
@@ -152,8 +153,12 @@ def create_app(
     app.state.s3_access_key = s3_access_key or None
     app.state.s3_secret_key = s3_secret_key or None
     app.state.attachment_blobs = blob_config_from_env()
+    from rxycode_server.feedback.service import FeedbackRateLimit
+
+    app.state.feedback_rate = FeedbackRateLimit()
     app.include_router(auth_router)
     app.include_router(attachments_router)
+    app.include_router(feedback_router)
     app.include_router(models_router)
     app.include_router(projects_router)
     app.include_router(runs_router)

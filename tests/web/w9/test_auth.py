@@ -129,7 +129,15 @@ def test_w9_b1_register_and_me(postgres_url: str):
     assert response.status_code == 201, response.text
     body = response.json()
     # §5.1: /me-shaped body — nested only, no flat mirrors.
-    assert set(body) == {"user", "organization", "membership", "default_project_id"}
+    # feedback_admin is the W12 capability flag (env allowlist in
+    # RXYCODE_FEEDBACK_ADMIN_EMAILS), nested shape unchanged otherwise.
+    assert set(body) == {
+        "user",
+        "organization",
+        "membership",
+        "default_project_id",
+        "feedback_admin",
+    }
     assert body["user"]["email"] == "alice@example.com"  # normalized
     assert body["user"]["id"]
     assert body["user"]["kind"] == "email"
