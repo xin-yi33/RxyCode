@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-10-27
+
+### 14:30 CST 🐧📦🪟 反馈功能上线（web-878592ed，PR #29）+ 线上 E2E
+- 前置故障：VM 处于关机状态（vmware-vmx 不在，公网 Cloudflare 1033）→ `vmrun -T ws start "D:\python study\Linux\CentOS 7 64 位.vmx" nogui` 开机；开机后 gateway 因 iptables `Resource temporarily unavailable` 竞争 Exited(255)，`compose up -d --no-deps gateway` 恢复，线上回到 `584b8c28`。
+- 磁盘：VM `/` 18G 仅剩 261MB（99%，worker 构建 ENOSPC）。删除本人旧部署包 `/tmp/rxy-full.bundle`、`/tmp/overlay-wip.tar`；`docker builder prune -af`；经用户批准 `docker rmi`（不带 -f）删除旧实验/预览 tag（candidate-audit/process-bridge/resume/session-truth/watchdog/preview-f7564062/polish-0fa28c46 等 + directtest/proxtest），`liveness-timeout-247be96` 被容器引用自动拒删保留；保留回滚镜像 `web-584b8c28`。最终约 2.9GB free（84%）。
+- 部署（脚本 `C:\Users\Administrator\.rxycode\ops\deploy_feedback.py`）：增量 bundle `584b8c28..878592ed` → `/opt/rxycode/src` 精确 checkout `878592ed`（**纯 master，无 WIP overlay**）→ 三镜像 `web-878592ed`（`RXYCODE_BUILD_COMMIT` baked in）→ 同步 `compose.prod.yaml` → `.env` `RXYCODE_IMAGE_TAG=web-878592ed` + `RXYCODE_FEEDBACK_ADMIN_USER_IDS`（站长 user.id）→ `docker compose -p rxyprod -f compose.yaml -f compose.prod.yaml` migrate（exit 0，alembic `013_feedback`）→ up -d。api/gateway/**worker×3** healthy；本机与公网 `/api/v1/version` = `878592ed54aa0ca240d7d1272463b24349f4f8a1`。
+- 部署脚本缺陷已修：`echo X | echo PW | sudo -S tee -a .env` 把密码行写进 `.env`（第 22 行），已 `sed` 删除该行并用 `sudo sh -c "echo … >> .env"` 正确追加 admin 变量，api 单独重建后容器 env 生效。
+- 管理面（容器内只读校验，不铸造站长会话以免抢占单设备锁）：`is_admin` 站长 True / smoke False（smtp 通道）；批次 `FB-0001` open、build `878592ed`、3 条（模块 chat/mobile/tools，1 条带图）。
+- 线上 E2E（`verify_feedback_live.py`，smoke 账号 `smoke-1f4a42d0@rxycode.xyz`，ops 铸造会话）：10 PASS / 0 FAIL / 1 SKIP（自动询问正例：无 BYOK key run 在 API 层被拒）。暗色截图首轮误为亮色（登录用户主题以服务端偏好为准，脚本改走 `PATCH /me/preferences` 并恢复原 `system`），复跑 03/11 通过。报告 `C:\Users\Administrator\.rxycode\ops\feedback-live\20261027-060856\`、`…\20261027-062410\`。创建的 `[online-e2e]` 条目：`e2473914609642c88f60b20153eccab0`、`f17f7eff4f704637a284a08dd10717aa`、`3da4312b92374ef3b33d5383a4df3e3a`（未删除，按前缀可过滤）。验收后 ops 会话已 CLEANED（`auth_sessions` 1 行 `revoked_at=now()`，本地 token 文件已删）。
+- 回滚：`.env` `RXYCODE_IMAGE_TAG=web-584b8c28` + 同命令 up -d（013 迁移只新增反馈表，旧代码不读，可不降级）。
+
 ## 2026-10-24
 
 ### 12:20 CST 🐧📦📁📁 Web+CLI 聊天前端打磨 UI-01～UI-09 上线（polish-fdcf3a9b-01）+ 真机验收
