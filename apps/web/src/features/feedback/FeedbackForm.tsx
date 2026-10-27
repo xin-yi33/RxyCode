@@ -80,6 +80,9 @@ export default function FeedbackForm({
   const [website, setWebsite] = useState("") // honeypot
   const [captcha, setCaptcha] = useState("")
   const [captchaNeeded, setCaptchaNeeded] = useState(false)
+  // ALTCHA 挑战一次性 —— 任何带 captcha 的提交失败后必须重挂 widget
+  // 拿新挑战，否则用户只能反复提交已失效的 payload。
+  const [captchaKey, setCaptchaKey] = useState(0)
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const requestRef = useRef<string>("")
@@ -251,6 +254,10 @@ export default function FeedbackForm({
       onSubmitted?.(item)
       onClose?.()
     } catch (err) {
+      if (captcha) {
+        setCaptcha("")
+        setCaptchaKey((k) => k + 1)
+      }
       if (err instanceof ApiError && err.code === "CAPTCHA_REQUIRED") {
         setCaptchaNeeded(true)
         setError("")
@@ -427,7 +434,7 @@ export default function FeedbackForm({
 
       {captchaNeeded ? (
         <div className="feedback-field" data-testid="feedback-captcha">
-          <AltchaWidget onVerify={setCaptcha} />
+          <AltchaWidget key={captchaKey} onVerify={setCaptcha} />
         </div>
       ) : null}
 

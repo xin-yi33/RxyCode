@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -274,7 +274,11 @@ def assign_batch(db: Session, item: FeedbackItem) -> FeedbackBatch:
 
 
 def submit_item(
-    db: Session, item: FeedbackItem, *, captcha_ok: bool = False
+    db: Session,
+    item: FeedbackItem,
+    *,
+    captcha_ok: bool = False,
+    image_ids: list[str] | None = None,
 ) -> tuple[FeedbackItem, int, bool]:
     """Idempotency + batch assignment with integrity-retry (concurrent open).
 
@@ -306,8 +310,39 @@ def submit_item(
             check_daily_user_cap(db, item.user_id)
             if captcha_required(db, item.user_id) and not captcha_ok:
                 raise HTTPException(400, detail="CAPTCHA_REQUIRED")
+            # 内容去重复查：锁外的 SELECT 对并发不可见 —— 两个不同 request_id
+            # 的相同正文同时通过锁外检查后，锁内是唯一能串行判重的地方。
+            if item.content_sha256 and db.scalar(
+                select(FeedbackItem.id).where(
+                    FeedbackItem.user_id == item.user_id,
+                    FeedbackItem.content_sha256 == item.content_sha256,
+                    FeedbackItem.created_at
+                    >= datetime.now(timezone.utc) - DEDUPE_WINDOW,
+                )
+            ) is not None:
+                raise HTTPException(409, detail="FEEDBACK_DUPLICATE")
             db.add(item)
             db.flush()
+            # staged 图片条件绑定：两个并发提交引用同一 staged 图时，后到者的
+            # WHERE state='staged' 落空 → 422；异常冒泡触发事务回滚，反馈条目
+            # 与批次计数都不落库（幂等命中路径根本到不了这里）。
+            if image_ids:
+                bound = db.execute(
+                    update(FeedbackImage)
+                    .where(
+                        FeedbackImage.id.in_(image_ids),
+                        FeedbackImage.user_id == item.user_id,
+                        FeedbackImage.state == "staged",
+                        or_(
+                            FeedbackImage.expires_at.is_(None),
+                            FeedbackImage.expires_at > func.now(),
+                        ),
+                    )
+                    .values(state="bound", item_id=item.id, expires_at=None)
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                if bound != len(set(image_ids)):
+                    raise HTTPException(422, detail="FEEDBACK_IMAGE_INVALID")
             return item, int(batch.seq), False
         except IntegrityError:
             db.rollback()

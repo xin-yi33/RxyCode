@@ -265,7 +265,7 @@ describe("不弹语料 N1–N14", () => {
   }
 })
 
-const EXTRA_NEGATIVES = 2 // N15/N16 —— 需多条 followup / 前置 run，不进表
+const EXTRA_NEGATIVES = 3 // N15/N16/N17 —— 需多条 followup / 前置 run，不进表
 
 describe("不弹语料 N15–N16", () => {
   test("N15 仅「还是不行」+ 180s 内第二条无抱怨消息 → 不弹（score 保持 2）", () => {
@@ -294,6 +294,26 @@ describe("不弹语料 N15–N16", () => {
     const shown = showAfter(
       policy,
       mkSignal({ prompt: "帮我写一个快速排序" }),
+      { text: "还是不行", elapsedMs: 30_000 },
+    )
+    expect(shown).toBe(false)
+    tn += 1
+  })
+
+  test("N17 分页历史 run 的抱怨（sentAt < terminalAt）不当后续消息 → 不弹", () => {
+    now = 0
+    const { policy } = harness()
+    const signal = mkSignal({ prompt: "帮我写一个快速排序" })
+    policy.runTerminal(signal, now)
+    // 「加载更早」把历史 run 的抱怨带进来 —— sentAt 早于候选终态。
+    expect(policy.followupSent("还是不行", now - 1_000).kind).toBe("none")
+    now += 200_000
+    policy.tick()
+    // 历史消息不得记成 negative：下一 run +「还是不行」若被污染会
+    // +1.5 repeated_dissatisfaction 变成弹出（同 N16 基线不弹）。
+    const shown = showAfter(
+      policy,
+      mkSignal({ prompt: "再看一个" }),
       { text: "还是不行", elapsedMs: 30_000 },
     )
     expect(shown).toBe(false)

@@ -224,12 +224,14 @@ export class AutoPromptPolicy {
   }
 
   /** 用户在候选窗内发出了下一条消息 —— 只认“下一条”（第一条），
-   *  补充后续信号并重评。 */
+   *  补充后续信号并重评。``elapsed < 0`` 一律忽略 —— 说明上报的是
+   *  候选终态之前的旧消息（如「加载更早」分页进来的历史 run），
+   *  不是后续消息。 */
   followupSent(text: string, sentAt: number): PromptEvent {
     const candidate = this.candidate
     if (!candidate) return { kind: "none" }
     const elapsed = sentAt - candidate.terminalAt
-    if (candidate.followup === null && elapsed <= FOLLOWUP_WINDOW_MS) {
+    if (candidate.followup === null && elapsed >= 0 && elapsed <= FOLLOWUP_WINDOW_MS) {
       candidate.followup = { text, elapsedMs: elapsed }
     }
     return this.reevaluate(candidate, null)

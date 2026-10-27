@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 
 from tests.web.w12.conftest import ORIGIN, SECRET
@@ -450,8 +450,11 @@ def test_batch_concurrent_rolls(postgres_url: str, monkeypatch):
     def send(index: int) -> None:
         try:
             client = clients[index % len(clients)]
+            # 共享 TestClient 并发非线程安全 —— 每线程克隆独立 transport。
+            worker = TestClient(client.app)
+            worker.cookies.update(client.cookies)
             results.append(
-                _submit(client, _submit_body(), headers=hdrs[id(client)]).status_code
+                _submit(worker, _submit_body(), headers=hdrs[id(client)]).status_code
             )
         except Exception as exc:  # pragma: no cover
             errors.append(exc)
@@ -619,7 +622,11 @@ def test_captcha_escalation_is_serialized(postgres_url: str):
 
     def send() -> None:
         try:
-            resp = _submit(client, _submit_body(), headers=hdrs)
+            # 每线程独立 TestClient：starlette 的 portal/transport 非线程安全，
+            # 共享 client 并发曾出现响应错配（观测到一次 404 串线）。
+            worker = TestClient(client.app)
+            worker.cookies.update(client.cookies)
+            resp = _submit(worker, _submit_body(), headers=hdrs)
             results.append(resp.status_code)
             bodies.append(resp.text[:200])
         except Exception as exc:  # pragma: no cover
@@ -634,6 +641,81 @@ def test_captcha_escalation_is_serialized(postgres_url: str):
     assert sorted(results) == [201, 400, 400, 400], f"responses: {bodies}"
     cap = _submit(client, _submit_body(captcha=_solve_captcha(client)))
     assert cap.status_code == 201, cap.text
+
+
+def test_dedupe_race_inside_lock(postgres_url: str):
+    """同 user 同正文、不同 request_id 并发 —— 锁外去重检查都看不到对方，
+    锁内复查必须只放行一个：恰 [201, 409]。"""
+    client, me = _client(postgres_url, "fb-deduperace@example.com")
+    body = _submit_body()  # 同一份正文
+    hdrs = _headers(_csrf(client))
+
+    results: list[int] = []
+    bodies: list[str] = []
+
+    def send() -> None:
+        resp = _submit(client, {**body, "request_id": uuid.uuid4().hex}, headers=hdrs)
+        results.append(resp.status_code)
+        bodies.append(resp.text[:200])
+
+    threads = [threading.Thread(target=send) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [201, 409], f"responses: {bodies}"
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        assert db.scalar(
+            select(func.count(FeedbackItem.id)).where(
+                FeedbackItem.user_id == me["user"]["id"]
+            )
+        ) == 1
+    engine.dispose()
+
+
+def test_double_bind_same_image_is_atomic_422(postgres_url: str):
+    """两个并发提交引用同一 staged 图：恰 1×201 + 1×422；DB 只落 1 条
+    item，图片 item_id 指向成功那条，批次计数不过账失败者。"""
+    client, me = _client(postgres_url, "fb-bindrace@example.com")
+    image_id = _upload(client, _png()).json()["image_id"]
+    hdrs = _headers(_csrf(client))
+
+    results: list[int] = []
+    bodies: list[str] = []
+    item_ids: list[str] = []
+
+    def send() -> None:
+        resp = _submit(client, _submit_body(image_ids=[image_id]), headers=hdrs)
+        results.append(resp.status_code)
+        bodies.append(resp.text[:200])
+        if resp.status_code == 201:
+            item_ids.append(resp.json()["id"])
+
+    threads = [threading.Thread(target=send) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [201, 422], f"responses: {bodies}"
+    assert len(item_ids) == 1
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        rows = list(
+            db.scalars(
+                select(FeedbackItem).where(FeedbackItem.user_id == me["user"]["id"])
+            )
+        )
+        assert len(rows) == 1
+        row = db.get(FeedbackImage, image_id)
+        assert row is not None and row.state == "bound"
+        assert row.item_id == rows[0].id
+        batch = db.scalars(select(FeedbackBatch)).first()
+        # 失败提交连批次的 item_count 都不能过账。
+        assert batch is not None and batch.item_count == 1
+    engine.dispose()
 
 
 def test_expired_staged_sweep_deletes_blob_and_row(postgres_url: str):
@@ -899,6 +981,134 @@ def test_concurrent_upload_submit_real_uvicorn(postgres_url: str):
         assert all(
             r.get("upload") == 201 and r.get("submit") == 201 for r in results
         ), f"{elapsed:.1f}s results={results}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+def test_store_construction_stays_off_event_loop(postgres_url: str, monkeypatch):
+    """S3 store 构造（head_bucket/create_bucket）是同步阻塞调用 —— 上传
+    期间并发的 GET /api/v1/version 必须 <200ms 返回，否则说明构造还在
+    事件循环上冻 loop。真 uvicorn + httpx。"""
+    import base64
+    import hashlib
+    import socket
+    import time
+
+    import httpx
+    import uvicorn
+
+    from rxycode_server.api.auth import hash_password
+    import rxycode_server.api.feedback as fb_mod
+    from rxycode_server.attachments.store import FSBlobStore
+    from rxycode_server.persistence.models import (
+        Membership,
+        Organization,
+        Project,
+        User,
+    )
+
+    app = _app(postgres_url)
+
+    def _slow_open(config):
+        time.sleep(1.0)
+        return FSBlobStore(config)
+
+    monkeypatch.setattr(fb_mod, "open_store", _slow_open)
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        email = "fb-store@example.com"
+        tenant_id = uuid.uuid4().hex
+        user = User(
+            id=uuid.uuid4().hex,
+            kind="email",
+            email=email,
+            password_hash=hash_password("password-123"),
+        )
+        db.add(user)
+        db.add(Organization(id=uuid.uuid4().hex, tenant_id=tenant_id))
+        db.add(
+            Membership(
+                id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, role="owner"
+            )
+        )
+        proj = Project(
+            id=uuid.uuid4().hex,
+            tenant_id=tenant_id,
+            name="默认项目",
+            repo_config={},
+            is_default=True,
+        )
+        db.add(proj)
+        user.default_project_id = proj.id
+        db.commit()
+    engine.dispose()
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 20
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert server.started
+    base = f"http://127.0.0.1:{port}"
+
+    try:
+        client = httpx.Client(timeout=15.0)
+        token = client.get(f"{base}/api/v1/auth/csrf").json()["csrf_token"]
+        hdr = {"X-CSRF-Token": token, "Origin": ORIGIN}
+        ch = client.get(f"{base}/api/v1/auth/altcha").json()
+        n = 0
+        while hashlib.sha256(f"{ch['salt']}{n}".encode()).hexdigest() != ch["challenge"]:
+            n += 1
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "algorithm": "SHA-256",
+                    "challenge": ch["challenge"],
+                    "number": n,
+                    "salt": ch["salt"],
+                    "signature": ch["signature"],
+                    "took": 0,
+                }
+            ).encode()
+        ).decode()
+        r = client.post(
+            f"{base}/api/v1/auth/login",
+            json={"email": email, "password": "password-123", "captcha": payload},
+            headers=hdr,
+        )
+        assert r.status_code == 200, r.text
+
+        upload_result: dict = {}
+
+        def _upload() -> None:
+            upload_result["r"] = client.post(
+                f"{base}/api/v1/feedback/images",
+                content=_png(),
+                headers={**hdr, "Content-Type": "application/octet-stream"},
+            )
+
+        worker = threading.Thread(target=_upload)
+        worker.start()
+        latencies: list[float] = []
+        deadline = time.monotonic() + 10
+        while worker.is_alive() and time.monotonic() < deadline:
+            t0 = time.monotonic()
+            resp = httpx.get(f"{base}/api/v1/version", timeout=5.0)
+            latencies.append(time.monotonic() - t0)
+            assert resp.status_code == 200
+            time.sleep(0.05)
+        worker.join(timeout=15)
+        assert upload_result["r"].status_code == 201, upload_result["r"].text
+        assert latencies, "version never polled during upload"
+        assert max(latencies) < 0.2, f"loop blocked: {latencies}"
     finally:
         server.should_exit = True
         thread.join(timeout=10)

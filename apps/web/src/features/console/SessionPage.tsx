@@ -189,17 +189,20 @@ export function SessionPage() {
   const ordered = [...(older?.runs ?? []), ...(runs.data?.runs ?? [])].reverse()
   const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
-  // 新出现的 run = 用户发出的下一条消息 —— 自动询问的“后续消息信号”
-  // 只看首次进入列表的 run_id（历史回放不重复计入）。
+  // 新出现的 run = 用户发出的下一条消息 —— 自动询问的“后续消息信号”。
+  // 只看首次进入列表的 run_id，且分页加载进来的历史 run 不算后续
+  // （候选窗内点「加载更早」不能把旧 run 的抱怨记成 negative_followup）。
   useEffect(() => {
     const seen = seenRunsRef.current
+    const pagedIds = new Set((older?.runs ?? []).map((r) => r.run_id))
     for (const run of ordered) {
       if (seen.has(run.run_id)) continue
       seen.add(run.run_id)
+      if (pagedIds.has(run.run_id)) continue
       const at = run.created_at ? Date.parse(run.created_at) : Date.now()
       autoPrompt.observeFollowup(run.message, at)
     }
-  }, [ordered, autoPrompt])
+  }, [ordered, older?.runs, autoPrompt])
 
   const archived = session.data?.archived === true || Boolean(session.data?.archived_at)
 

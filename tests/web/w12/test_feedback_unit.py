@@ -243,3 +243,59 @@ def test_markdown_export_fences_and_escapes() -> None:
 
 def test_fence_escapes_backticks() -> None:
     assert _fence("a```b") == "a\\`\\`\\`b"
+
+
+def _png_chunk_types(blob: bytes) -> list[str]:
+    """PNG signature 后逐块取 type（4 字节长度 + 4 字节类型 + data + CRC）。"""
+    types, off = [], 8
+    while off + 12 <= len(blob):
+        (length,) = __import__("struct").unpack(">I", blob[off : off + 4])
+        types.append(blob[off + 4 : off + 8].decode("latin-1"))
+        off += 12 + length
+    return types
+
+
+def test_icc_and_exif_never_survive_reencode() -> None:
+    """convert() 会把源图 info（icc_profile/exif/文本块）带进输出 —
+    sanitize 必须清空，否则元数据穿透再编码。"""
+    # Pillow 保存时不校验 ICC 内容 —— 任意非空 blob 就能产出 iCCP 块。
+    icc = b"\x00" * 320
+
+    # PNG + ICC
+    src = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(src, "PNG", icc_profile=icc)
+    assert "iCCP" in _png_chunk_types(src.getvalue())
+    out = sanitize_image(src.getvalue())
+    assert "icc_profile" not in Image.open(io.BytesIO(out.blob)).info
+    assert not ({"iCCP", "tEXt", "iTXt", "zTXt", "eXIf"} & set(_png_chunk_types(out.blob)))
+
+    # WebP + ICC → 输出 PNG
+    src = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(src, "WEBP", icc_profile=icc, quality=80)
+    out = sanitize_image(src.getvalue())
+    assert "icc_profile" not in Image.open(io.BytesIO(out.blob)).info
+
+    # JPEG + ICC + EXIF → 输出 JPEG
+    src = io.BytesIO()
+    base = Image.new("RGB", (8, 8), (10, 20, 30))
+    base.save(src, "JPEG", quality=80, icc_profile=icc, exif=base.getexif().tobytes())
+    out = sanitize_image(src.getvalue())
+    info = Image.open(io.BytesIO(out.blob)).info
+    assert "icc_profile" not in info
+    assert "exif" not in info or not info["exif"].strip(b"\x00")
+
+
+def test_png_text_chunks_stripped() -> None:
+    from PIL.PngImagePlugin import PngInfo
+
+    meta = PngInfo()
+    meta.add_text("comment", "gps 31.2,121.5")
+    meta.add_text("xml:com.adobe.xmp", "<x:xmpmeta>leak</x:xmpmeta>")
+    src = io.BytesIO()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(src, "PNG", pnginfo=meta)
+    assert "tEXt" in _png_chunk_types(src.getvalue()) or "iTXt" in _png_chunk_types(
+        src.getvalue()
+    )
+    out = sanitize_image(src.getvalue())
+    types = set(_png_chunk_types(out.blob))
+    assert not ({"tEXt", "iTXt", "zTXt", "eXIf", "iCCP"} & types)

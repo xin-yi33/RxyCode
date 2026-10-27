@@ -67,8 +67,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_STORE_LOCK = threading.Lock()
+
+
 def _store(request: Request):
-    return open_store(request.app.state.attachment_blobs)
+    """App 级缓存 store —— S3 构造会同步 head_bucket/put_bucket_acl，
+
+    绝不能每次请求重建（更不许在事件循环上）。调用方必须在 worker 线程。
+    """
+    store = getattr(request.app.state, "feedback_store", None)
+    if store is None:
+        with _STORE_LOCK:
+            store = getattr(request.app.state, "feedback_store", None)
+            if store is None:
+                store = open_store(request.app.state.attachment_blobs)
+                request.app.state.feedback_store = store
+    return store
 
 
 def _image_map(exc: ImageRejected) -> HTTPException:
@@ -166,7 +180,8 @@ async def upload_image(
     require_write(request)
     record = current_record(request)
     svc.check_image_limit(request, record.user_id, client_ip(request))
-    store = _store(request)
+    # store 构造（尤其 S3 head_bucket）移出事件循环 + app 级缓存。
+    store = await run_in_threadpool(_store, request)
     await run_in_threadpool(_image_precheck, db, store, record)
 
     raw = await _read_capped(request, MAX_IMAGE_BYTES, "FEEDBACK_IMAGE_TOO_LARGE")
@@ -282,7 +297,8 @@ def _submit_db(
     ) is None:
         raise HTTPException(404, detail="NOT_FOUND")
 
-    images: list[FeedbackImage] = []
+    # 锁外快查（错误图片尽早 422）；并发下「同时通过快查」的竞态由
+    # submit_item 锁内条件 UPDATE 兜底，rowcount 不符 → 422 + 回滚。
     if fields["image_ids"]:
         now = _now()
         for image_id in dict.fromkeys(fields["image_ids"]):
@@ -295,7 +311,6 @@ def _submit_db(
                 or (row.expires_at is not None and row.expires_at < now)
             ):
                 raise HTTPException(422, detail="FEEDBACK_IMAGE_INVALID")
-            images.append(row)
 
     svc.check_daily_user_cap(db, record.user_id)
     svc.check_global_circuit(db)
@@ -342,13 +357,9 @@ def _submit_db(
         ip_hmac=svc.ip_hmac(request.app.state.secret, ip),
         state="new",
     )
-    saved, batch_seq, duplicated = svc.submit_item(db, item, captcha_ok=captcha_ok)
-    if not duplicated:
-        for row in images:
-            row.state = "bound"
-            row.item_id = saved.id
-            row.expires_at = None
-        db.flush()
+    saved, batch_seq, duplicated = svc.submit_item(
+        db, item, captcha_ok=captcha_ok, image_ids=fields["image_ids"]
+    )
     return saved, batch_seq, duplicated
 
 

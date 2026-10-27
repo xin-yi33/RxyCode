@@ -9,12 +9,14 @@ terminal run, successful run, reduced-motion).
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import secrets
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from playwright.sync_api import BrowserContext, Page
@@ -56,6 +58,11 @@ class FeedbackApi(ChatApi):
         self.feedback_admin = feedback_admin
         self.feedback_posts: list[dict] = []
         self.image_posts = 0
+        # runs 分页 stub：首页 next_cursor，before= 请求回 older_runs。
+        self.runs_next_cursor: str | None = None
+        self.older_runs: list[dict] = []
+        # True → 下一次带 captcha 的提交回 503 FEEDBACK_BUSY。
+        self.busy_once = False
 
     def handle(self, route) -> None:
         request = route.request
@@ -82,6 +89,10 @@ class FeedbackApi(ChatApi):
             except ValueError:
                 body = {}
             self.feedback_posts.append(body)
+            if self.busy_once and body.get("captcha"):
+                self.busy_once = False
+                self._json(route, 503, {"code": "FEEDBACK_BUSY"})
+                return
             if self.captcha_required and not body.get("captcha"):
                 self._json(route, 400, {"code": "CAPTCHA_REQUIRED"})
                 return
@@ -90,6 +101,23 @@ class FeedbackApi(ChatApi):
         if path == "/api/v1/feedback/mine":
             self._json(route, 200, {"items": [], "next_cursor": None})
             return
+        if path == "/api/v1/auth/altcha" and method == "GET":
+            # 可真解的小挑战：maxnumber=64，number=42 —— widget 秒解；
+            # 每次调用新 salt → 重挂 widget 拿到的是不同的挑战。
+            salt = secrets.token_hex(12)
+            challenge = hashlib.sha256(f"{salt}42".encode()).hexdigest()
+            self._json(
+                route,
+                200,
+                {
+                    "algorithm": "SHA-256",
+                    "challenge": challenge,
+                    "maxnumber": 64,
+                    "salt": salt,
+                    "signature": secrets.token_hex(32),
+                },
+            )
+            return
         if path == "/api/v1/me":
             me = json.loads(json.dumps(ME))
             me["feedback_admin"] = self.feedback_admin
@@ -97,6 +125,19 @@ class FeedbackApi(ChatApi):
             return
         if path.startswith("/api/v1/admin/feedback"):
             self._json(route, 200, {"batches": [], "items": [], "groups": {}})
+            return
+        if path == f"/api/v1/sessions/{self.session['id']}/runs" and method == "GET":
+            before = parse_qs(urlparse(request.url).query).get("before", [None])[0]
+            if before:
+                self._json(
+                    route, 200, {"runs": list(self.older_runs), "next_cursor": None}
+                )
+            else:
+                self._json(
+                    route,
+                    200,
+                    {"runs": list(self.runs), "next_cursor": self.runs_next_cursor},
+                )
             return
         super().handle(route)
 
@@ -470,5 +511,86 @@ def test_feedback_survives_disabled_storage(browser, production_origin):
         time.sleep(2.5)
         assert not errors, f"pageerrors: {errors}"
         assert not dom_visible(page, '[data-testid="feedback-auto-prompt"]')
+    finally:
+        context.close()
+
+
+def test_paged_history_run_is_not_a_followup(browser, production_origin):
+    """候选窗内点「加载更早」插入与 live prompt 同文的历史抱怨 run ——
+    不得被当后续消息（若误记：repeated_prompt+2、negative_followup+2=4≥3
+    → succeeded 的 0 分候选也会被误弹）。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi(
+        runs=[run_summary("run-live-1", "running", "刚才的回答还是不行")],
+        events=chat_events(message="刚才的回答还是不行", tool_rows=0, final="好的，重试一下"),
+    )
+    api.runs_next_cursor = "cursor-older-1"
+    api.older_runs = [
+        run_summary(
+            "run-old-1",
+            "failed",
+            "刚才的回答还是不行",
+            created_at="2020-01-01T00:00:00Z",
+        )
+    ]
+    page = _session_page(
+        context, production_origin, api, "/app/s/session-chat-1"
+    )
+    try:
+        page.wait_for_selector('[data-testid="chat-scroll"]', timeout=15_000)
+        wait_sse_open(page)
+        # live run 成功且非空 final → 基础分 0，不应弹。
+        push_sse(
+            page,
+            {"seq": 2, "type": "assistant.final", "payload": {"text": "好的，重试一下"}},
+        )
+        push_sse(
+            page, {"seq": 3, "type": "run.status", "payload": {"status": "succeeded"}}
+        )
+        # 候选窗内点「加载更早」→ 历史 run 进列表（断言挂在 run 容器 id 上）。
+        page.click("text=加载更早的任务")
+        page.wait_for_selector("#run-run-old-1", timeout=5_000)
+        time.sleep(3.5)
+        assert not dom_visible(page, '[data-testid="feedback-auto-prompt"]')
+    finally:
+        context.close()
+
+
+def test_captcha_refreshed_after_busy_submit(browser, production_origin):
+    """带 captcha 的提交 503 → 挑战一次性，widget 必须重挂回未验证态，
+    重新验证出新 payload 后提交成功（两次 captcha payload 不同）。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi(captcha_required=True)
+    api.busy_once = True
+    # statechange 事件冒泡 —— document 级监听器必须在导航前注入
+    #（altcha-widget 内部 state 是闭包 shadow DOM，DOM 上不可读）。
+    context.route("**/api/v1/**", api.handle)
+    page = context.new_page()
+    install_event_stream_mock(page)
+    page.add_init_script(
+        "window.__altchaStates=[];"
+        "document.addEventListener('statechange',"
+        "e=>window.__altchaStates.push(e.detail?e.detail.state:'?'),true);"
+    )
+    page.goto(f"{production_origin}/settings/feedback")
+    verified = "window.__altchaStates.filter(s=>s==='verified').length"
+    try:
+        page.wait_for_selector('[data-testid="feedback-form"]', timeout=15_000)
+        page.locator("#feedback-title").fill("需要验证码的提交")
+        page.locator("#feedback-body").fill("提交时服务正忙，需要重新验证。")
+        page.locator('[data-testid="feedback-submit"]').click()
+        page.wait_for_selector('[data-testid="feedback-captcha"]', timeout=10_000)
+        page.wait_for_function(f"() => {verified} >= 1", timeout=30_000)
+        page.locator('[data-testid="feedback-submit"]').click()
+        # 503 后 widget 重挂：再次从 verifying → verified（第二次 verified）。
+        page.wait_for_function(f"() => {verified} >= 2", timeout=30_000)
+        page.wait_for_selector('[data-testid="feedback-captcha"]', timeout=10_000)
+        page.locator('[data-testid="feedback-submit"]').click()
+        page.wait_for_selector("text=FB-0003", timeout=10_000)
+        posts = api.feedback_posts
+        assert len(posts) == 3
+        assert posts[0].get("captcha") is None
+        assert posts[1].get("captcha") and posts[2].get("captcha")
+        assert posts[1]["captcha"] != posts[2]["captcha"]  # 新挑战 → 新 payload
     finally:
         context.close()

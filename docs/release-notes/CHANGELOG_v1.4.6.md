@@ -135,6 +135,47 @@
 `InvalidURL: Invalid port: ':1]'`。stdlib-only、幂等、永不抛错。
 （源自生产 overlay-wip 中唯一的运行期修复；带 `tests/unit/test_proxy_env.py` 4 例。）
 
+### Codex 第三轮修复（PR #29 第三轮，2026-10-27）
+
+1. **图片元数据泄漏**：`convert()` 保留 `info`，PNG/JPEG 编码器会把
+   `icc_profile`/`exif`/`dpi`/文本块写回 —— 编码前 `out.info = {}`（`out.copy()`
+   独立化避免改原对象）；保存不再传 `exif`/`icc_profile`。新增单测覆盖：
+   PNG+ICC、WebP+ICC、JPEG+ICC+EXIF → 输出 `.info` 无 icc/exif；PNG 无
+   `tEXt`/`iTXt`/`zTXt`/`eXIf` chunk（逐块扫描断言）。
+2. **同正文去重竞态**：两个不同 `request_id`、同正文并发提交 —— 锁外去重
+   互相看不到 → advisory lock 内复查 24h 内同 user 同 `content_sha256`，命中
+   → 409 `FEEDBACK_DUPLICATE`。并发测试恰 `[201, 409]`。
+3. **同一 staged 图双绑定**：绑定改为锁内条件 UPDATE（`state='staged'` 且未
+   过期才收 `state='bound', item_id=…`），rowcount≠图片数 → 422
+   `FEEDBACK_IMAGE_INVALID`，整事务回滚（item 不落库、批次 `item_count`
+   不过账 —— 依赖 `db_session` 异常 rollback）。并发测试恰 `[201, 422]`，
+   DB 仅 1 条 item、图片归属成功那条。
+4. **分页历史误当后续消息**：「加载更早」进来的历史 run 曾以 `run.message`
+   上报 `followupSent`（`elapsed<0` 时仍会记 negative_followup 加分）。双层
+   修复：页面只上报非分页列表首次出现的 run；策略层 `elapsed<0` 直接忽略。
+   bun 语料 +N17（负 elapsed 不弹、不污染 `previousNegativeFollowup`）；
+   E2E：succeeded 候选窗内插入同文历史抱怨 run → 不出卡片（旧行为会
+   repeated_prompt+negative_followup 凑 4 分误弹）。
+5. **CAPTCHA 挑战一次性**：任何带 captcha 的提交失败（含 503
+   `FEEDBACK_BUSY`/`CAPTCHA_INVALID`）→ 清 payload + `AltchaWidget`
+   `key` 自承重挂拿新挑战。E2E：503 后 widget 重回未验证态（第二次
+   `statechange=verified`）→ 再次提交成功，两次 payload 不同。
+6. **S3 store 在事件循环构造**：`_store()` 原每请求 `open_store()` —
+   `S3BlobStore` 构造同步 `head_bucket`/`create_bucket`/`put_bucket_acl`。
+   改 `app.state.feedback_store` 惰性缓存（`threading.Lock` 防并发重复构造），
+   首次构造经 `run_in_threadpool` 移出 loop；`get_image`/`delete_image` 本身
+   是同步端点已在线程池。延迟回归：构造 sleep 1s 期间并发 `GET /api/v1/version`
+   全部 <200ms。
+
+另修 w12 测试环境非产品缺陷：starlette `TestClient` 的 portal/transport 非
+线程安全，共享 client 并发曾观测一次响应 404 串线 ——
+`test_batch_concurrent_rolls` 与 `test_captcha_escalation_is_serialized`
+改为每线程克隆独立 `TestClient`（复制 cookie jar，同会话同 CSRF）。
+
+回归：`bun test autoPrompt.test.ts` 37 pass（MATRIX should-show:8/8
+should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
+`tests/web/w3/test_feedback_e2e.py` 17 passed；`tsc --noEmit` 与 `ruff check` 干净。
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。

@@ -115,10 +115,12 @@ def sanitize_image(raw: bytes) -> SanitizedImage:
         buffer = io.BytesIO()
         if has_alpha or source_kind in ("png", "webp"):
             out = image.convert("RGBA") if has_alpha else image.convert("RGB")
+            out.info = {}  # convert() 会带上源的 icc_profile/exif/文本块
             out.save(buffer, "PNG", optimize=True)
             content_type = "image/png"
         else:
             out = image.convert("RGB")
+            out.info = {}
             out.save(buffer, "JPEG", quality=85)
             content_type = "image/jpeg"
     except Exception:
