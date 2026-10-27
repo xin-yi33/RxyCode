@@ -1,5 +1,5 @@
 // React 适配层 —— AutoPromptPolicy（纯模块，bun test 覆盖语料）+
-// 真实时钟/localStorage/DOM 门探针。挂在 SessionPage：RunTimeline 上报
+// 真实时钟/键值存储/DOM 门探针。挂在 SessionPage：RunTimeline 上报
 // 实时终态信号，SessionPage 上报新 run 的后续消息，卡片由本 hook 渲染。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
@@ -12,6 +12,7 @@ import {
   autoPromptEnabled,
   loadAskedRuns,
   loadPromptState,
+  safeStorage,
   STORAGE_ASKED,
   STORAGE_STATE,
   type PromptEvent,
@@ -84,8 +85,10 @@ function installFocusTracker() {
 
 function persistPolicy(policy: AutoPromptPolicy) {
   try {
-    localStorage.setItem(STORAGE_ASKED, JSON.stringify(policy.askedRunIds))
-    localStorage.setItem(STORAGE_STATE, JSON.stringify(policy.persisted))
+    const store = safeStorage()
+    // cookie 约 4KB —— 持久化只留最近 50 个 run（内存内仍是全量 200）。
+    store.setItem(STORAGE_ASKED, JSON.stringify(policy.askedRunIds.slice(-50)))
+    store.setItem(STORAGE_STATE, JSON.stringify(policy.persisted))
   } catch {
     // storage 不可写（隐私模式等）—— 会话内仍工作。
   }
@@ -98,12 +101,13 @@ export function useAutoFeedbackPrompt(sessionId: string) {
 
   const policy = useMemo(() => {
     installFocusTracker()
+    const store = safeStorage()
     return new AutoPromptPolicy(
       () => Date.now(),
-      loadAskedRuns(localStorage),
-      loadPromptState(localStorage),
+      loadAskedRuns(store),
+      loadPromptState(store),
       () => ({
-        enabled: autoPromptEnabled(localStorage),
+        enabled: autoPromptEnabled(store),
         visible: document.visibilityState === "visible",
         // 门判定时现读 store —— 不能捕获渲染期快照（草稿会过期）。
         composerEmpty: (useUi.getState().drafts[sessionId]?.text ?? "").trim() === "",
@@ -154,6 +158,20 @@ export function useAutoFeedbackPrompt(sessionId: string) {
     }
   }, [policy, dispatch])
 
+  // 切会话：上会话的卡片与两个计时器必须一起作废 —— 否则 A 会话的卡片
+  // 会带错 run/session 上下文渲染在 B 会话上。
+  useEffect(() => {
+    setCard(null)
+    if (scheduleTimerRef.current) {
+      window.clearTimeout(scheduleTimerRef.current)
+      scheduleTimerRef.current = 0
+    }
+    if (hideTimerRef.current) {
+      window.clearTimeout(hideTimerRef.current)
+      hideTimerRef.current = 0
+    }
+  }, [sessionId])
+
   /** RunTimeline 观察到 非终态→终态 转换时调用。 */
   const observeTerminal = useCallback(
     (signal: RunTerminalSignal) => {
@@ -203,7 +221,7 @@ export function useAutoFeedbackPrompt(sessionId: string) {
 
   const disableAutoPrompt = useCallback(() => {
     try {
-      localStorage.setItem("rxy.feedback.autoPrompt", "0")
+      safeStorage().setItem("rxy.feedback.autoPrompt", "0")
     } catch {
       // 同 persistPolicy 的尽力而为语义。
     }

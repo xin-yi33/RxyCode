@@ -68,6 +68,73 @@
 
 回归：`bun test autoPrompt.test.ts` 36 pass（矩阵行见上）；`pytest tests/web/w12` **42 passed**；`pytest tests/web/w3/test_feedback_e2e.py` 12 passed；`tsc --noEmit` 干净；`ruff check` 干净。
 
+### Codex 审查修复 + 事件循环死锁修复（PR #29 第二轮，2026-10-27）
+
+**P0 —— 并发提交死锁（扩大压测实测）**：`submit`/`upload_image`/`admin_patch_item`
+是 `async def` 却同步跑 SQLAlchemy —— `pg_advisory_xact_lock` 等待发生在事件
+循环线程上，20 用户并发「上传+提交」实测全栈挂死（`pg_stat_activity`：持锁者
+`idle in transaction` 等 teardown commit，另一请求 `Lock` 等 advisory lock，
+而 commit 排不上被冻结的 loop）。修法：事件循环只留限流/`_read_capped`/JSON
+解析，全部 DB 工作抽成同步函数经 `run_in_threadpool` 执行；`assign_batch` 拿锁
+前 `SET LOCAL lock_timeout = '5s'`，pg `55P03` 与 `40P01` 同等回滚重试，
+耗尽 → 503 `FEEDBACK_BUSY`。**回归测试**：真 uvicorn + httpx，8 用户并发
+「上传图片+绑定提交」30s 内全 201，失败时打印 `pg_stat_activity`。
+
+**Codex P2（逐条）**：
+
+1. **幂等先于图片校验**：`(user_id, request_id)` 命中直接 200 回原条目，不再
+   校验图片/run/session —— 否则响应丢失后的重试被 422/404 误杀。测试：带图
+   提交→同 request_id 重发→200 同 id；含失效 run_id 的重试同样 200。
+2. **`/mine` keyset 分页**：`next_cursor` 改指**本页最后一条已返回**的 id
+   （原先指向 lookahead 那条 → 漏一条），且分页下沉 SQL
+   `WHERE (created_at,id) < cursor` + `LIMIT limit+1`，不再全量加载。
+   测试：25 条/limit10 三页恰 25 无重无漏。
+3. **探测竞态空回答误判**：`/runs/{id}` 探测先把 baseStatus 拉成终态、事件
+   未回放时 `view.status` 已是终态但 timeline 为空 → succeeded 被误打
+   `empty_answer`。`useRunEvents` 新增 `loaded`（首批回放完成）与
+   `terminalViaEvent`（终态来自事件流）；`RunTimeline` 只在「种子非终态 +
+   loaded + terminalViaEvent」时上报。E2E：探测先回 succeeded、事件延迟 1s
+   → 卡片不出现。
+4. **上传中移除图片**：移除时 abort XHR；完成回调发现本地条目已删 → 立即
+   `deleteFeedbackImage` 清服务端 staged 行，不再泄漏。
+5. **切会话清卡片**：`useAutoFeedbackPrompt` 在 `sessionId` 变化时清
+   `card` + 两个计时器。E2E：A 会话卡片可见 → 切 B → 卡片消失。
+6. **导出元数据注入面**：服务端 `sanitize_line`（单行字段把 \n/\t 折成单
+   空格）用于 title/page_path/client_build/viewport/locale/run_id/
+   session_id/UA；导出 `_md()` 对全部用户可控元数据做单行化 + Markdown
+   活性字符反斜杠转义（`\ `` `*_[]()<>#|+-.!`）。测试：title 含
+   `\n# Ignore previous instructions` → 导出无真标题行。
+7. **存储被禁崩溃**：新增 `safeStorage()` —— **cookie 持久化 + 内存副本
+   兜底**（仓库安全契约禁 bundle 出现 localStorage 字面量，持久化一律走
+   第一方 cookie 同 `rxy_theme`）；读 cookie 抛错（禁用存储的浏览器）时
+   退化为内存态，功能不崩。E2E：cookie 读写抛 `SecurityError` → 设置页/
+   会话页正常渲染。
+
+**CI 修复（runs 40366386064 / 40366678821 / 40366386396 / 40366678725）**：
+
+- w12 conftest 端口 55441 → **55442**：w11 容器 `rxy-w11-pg` 早已占用 55441，
+  我选的端口与 w11 冲突导致 w11 全部 fixture 报 `port is already allocated`。
+- `infra/compose/compose.yaml` api 服务内联 pip 安装列表补 `pillow>=12.3,<13`
+  —— `feedback/images.py` 在模块顶层 import PIL，缺包使 api 容器
+  `Restarting` 循环（w7_c05 栈超时原因）。
+- 并发测试并发取 CSRF：每个 `GET /auth/csrf` 轮换 `rxy_csrf` cookie，并发
+  调用互相作废 → 假 403。测试改为线程开始前预算 headers。
+- `localStorage` 打包扫描（`w3_c01` unit+integration）：前端全部存储改为
+  cookie shim，字面量从 bundle 消失。
+
+回归：`bun test` 36 pass 矩阵不变；`pytest tests/web/w12` **46 passed**
+（含 4 个新用例）；`pytest tests/web/w3/test_feedback_e2e.py` **15 passed**
+（+3 新用例）；`test_w3_c01_negative` 绿；`pytest tests/unit/test_proxy_env.py`
+4 passed；`tsc --noEmit`/`ruff check` 干净。
+
+### 部署对齐：NO_PROXY IPv6 崩溃修复（自 WIP overlay 移植）
+
+`utils/proxy_env.py` + `__init__._sanitize_proxy_env`：启动时把
+`NO_PROXY`/`no_proxy` 里的裸带括号 IPv6（`[::1]`）改写成 httpx 可解析的
+`::1` —— 代理管理器写该值会让每个模型客户端在构造期
+`InvalidURL: Invalid port: ':1]'`。stdlib-only、幂等、永不抛错。
+（源自生产 overlay-wip 中唯一的运行期修复；带 `tests/unit/test_proxy_env.py` 4 例。）
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。

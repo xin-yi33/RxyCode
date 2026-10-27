@@ -1,6 +1,7 @@
 """Shared PostgreSQL container for the W12 feedback wave.
 
-Dedicated ``rxy-w12-pg`` on 127.0.0.1:55441 — reuses it when healthy, starts
+Dedicated ``rxy-w12-pg`` on 127.0.0.1:55442 (55441 already belongs to
+``rxy-w11-pg``) — reuses it when healthy, starts
 it when missing, never removes it. Every test gets an empty public schema
 with Alembic already at head.
 """
@@ -29,7 +30,7 @@ for _name in (
         sys.path.insert(0, str(_path))
 
 _CONTAINER = "rxy-w12-pg"
-_URL = "postgresql+psycopg://postgres@127.0.0.1:55441/rxycode"
+_URL = "postgresql+psycopg://postgres@127.0.0.1:55442/rxycode"
 
 ORIGIN = "https://w12.example"
 SECRET = "w12-web-secret-value-32bytes-long!"
@@ -75,7 +76,7 @@ def _postgres_server() -> str:
         return _worker_url(external)
     from tests.support.pgurl import ensure_container
 
-    ensure_container(_CONTAINER, 55441)
+    ensure_container(_CONTAINER, 55442)
     return _worker_url(_URL)
 
 

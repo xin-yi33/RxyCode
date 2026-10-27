@@ -9,7 +9,7 @@ import {
 import { apiErrorText } from "../../sdk/errors"
 import { useAuth } from "../auth/useAuth"
 import FeedbackForm from "./FeedbackForm"
-import { STORAGE_KEY as AUTO_PROMPT_KEY } from "./autoPrompt"
+import { safeStorage, STORAGE_KEY as AUTO_PROMPT_KEY } from "./autoPrompt"
 import "./feedback.css"
 
 const api = createClient()
@@ -216,7 +216,7 @@ export default function FeedbackSection() {
   const { me } = useAuth()
   const [refreshKey, setRefreshKey] = useState(0)
   const [autoPrompt, setAutoPrompt] = useState(
-    () => localStorage.getItem(AUTO_PROMPT_KEY) !== "0",
+    () => safeStorage().getItem(AUTO_PROMPT_KEY) !== "0",
   )
   const mounted = useRef(false)
   useEffect(() => {
@@ -224,7 +224,7 @@ export default function FeedbackSection() {
       mounted.current = true
       return
     }
-    localStorage.setItem(AUTO_PROMPT_KEY, autoPrompt ? "1" : "0")
+    safeStorage().setItem(AUTO_PROMPT_KEY, autoPrompt ? "1" : "0")
   }, [autoPrompt])
 
   return (

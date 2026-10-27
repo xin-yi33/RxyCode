@@ -34,6 +34,7 @@ from _chat_case import (  # noqa: E402
     production_origin,
     push_sse,
     run_summary,
+    session_row,
     wait_sse_open,
 )
 
@@ -229,7 +230,7 @@ def test_feedback_toggle_persists(browser, production_origin):
         toggle = page.locator('[data-testid="feedback-autoprompt-toggle"]')
         assert toggle.is_checked()
         toggle.click()
-        assert page.evaluate("localStorage.getItem('rxy.feedback.autoPrompt')") == "0"
+        assert "rxy.feedback.autoPrompt=0" in page.evaluate("document.cookie")
     finally:
         context.close()
 
@@ -291,7 +292,7 @@ def test_auto_prompt_shows_on_live_failure(browser, production_origin):
         assert not dom_visible(page, '[data-testid="feedback-auto-prompt"]')
         push_sse(page, {"seq": 2, "type": "run.status", "payload": {"status": "failed"}})
         page.wait_for_selector('[data-testid="feedback-auto-prompt"]', timeout=10_000)
-        asked = page.evaluate("localStorage.getItem('rxy.feedback.askedRuns')")
+        asked = page.evaluate("document.cookie")
         assert "run-live-1" in (asked or "")
         page.locator('[data-testid="feedback-auto-dismiss"]').click()
         page.wait_for_selector(
@@ -375,5 +376,99 @@ def test_auto_prompt_reduced_motion(browser, production_origin):
             "getComputedStyle(document.querySelector('[data-testid=feedback-auto-prompt]')).animationName"
         )
         assert animation in ("none", "")
+    finally:
+        context.close()
+
+
+# ---- review-round-2 additions ----------------------------------------------
+
+
+def test_auto_prompt_probe_race_no_false_empty(browser, production_origin):
+    """探测先于事件返回终态：/runs/{id} 先回 succeeded、事件回放延迟 1s
+    才到（含真实 final 文本）—— 不得在空时间线窗口误弹空回答卡片。"""
+    context = context_for(browser, "desktop-1440")
+
+    class ProbeRaceApi(FeedbackApi):
+        def handle(self, route):
+            path = urlparse(route.request.url).path
+            if path == "/api/v1/runs/run-probe":
+                run = dict(self.runs[0])
+                run["status"] = "succeeded"
+                self._json(route, 200, run)
+                return
+            if path.endswith("/events") and "/api/v1/runs/" in path:
+                time.sleep(1.0)
+            super().handle(route)
+
+    events = chat_events(message="帮我写排序", tool_rows=0, final="已给出排序实现")
+    events.append(
+        {
+            "seq": events[-1]["seq"] + 1,
+            "type": "run.status",
+            "payload": {"status": "succeeded"},
+        }
+    )
+    api = ProbeRaceApi(
+        runs=[run_summary("run-probe", "running", "帮我写排序")], events=events
+    )
+    page = _session_page(context, production_origin, api, "/app/s/session-chat-1")
+    try:
+        page.wait_for_selector('[data-testid="chat-scroll"]', timeout=15_000)
+        time.sleep(3.5)  # 探测窗口 + 回放 + 1500ms 显示延迟全部覆盖
+        assert not dom_visible(page, '[data-testid="feedback-auto-prompt"]')
+    finally:
+        context.close()
+
+
+def test_auto_prompt_card_cleared_on_session_switch(browser, production_origin):
+    """A 会话卡片可见时切到 B 会话 —— 卡片必须消失（hook 按 sessionId 重置）。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi(
+        sessions=[
+            session_row("session-chat-1", title="会话A"),
+            session_row("session-b", title="会话B"),
+        ],
+    )
+    page = _live_session(
+        context, production_origin, api, run_summary("run-live-1", "running", "帮我写排序")
+    )
+    try:
+        page.wait_for_selector('[data-testid="chat-scroll"]', timeout=15_000)
+        push_sse(page, {"seq": 2, "type": "run.status", "payload": {"status": "failed"}})
+        page.wait_for_selector('[data-testid="feedback-auto-prompt"]', timeout=10_000)
+        page.locator('a[href$="/app/s/session-b"]').first.click()
+        page.wait_for_selector(
+            '[data-testid="feedback-auto-prompt"]', state="detached", timeout=10_000
+        )
+    finally:
+        context.close()
+
+
+def test_feedback_survives_disabled_storage(browser, production_origin):
+    """存储被禁（document.cookie 读写抛 SecurityError）时：设置反馈页与
+    会话页都不崩，自动询问退化为内存态。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi(
+        runs=[run_summary("run-old-1", "failed", "旧任务")],
+        events=chat_events(message="旧任务", tool_rows=0),
+    )
+    context.route("**/api/v1/**", api.handle)
+    page = context.new_page()
+    install_event_stream_mock(page)
+    page.add_init_script(
+        "try{Object.defineProperty(document,'cookie',{"
+        " get(){throw new DOMException('denied','SecurityError')},"
+        " set(){throw new DOMException('denied','SecurityError')}})}catch(e){}"
+    )
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    try:
+        page.goto(f"{production_origin}/settings/feedback")
+        page.wait_for_selector('[data-testid="feedback-form"]', timeout=15_000)
+        page.goto(f"{production_origin}/app/s/session-chat-1")
+        page.wait_for_selector('[data-testid="run-feedback-btn"]', timeout=15_000)
+        time.sleep(2.5)
+        assert not errors, f"pageerrors: {errors}"
+        assert not dom_visible(page, '[data-testid="feedback-auto-prompt"]')
     finally:
         context.close()

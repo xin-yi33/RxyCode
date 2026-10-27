@@ -153,6 +153,12 @@ def sanitize_text(text: str, limit: int) -> str:
     return cleaned[:limit]
 
 
+def sanitize_line(text: str, limit: int) -> str:
+    """单行字段（title/page_path/UA 等）：换行与制表折叠成单空格，
+    否则导出/展示时一个字段能跨行注入假元数据。"""
+    return _WS_RE.sub(" ", sanitize_text(text, limit)).strip()
+
+
 def normalize_body(body: str) -> str:
     return _WS_RE.sub(" ", body.strip().lower())
 
@@ -230,7 +236,12 @@ _BATCH_LOCK_KEY = 0xF33DBAC7
 
 
 def assign_batch(db: Session, item: FeedbackItem) -> FeedbackBatch:
-    """Lock the open batch, roll it when full/stale, attach the item."""
+    """Lock the open batch, roll it when full/stale, attach the item.
+
+    ``SET LOCAL lock_timeout`` 保底：争用时等待上限 5s，超时抛 55P03 交给
+    submit_item 的重试循环 —— 否则一个卡住的事务会把所有提交永久挂在锁上。
+    """
+    db.execute(text("SET LOCAL lock_timeout = '5s'"))
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BATCH_LOCK_KEY})
     commit = build_commit()
     capacity = batch_capacity()
@@ -302,9 +313,9 @@ def submit_item(
             db.rollback()
             item.batch_id = ""
         except OperationalError as exc:
-            # FOR UPDATE 争用在高并发下会死锁（pg 40P01）—— 与唯一索引
-            # 冲突同等处理：回滚重试；其他 OperationalError 不掩盖。
-            if getattr(exc.orig, "pgcode", "") != "40P01":
+            # 40P01：FOR UPDATE 死锁；55P03：lock_timeout 到期 —— 都与
+            # 唯一索引冲突同等处理：回滚重试；其他 OperationalError 不掩盖。
+            if getattr(exc.orig, "pgcode", "") not in ("40P01", "55P03"):
                 raise
             db.rollback()
             item.batch_id = ""

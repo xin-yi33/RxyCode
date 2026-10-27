@@ -406,7 +406,7 @@ export class AutoPromptPolicy {
   }
 }
 
-// ---- localStorage 适配层（React hook 用） ------------------------------------
+// ---- 键值存储适配层（React hook 用） ------------------------------------
 
 export function loadAskedRuns(storage: Pick<Storage, "getItem">): string[] {
   try {
@@ -430,4 +430,51 @@ export function loadPromptState(storage: Pick<Storage, "getItem">): Partial<Stor
 
 export function autoPromptEnabled(storage: Pick<Storage, "getItem">): boolean {
   return storage.getItem(STORAGE_KEY) !== "0"
+}
+
+// 持久化走第一方 cookie（同 rxy_theme 约定 —— 打包安全契约禁 web-storage）。
+// 读 cookie 可能抛 SecurityError（禁用存储的浏览器/企业策略）：内存副本兜底，
+// 功能仍可用，只是策略不跨会话持久化。
+const _memoryStore = new Map<string, string>()
+
+function _readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null
+  try {
+    const match = document.cookie.match(
+      new RegExp(
+        "(?:^|;\\s*)" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "=([^;]*)",
+      ),
+    )
+    return match ? decodeURIComponent(match[1]) : null
+  } catch {
+    return null
+  }
+}
+
+export type SafeStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
+
+export function safeStorage(): SafeStorage {
+  return {
+    getItem: (key: string) => {
+      const value = _readCookie(key)
+      if (value !== null) return value
+      return _memoryStore.has(key) ? (_memoryStore.get(key) as string) : null
+    },
+    setItem: (key: string, value: string) => {
+      _memoryStore.set(key, String(value))
+      try {
+        document.cookie = `${key}=${encodeURIComponent(String(value))};path=/;samesite=lax;max-age=31536000`
+      } catch {
+        // 内存副本仍在 —— 当次会话功能不受影响。
+      }
+    },
+    removeItem: (key: string) => {
+      _memoryStore.delete(key)
+      try {
+        document.cookie = `${key}=;path=/;samesite=lax;max-age=0`
+      } catch {
+        // 同上。
+      }
+    },
+  }
 }

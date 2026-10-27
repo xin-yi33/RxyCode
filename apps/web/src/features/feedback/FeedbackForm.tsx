@@ -87,11 +87,15 @@ export default function FeedbackForm({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imagesRef = useRef<PendingImage[]>(images)
   imagesRef.current = images
+  const uploadControllersRef = useRef(new Map<string, AbortController>())
 
   useEffect(() => {
     const list = imagesRef.current
+    const controllers = uploadControllersRef.current
     return () => {
       for (const img of list) URL.revokeObjectURL(img.previewUrl)
+      for (const controller of controllers.values()) controller.abort()
+      controllers.clear()
     }
   }, [])
 
@@ -129,22 +133,37 @@ export default function FeedbackForm({
   }
 
   const startImageUpload = async (localId: string, file: File) => {
+    const controller = new AbortController()
+    uploadControllersRef.current.get(localId)?.abort()
+    uploadControllersRef.current.set(localId, controller)
     try {
-      const result = await api.uploadFeedbackImage(file, (received, total) => {
-        setImages((list) =>
-          list.map((img) =>
-            img.localId === localId
-              ? { ...img, progress: total > 0 ? Math.round((received / total) * 100) : 0 }
-              : img,
-          ),
-        )
-      })
+      const result = await api.uploadFeedbackImage(
+        file,
+        (received, total) => {
+          setImages((list) =>
+            list.map((img) =>
+              img.localId === localId
+                ? { ...img, progress: total > 0 ? Math.round((received / total) * 100) : 0 }
+                : img,
+            ),
+          )
+        },
+        controller.signal,
+      )
+      uploadControllersRef.current.delete(localId)
+      if (!imagesRef.current.some((img) => img.localId === localId)) {
+        // 上传完成时条目已被移除 —— 服务端 staged 图必须顺手删掉，
+        // 否则永远不会被绑定也没人清理。
+        void api.deleteFeedbackImage(result.image_id).catch(() => undefined)
+        return
+      }
       setImages((list) =>
         list.map((img) =>
           img.localId === localId ? { ...img, imageId: result.image_id, progress: 100 } : img,
         ),
       )
     } catch (err) {
+      if (controller.signal.aborted) return // 用户主动移除/重试，不是错误
       setImages((list) =>
         list.map((img) =>
           img.localId === localId ? { ...img, error: apiErrorText(err) } : img,
@@ -155,6 +174,8 @@ export default function FeedbackForm({
 
   const removeImage = (localId: string) => {
     const target = images.find((img) => img.localId === localId)
+    uploadControllersRef.current.get(localId)?.abort()
+    uploadControllersRef.current.delete(localId)
     setImages((list) => list.filter((img) => img.localId !== localId))
     if (target) {
       URL.revokeObjectURL(target.previewUrl)

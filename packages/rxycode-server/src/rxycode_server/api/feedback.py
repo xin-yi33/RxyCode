@@ -18,8 +18,9 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from rxycode_server.api.auth import (
     AuthRecord,
@@ -120,32 +121,22 @@ def _public_item(item: FeedbackItem, batch_seq: int, images=None) -> dict:
 # ---- images ---------------------------------------------------------------
 
 
-@router.post("/api/v1/feedback/images", status_code=201)
-async def upload_image(
-    request: Request, db: Session = Depends(db_session)
-) -> dict[str, object]:
-    require_write(request)
-    record = current_record(request)
-    svc.check_image_limit(request, record.user_id, client_ip(request))
-    # 满额时直接拒 —— 不读 body、不解码（省下的内存和带宽都是攻击面）。
-    store = _store(request)
+def _image_precheck(db: Session, store, record: AuthRecord) -> None:
+    """清扫 + 满额拒绝 —— 在读 body 前完成，满额用户不消耗解码资源。"""
     svc.sweep_expired_images(db, store)  # 全局过期清扫（每上传顺带，LIMIT 50）
     if svc.staged_image_count(db, record.user_id) >= svc.STAGED_IMAGE_LIMIT:
         raise HTTPException(429, detail="RATE_LIMITED", headers={"Retry-After": "60"})
 
-    raw = await _read_capped(request, MAX_IMAGE_BYTES, "FEEDBACK_IMAGE_TOO_LARGE")
-    try:
-        image = await asyncio.to_thread(_decode_guarded, raw)
-    except ImageRejected as exc:
-        raise _image_map(exc) from exc
 
+def _image_commit(db: Session, store, record: AuthRecord, image) -> FeedbackImage:
     image_id = uuid.uuid4().hex
     blob_key = f"feedback/{record.tenant_id}/{image_id}"
     try:
-        store.put_stream(blob_key, io.BytesIO(image.blob), content_type=image.content_type)
+        store.put_stream(
+            blob_key, io.BytesIO(image.blob), content_type=image.content_type
+        )
     except Exception:
         raise HTTPException(503, detail="STORAGE_UNAVAILABLE") from None
-
     row = FeedbackImage(
         id=image_id,
         tenant_id=record.tenant_id,
@@ -161,12 +152,36 @@ async def upload_image(
     )
     db.add(row)
     db.flush()
+    return row
+
+
+# 事件循环上只允许：限流检查（内存）+ body 读取 + 解码（线程+信号量）。
+# 所有 DB 访问走 run_in_threadpool —— sync SQLAlchemy 在 loop 线程上
+# 阻塞（尤其 pg_advisory_xact_lock 等待）会冻住整个事件循环，连持锁
+# 事务的 commit 都无法调度（本地压力实测全栈死锁）。
+@router.post("/api/v1/feedback/images", status_code=201)
+async def upload_image(
+    request: Request, db: Session = Depends(db_session)
+) -> dict[str, object]:
+    require_write(request)
+    record = current_record(request)
+    svc.check_image_limit(request, record.user_id, client_ip(request))
+    store = _store(request)
+    await run_in_threadpool(_image_precheck, db, store, record)
+
+    raw = await _read_capped(request, MAX_IMAGE_BYTES, "FEEDBACK_IMAGE_TOO_LARGE")
+    try:
+        image = await asyncio.to_thread(_decode_guarded, raw)
+    except ImageRejected as exc:
+        raise _image_map(exc) from exc
+
+    row = await run_in_threadpool(_image_commit, db, store, record, image)
     return {
-        "image_id": image_id,
-        "width": image.width,
-        "height": image.height,
-        "size_bytes": len(image.blob),
-        "content_type": image.content_type,
+        "image_id": row.id,
+        "width": row.width,
+        "height": row.height,
+        "size_bytes": row.size_bytes,
+        "content_type": row.content_type,
     }
 
 
@@ -234,6 +249,109 @@ def _str_list(value, cap: int, item_len: int) -> list[str]:
     return [svc.sanitize_text(str(v), item_len) for v in value[:cap] if str(v).strip()]
 
 
+def _submit_db(
+    request: Request, db: Session, record: AuthRecord, ip: str, fields: dict
+) -> tuple[FeedbackItem, int, bool]:
+    """整段 DB 工作 —— 在 worker 线程执行（advisory lock 等待不再冻 loop）。
+
+    幂等最先：同 (user_id, request_id) 已存在直接 200 回原条目 —— 不做
+    图片/run/session 校验，否则「响应丢失后重试」会被 422/404 误伤。
+    """
+    existing = db.scalars(
+        select(FeedbackItem).where(
+            FeedbackItem.user_id == record.user_id,
+            FeedbackItem.request_id == fields["request_id"],
+        )
+    ).first()
+    if existing is not None:
+        seq = db.scalar(
+            select(FeedbackBatch.seq).where(FeedbackBatch.id == existing.batch_id)
+        ) or 0
+        return existing, int(seq), True
+
+    run_id = fields["run_id"]
+    session_id = fields["session_id"]
+    if run_id and db.scalar(
+        select(Run.id).where(Run.id == run_id, Run.tenant_id == record.tenant_id)
+    ) is None:
+        raise HTTPException(404, detail="NOT_FOUND")
+    if session_id and db.scalar(
+        select(SessionRow.id).where(
+            SessionRow.id == session_id, SessionRow.tenant_id == record.tenant_id
+        )
+    ) is None:
+        raise HTTPException(404, detail="NOT_FOUND")
+
+    images: list[FeedbackImage] = []
+    if fields["image_ids"]:
+        now = _now()
+        for image_id in dict.fromkeys(fields["image_ids"]):
+            row = db.get(FeedbackImage, image_id)
+            if (
+                row is None
+                or row.user_id != record.user_id
+                or row.tenant_id != record.tenant_id
+                or row.state != "staged"
+                or (row.expires_at is not None and row.expires_at < now)
+            ):
+                raise HTTPException(422, detail="FEEDBACK_IMAGE_INVALID")
+            images.append(row)
+
+    svc.check_daily_user_cap(db, record.user_id)
+    svc.check_global_circuit(db)
+
+    sha = svc.content_hash(fields["text"])
+    if db.scalar(
+        select(FeedbackItem.id).where(
+            FeedbackItem.user_id == record.user_id,
+            FeedbackItem.content_sha256 == sha,
+            FeedbackItem.created_at >= _now() - svc.DEDUPE_WINDOW,
+        )
+    ) is not None:
+        raise HTTPException(409, detail="FEEDBACK_DUPLICATE")
+
+    captcha_ok = False
+    if svc.captcha_required(db, record.user_id):
+        if not fields["captcha"]:
+            raise HTTPException(400, detail="CAPTCHA_REQUIRED")
+        _require_captcha(request, {"captcha": fields["captcha"]})
+        captcha_ok = True
+
+    item = FeedbackItem(
+        id=uuid.uuid4().hex,
+        batch_id="",  # assigned inside submit_item's locked transaction
+        tenant_id=record.tenant_id,
+        user_id=record.user_id,
+        request_id=fields["request_id"],
+        kind=fields["kind"],
+        module=fields["module"],
+        severity=fields["severity"],
+        title=fields["title"],
+        body=fields["text"],
+        source=fields["source"],
+        trigger_reasons=fields["reasons"],
+        run_id=run_id,
+        session_id=session_id,
+        page_path=fields["page_path"],
+        build_commit=build_commit(),
+        client_build=fields["client_build"],
+        user_agent=fields["user_agent"],
+        viewport=fields["viewport"],
+        locale=fields["locale"],
+        content_sha256=sha,
+        ip_hmac=svc.ip_hmac(request.app.state.secret, ip),
+        state="new",
+    )
+    saved, batch_seq, duplicated = svc.submit_item(db, item, captcha_ok=captcha_ok)
+    if not duplicated:
+        for row in images:
+            row.state = "bound"
+            row.item_id = saved.id
+            row.expires_at = None
+        db.flush()
+    return saved, batch_seq, duplicated
+
+
 @router.post("/api/v1/feedback", status_code=201)
 async def submit(request: Request, db: Session = Depends(db_session)) -> Response:
     require_write(request)
@@ -268,120 +386,40 @@ async def submit(request: Request, db: Session = Depends(db_session)) -> Respons
     if severity_raw:
         severity = _enum(severity_raw, svc.SEVERITIES)
     source = _enum(body.get("source") or "manual", svc.SOURCES)
-    title = svc.sanitize_text(str(body.get("title") or ""), 120)
+    # title/单行字段 sanitize_line：换行/制表折叠成单空格，
+    # 否则导出里一个字段能跨行注入假标题/假元数据。
+    title = svc.sanitize_line(str(body.get("title") or ""), 120)
     if not title:
         raise HTTPException(422, detail="INVALID_INPUT")
     text = svc.sanitize_text(str(body.get("body") or ""), 5000)
     if len(text) < 10:
         raise HTTPException(422, detail="INVALID_INPUT")
-    page_path = svc.sanitize_text(str(body.get("page_path") or ""), 300)
-    client_build = svc.sanitize_text(str(body.get("client_build") or ""), 64) or None
-    viewport = svc.sanitize_text(str(body.get("viewport") or ""), 32) or None
-    locale = svc.sanitize_text(str(body.get("locale") or ""), 16) or None
-    reasons = _str_list(body.get("trigger_reasons"), 16, 40) or None
     image_ids = [svc.sanitize_text(str(v), 64) for v in _str_list(body.get("image_ids"), svc.MAX_IMAGES_PER_ITEM + 1, 64)]
     if len(image_ids) > svc.MAX_IMAGES_PER_ITEM:
         raise HTTPException(422, detail="FEEDBACK_IMAGE_INVALID")
 
-    run_id = svc.sanitize_text(str(body.get("run_id") or ""), 64) or None
-    session_id = svc.sanitize_text(str(body.get("session_id") or ""), 64) or None
-    if run_id and db.scalar(
-        select(Run.id).where(Run.id == run_id, Run.tenant_id == record.tenant_id)
-    ) is None:
-        raise HTTPException(404, detail="NOT_FOUND")
-    if session_id and db.scalar(
-        select(SessionRow.id).where(
-            SessionRow.id == session_id, SessionRow.tenant_id == record.tenant_id
-        )
-    ) is None:
-        raise HTTPException(404, detail="NOT_FOUND")
-
-    images: list[FeedbackImage] = []
-    if image_ids:
-        now = _now()
-        for image_id in dict.fromkeys(image_ids):
-            row = db.get(FeedbackImage, image_id)
-            if (
-                row is None
-                or row.user_id != record.user_id
-                or row.tenant_id != record.tenant_id
-                or row.state != "staged"
-                or (row.expires_at is not None and row.expires_at < now)
-            ):
-                raise HTTPException(422, detail="FEEDBACK_IMAGE_INVALID")
-            images.append(row)
-
-    svc.check_daily_user_cap(db, record.user_id)
-    svc.check_global_circuit(db)
-
-    # 幂等先于去重：同一 request_id 的重发返回原条目（200），
-    # 不能让同文去重把合法重试误伤成 409。
-    existing = db.scalars(
-        select(FeedbackItem).where(
-            FeedbackItem.user_id == record.user_id,
-            FeedbackItem.request_id == request_id,
-        )
-    ).first()
-    if existing is not None:
-        seq = db.scalar(
-            select(FeedbackBatch.seq).where(FeedbackBatch.id == existing.batch_id)
-        ) or 0
-        return Response(
-            status_code=200,
-            content=json.dumps(_public_item(existing, int(seq))),
-            media_type="application/json",
-        )
-
-    sha = svc.content_hash(text)
-    if db.scalar(
-        select(FeedbackItem.id).where(
-            FeedbackItem.user_id == record.user_id,
-            FeedbackItem.content_sha256 == sha,
-            FeedbackItem.created_at >= _now() - svc.DEDUPE_WINDOW,
-        )
-    ) is not None:
-        raise HTTPException(409, detail="FEEDBACK_DUPLICATE")
-
-    captcha_ok = False
-    if svc.captcha_required(db, record.user_id):
-        if not str(body.get("captcha") or "").strip():
-            raise HTTPException(400, detail="CAPTCHA_REQUIRED")
-        _require_captcha(request, body)
-        captcha_ok = True
-
-    item = FeedbackItem(
-        id=uuid.uuid4().hex,
-        batch_id="",  # assigned inside submit_item's locked transaction
-        tenant_id=record.tenant_id,
-        user_id=record.user_id,
-        request_id=request_id,
-        kind=kind,
-        module=module,
-        severity=severity,
-        title=title,
-        body=text,
-        source=source,
-        trigger_reasons=reasons,
-        run_id=run_id,
-        session_id=session_id,
-        page_path=page_path,
-        build_commit=build_commit(),
-        client_build=client_build,
-        user_agent=svc.sanitize_text(request.headers.get("user-agent", ""), 300),
-        viewport=viewport,
-        locale=locale,
-        content_sha256=sha,
-        ip_hmac=svc.ip_hmac(request.app.state.secret, ip),
-        state="new",
+    fields = {
+        "request_id": request_id,
+        "kind": kind,
+        "module": module,
+        "severity": severity,
+        "title": title,
+        "text": text,
+        "source": source,
+        "reasons": _str_list(body.get("trigger_reasons"), 16, 40) or None,
+        "run_id": svc.sanitize_line(str(body.get("run_id") or ""), 64) or None,
+        "session_id": svc.sanitize_line(str(body.get("session_id") or ""), 64) or None,
+        "page_path": svc.sanitize_line(str(body.get("page_path") or ""), 300),
+        "client_build": svc.sanitize_line(str(body.get("client_build") or ""), 64) or None,
+        "viewport": svc.sanitize_line(str(body.get("viewport") or ""), 32) or None,
+        "locale": svc.sanitize_line(str(body.get("locale") or ""), 16) or None,
+        "image_ids": image_ids,
+        "captcha": str(body.get("captcha") or "").strip(),
+        "user_agent": svc.sanitize_line(request.headers.get("user-agent", ""), 300),
+    }
+    saved, batch_seq, duplicated = await run_in_threadpool(
+        _submit_db, request, db, record, ip, fields
     )
-    saved, batch_seq, duplicated = svc.submit_item(db, item, captcha_ok=captcha_ok)
-    if not duplicated:
-        for row in images:
-            row.state = "bound"
-            row.item_id = saved.id
-            row.expires_at = None
-        db.flush()
-
     status = 200 if duplicated else 201
     return Response(
         status_code=status,
@@ -405,16 +443,27 @@ def list_mine(
         .where(FeedbackItem.user_id == record.user_id)
         .order_by(FeedbackItem.created_at.desc(), FeedbackItem.id.desc())
     )
-    rows = list(db.execute(query).all())
-    start = 0
     if cursor:
-        for index, (item, _seq) in enumerate(rows):
-            if item.id == cursor:
-                start = index + 1
-                break
-    page = rows[start : start + limit + 1]
-    next_cursor = page[limit][0].id if len(page) > limit else None
-    page = page[:limit]
+        # keyset 分页：游标 = 本页最后一条已返回的 id，下页取其 (created_at,id)
+        # 之后的行 —— 不全量加载，也不让游标指向 lookahead 那条（会漏一条）。
+        cur = db.get(FeedbackItem, cursor)
+        if (
+            cur is not None
+            and cur.user_id == record.user_id
+            and cur.created_at is not None
+        ):
+            query = query.where(
+                or_(
+                    FeedbackItem.created_at < cur.created_at,
+                    and_(
+                        FeedbackItem.created_at == cur.created_at,
+                        FeedbackItem.id < cur.id,
+                    ),
+                )
+            )
+    rows = list(db.execute(query.limit(limit + 1)).all())
+    page = rows[:limit]
+    next_cursor = page[-1][0].id if len(rows) > limit else None
     out = []
     for item, seq in page:
         images = [
@@ -525,16 +574,27 @@ def admin_batch_close(
     return _batch_summary_public(batch)
 
 
+def _patch_item_db(
+    request: Request, db: Session, record: AuthRecord, item_id: str, state: str
+) -> dict:
+    _admin(request, db, record)
+    item = db.get(FeedbackItem, item_id)
+    if item is None:
+        raise HTTPException(404, detail="NOT_FOUND")
+    item.state = state
+    db.flush()
+    seq = db.scalar(
+        select(FeedbackBatch.seq).where(FeedbackBatch.id == item.batch_id)
+    ) or 0
+    return _public_item(item, int(seq))
+
+
 @router.patch("/api/v1/admin/feedback/items/{item_id}")
 async def admin_patch_item(
     item_id: str, request: Request, db: Session = Depends(db_session)
 ) -> dict:
     require_write(request)
     record = current_record(request)
-    _admin(request, db, record)
-    item = db.get(FeedbackItem, item_id)
-    if item is None:
-        raise HTTPException(404, detail="NOT_FOUND")
     try:
         body = json.loads((await request.body()).decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
@@ -542,9 +602,4 @@ async def admin_patch_item(
     if not isinstance(body, dict):
         raise HTTPException(400, detail="INVALID_INPUT")
     state = _enum(body.get("state"), svc.STATES)
-    item.state = state
-    db.flush()
-    seq = db.scalar(
-        select(FeedbackBatch.seq).where(FeedbackBatch.id == item.batch_id)
-    ) or 0
-    return _public_item(item, int(seq))
+    return await run_in_threadpool(_patch_item_db, request, db, record, item_id, state)

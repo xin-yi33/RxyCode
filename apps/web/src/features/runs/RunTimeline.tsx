@@ -19,26 +19,42 @@ export function RunTimeline({
   // （历史回放 run.status 一开始就是终态，不会触发）。
   onTerminal?: (signal: RunTerminalSignal) => void
 }) {
-  const { view, connected, notFound, cursorExpired, snapshotSeq } = useRunEvents(
-    run.run_id,
-    run.status,
-  )
-  const prevStatusRef = useRef(run.status)
+  const {
+    view,
+    connected,
+    notFound,
+    cursorExpired,
+    snapshotSeq,
+    loaded,
+    terminalViaEvent,
+  } = useRunEvents(run.run_id, run.status)
+  // 挂载时的种子终态 = 历史回放 run —— 永不触发自动询问。
+  const seedWasTerminalRef = useRef(isTerminalRunStatus(run.status))
+  const firedRef = useRef(false)
   // 事件流里出现过 cancel_requested 才算“用户点了停止”——终态
   // cancelled 也可能是系统取消（配额/超时），不算 user_stopped。
   const sawCancelRequestedRef = useRef(false)
   useEffect(() => {
-    const prev = prevStatusRef.current
     const status = view.status
-    prevStatusRef.current = status
-    if (status === "cancel_requested" || prev === "cancel_requested") {
+    if (status === "cancel_requested") {
       sawCancelRequestedRef.current = true
     }
-    if (!isTerminalRunStatus(prev) && isTerminalRunStatus(status) && onTerminal) {
+    if (
+      !firedRef.current &&
+      !seedWasTerminalRef.current &&
+      isTerminalRunStatus(status) &&
+      onTerminal &&
+      loaded &&
+      terminalViaEvent
+    ) {
+      // 只报「事件流自己送到的终态 + 历史回放已完成」—— /runs 探测先把
+      // baseStatus 拉成终态而事件未回放时，timeline 为空会把 succeeded
+      // 误判成空回答（empty_answer 假阳性）；回放落地后此处仍会触发。
+      firedRef.current = true
       onTerminal(signalFromRunView(run, view, sawCancelRequestedRef.current))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.status])
+  }, [view.status, loaded, terminalViaEvent])
   if (notFound) {
     return (
       <p role="alert" className="mt-2 text-sm text-failure">
