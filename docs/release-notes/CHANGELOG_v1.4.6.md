@@ -187,6 +187,27 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
   （`FileNotFoundError`/S3 `NoSuchKey`/`NoSuchBucket`/404）才删行。测试：
   delete 抛 `OSError` → 行仍在、swept=0；恢复后再扫 → 行消失。
 
+**Codex 第五轮（1f077acb 之后追加）**：
+
+- **P1 SessionPage hooks 顺序**：run 后续观察 effect 原先在
+  `session.isError` 条件 return 之后 —— 查询转错误态时少跑一个 hook →
+  React 抛「Rendered fewer hooks」。`ordered`/`active` 与该 effect 上移
+  到所有条件 return 之前。E2E：会话页 200→500 → 显示连接错误+重试，
+  pageerror 无 hooks 报错。
+- **P1 管理员身份不再只凭邮箱字符串**：`RXYCODE_FEEDBACK_ADMIN_USER_IDS`
+  （逗号分隔 user.id）新增恒可信路径；`RXYCODE_FEEDBACK_ADMIN_EMAILS`
+  仅在 `_delivery_channel == "smtp"` 时生效 —— smtp 注册必经邮件验证码，
+  邮箱所有权已证；`inline`/`operator-log`/`none` 部署注册不验邮箱，
+  allowlist 邮箱可被抢注故不算数。`/me.feedback_admin` 与各 admin 路由
+  走同一 `svc.is_admin(user, delivery_channel)`。测试覆盖：无 SMTP 下
+  allowlist 邮箱 → 非 admin（/me false + admin 404），USER_IDS 命中 →
+  admin，smtp 配置后 allowlist → admin。
+- **P2 删除/绑定竞态**：`delete_image` 改 `SELECT … FOR UPDATE` 锁行后
+  判 staged+归属、删行 flush、最后删 blob（blob 失败冒泡 → 回滚行保留）。
+  并发语义：提交侧绑定 UPDATE 阻塞在行锁上，随后看到行消失 → 422；或
+  绑定先行 → 删除读到 bound → 404。测试 `test_delete_vs_submit_same_image_
+  is_atomic`：交错结果只能是 (204,422)/(201,404)，绝无「201 但图已删」。
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。

@@ -484,16 +484,39 @@ def test_batch_concurrent_rolls(postgres_url: str, monkeypatch):
 
 
 def test_me_feedback_admin(postgres_url: str, monkeypatch):
-    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_EMAILS", "boss@example.com")
-    boss, _ = _client(postgres_url, "boss@example.com")
+    boss, me = _client(postgres_url, "boss@example.com")
+    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_USER_IDS", me["user"]["id"])
     plain, _ = _client(postgres_url, "plain@example.com")
     assert boss.get("/api/v1/me").json()["feedback_admin"] is True
     assert plain.get("/api/v1/me").json()["feedback_admin"] is False
 
 
-def test_admin_endpoints_and_export(postgres_url: str, monkeypatch):
+def test_admin_email_allowlist_requires_smtp(postgres_url: str, monkeypatch):
+    """Codex P1：无 SMTP 投递（local/inline）注册不验邮箱 —— allowlist
+    邮箱可被抢注，不得授权；只认 USER_IDS。"""
     monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_EMAILS", "boss@example.com")
-    boss, _ = _client(postgres_url, "boss@example.com")
+    boss, me = _client(postgres_url, "boss@example.com")
+    assert boss.get("/api/v1/me").json()["feedback_admin"] is False
+    assert boss.get("/api/v1/admin/feedback/batches").status_code == 404
+    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_USER_IDS", me["user"]["id"])
+    assert boss.get("/api/v1/me").json()["feedback_admin"] is True
+    assert boss.get("/api/v1/admin/feedback/batches").status_code == 200
+
+
+def test_admin_email_allowlist_under_smtp(postgres_url: str, monkeypatch):
+    """smtp 投递部署注册必经邮件验证码 → 邮箱所有权已证 → allowlist 生效。"""
+    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_EMAILS", "boss@example.com")
+    app = _app(postgres_url)
+    boss, _ = _client(postgres_url, "boss@example.com", app=app)
+    assert boss.get("/api/v1/me").json()["feedback_admin"] is False
+    app.state.smtp_url = "smtp://127.0.0.1:25"  # 切到可投递部署后再查
+    assert boss.get("/api/v1/me").json()["feedback_admin"] is True
+    assert boss.get("/api/v1/admin/feedback/batches").status_code == 200
+
+
+def test_admin_endpoints_and_export(postgres_url: str, monkeypatch):
+    boss, me = _client(postgres_url, "boss@example.com")
+    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_USER_IDS", me["user"]["id"])
     plain, _ = _client(postgres_url, "plain@example.com")
     _submit(plain, _submit_body(body="反馈正文不可信 ```fence``` 注入尝试", title="注入"))
 
@@ -537,8 +560,8 @@ def test_admin_endpoints_and_export(postgres_url: str, monkeypatch):
 
 
 def test_admin_image_read(postgres_url: str, monkeypatch):
-    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_EMAILS", "boss@example.com")
-    boss, _ = _client(postgres_url, "boss@example.com")
+    boss, me = _client(postgres_url, "boss@example.com")
+    monkeypatch.setenv("RXYCODE_FEEDBACK_ADMIN_USER_IDS", me["user"]["id"])
     plain, _ = _client(postgres_url, "plain@example.com")
     image_id = _upload(plain, _png()).json()["image_id"]
     assert boss.get(f"/api/v1/feedback/images/{image_id}").status_code == 200
@@ -745,6 +768,61 @@ def test_double_bind_same_image_is_atomic_422(postgres_url: str):
         # 失败提交连批次的 item_count 都不能过账。
         assert batch is not None and batch.item_count == 1
     engine.dispose()
+
+
+def test_delete_vs_submit_same_image_is_atomic(postgres_url: str):
+    """并发 delete + 引用同图的 submit：行锁使两种交错都只能落在
+    (delete 204, submit 422) 或 (submit 201, delete 404)；绝不许
+    「submit 201 但图片行已被删」的悬挂状态。"""
+    client, _ = _client(postgres_url, "fb-delrace@example.com")
+
+    def _race(image_id: str, hdrs: dict) -> tuple[tuple[int, int], dict]:
+        results: dict[str, int] = {}
+        details: dict[str, str] = {}
+
+        def _del() -> None:
+            worker = TestClient(client.app)
+            worker.cookies.update(client.cookies)
+            resp = worker.delete(
+                f"/api/v1/feedback/images/{image_id}", headers=hdrs
+            )
+            results["del"] = resp.status_code
+            details["del"] = resp.text[:200]
+
+        def _sub() -> None:
+            worker = TestClient(client.app)
+            worker.cookies.update(client.cookies)
+            resp = _submit(
+                worker, _submit_body(image_ids=[image_id]), headers=hdrs
+            )
+            results["sub"] = resp.status_code
+            details["sub"] = resp.text[:200]
+
+        threads = [threading.Thread(target=_del), threading.Thread(target=_sub)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return (results["del"], results["sub"]), details
+
+    seen: set[tuple[int, int]] = set()
+    for _ in range(3):  # submit_user 上限 5/10min —— 三轮内
+        # _upload 内部的 _csrf 会轮换 rxy_csrf —— headers 必须在上传后现取。
+        image_id = _upload(client, _png()).json()["image_id"]
+        hdrs = _headers(_csrf(client))
+        pair, details = _race(image_id, hdrs)
+        assert pair in ((204, 422), (201, 404)), (
+            f"impossible interleave: {pair} details={details}"
+        )
+        seen.add(pair)
+        if pair == (201, 404):
+            # 提交赢：行必须 bound 且 blob 可回读。
+            engine = create_engine(postgres_url)
+            with Session(engine) as db:
+                row = db.get(FeedbackImage, image_id)
+                assert row is not None and row.state == "bound"
+            engine.dispose()
+    assert seen  # sanity
 
 
 def test_expired_staged_sweep_deletes_blob_and_row(postgres_url: str):

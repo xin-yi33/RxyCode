@@ -622,13 +622,13 @@ def _capabilities(request: Request) -> dict[str, object]:
     }
 
 
-def _feedback_admin(email: str | None) -> bool:
-    from rxycode_server.feedback.service import is_admin_email
+def _feedback_admin(user: User | None, state) -> bool:
+    from rxycode_server.feedback.service import is_admin
 
-    return is_admin_email(email)
+    return is_admin(user, _delivery_channel(state))
 
 
-def _me_body(record: AuthRecord, db: Session) -> dict[str, object]:
+def _me_body(record: AuthRecord, db: Session, state) -> dict[str, object]:
     user = db.get(User, record.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="UNAUTHORIZED")
@@ -658,7 +658,9 @@ def _me_body(record: AuthRecord, db: Session) -> dict[str, object]:
         "default_project_id": default_project_id,
         # feedback.service imports _Window from this module — a top-level
         # import here would be a cycle, so resolve lazily per /me call.
-        "feedback_admin": _feedback_admin(user.email),
+        # USER_IDS 恒可信；邮箱 allowlist 只在 smtp 投递（注册必经验证码
+        # 证明邮箱所有权）下生效。
+        "feedback_admin": _feedback_admin(user, state),
     }
 
 
@@ -785,7 +787,7 @@ def register(
         _issue(request, db, user.id, tenant_id),
         secure=_secure(request),
     )
-    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
+    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db, request.app.state)
 
 
 @router.post("/api/v1/auth/login")
@@ -855,7 +857,7 @@ def password_login(
         device_label=(request.headers.get("user-agent") or "")[:128],
     )
     db.flush()
-    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db)
+    return _me_body(AuthRecord(user_id=user.id, tenant_id=tenant_id, created=0.0), db, request.app.state)
 
 
 @router.post("/api/v1/auth/forgot")
@@ -1246,7 +1248,7 @@ def _web_capabilities(request: Request) -> dict[str, object]:
 
 @router.get("/api/v1/me")
 def me(request: Request, db: Session = Depends(db_session)) -> dict[str, object]:
-    body = _me_body(current_record(request), db)
+    body = _me_body(current_record(request), db, request.app.state)
     body["web_capabilities"] = _web_capabilities(request)
     return body
 

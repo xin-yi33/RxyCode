@@ -24,6 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from rxycode_server.api.auth import (
     AuthRecord,
+    _delivery_channel,
     _require_captcha,
     current_record,
     db_session,
@@ -108,7 +109,7 @@ async def _read_capped(request: Request, limit: int, code: str) -> bytes:
 def _admin(request: Request, db: Session, record: AuthRecord) -> User:
     """404 for non-admins — existence of the admin surface is not leaked."""
     user = db.get(User, record.user_id)
-    if user is None or not svc.is_admin_email(user.email):
+    if user is None or not svc.is_admin(user, _delivery_channel(request.app.state)):
         raise HTTPException(404, detail="NOT_FOUND")
     return user
 
@@ -234,7 +235,13 @@ def delete_image(
 ) -> None:
     require_write(request)
     record = current_record(request)
-    row = db.get(FeedbackImage, image_id)
+    # FOR UPDATE 锁行：并发提交的绑定 UPDATE 会阻塞到本事务提交 —— 之后
+    # 行已删（→ 提交侧 rowcount 落空 422）；反过来绑定先行则这里读到
+    # state='bound' → 404。无锁读曾在「判 staged 通过 → 提交绑定 → 删除
+    # 照执行」的窗口里产生 submit 201 但图片失踪的悬挂引用。
+    row = db.scalars(
+        select(FeedbackImage).where(FeedbackImage.id == image_id).with_for_update()
+    ).first()
     if (
         row is None
         or row.user_id != record.user_id
@@ -242,9 +249,10 @@ def delete_image(
         or row.state != "staged"
     ):
         raise HTTPException(404, detail="NOT_FOUND")
-    _store(request).delete(row.blob_key)
     db.delete(row)
     db.flush()
+    # blob 最后删：失败冒泡 → db_session 回滚，行保留可重试。
+    _store(request).delete(row.blob_key)
     return None
 
 

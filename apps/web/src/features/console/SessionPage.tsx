@@ -174,18 +174,9 @@ export function SessionPage() {
     restoreAnchor(anchor)
   }, [olderPage, restoreAnchor])
 
-  if (session.isError && !isUnauthorized(session.error)) {
-    return (
-      <div role="alert" className="p-6 text-sm text-muted">
-        无法连接服务器{" "}
-        <button type="button" className="underline" onClick={() => void session.refetch()}>
-          重试
-        </button>
-      </div>
-    )
-  }
-
   // Backend returns newest-first; render oldest-first like a chat log.
+  // 注意：以下 effect 必须在所有条件 return 之前 —— session 查询转错误态时
+  // 跳过的 hook 会触发 React「Rendered fewer hooks than expected」。
   const ordered = [...(older?.runs ?? []), ...(runs.data?.runs ?? [])].reverse()
   const active = ordered.find((run) => isActiveRunStatus(run.status)) ?? null
 
@@ -203,6 +194,17 @@ export function SessionPage() {
       autoPrompt.observeFollowup(run.message, at)
     }
   }, [ordered, older?.runs, autoPrompt])
+
+  if (session.isError && !isUnauthorized(session.error)) {
+    return (
+      <div role="alert" className="p-6 text-sm text-muted">
+        无法连接服务器{" "}
+        <button type="button" className="underline" onClick={() => void session.refetch()}>
+          重试
+        </button>
+      </div>
+    )
+  }
 
   const archived = session.data?.archived === true || Boolean(session.data?.archived_at)
 

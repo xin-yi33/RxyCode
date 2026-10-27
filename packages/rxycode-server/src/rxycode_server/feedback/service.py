@@ -186,8 +186,25 @@ def admin_emails() -> set[str]:
     return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
 
+def admin_user_ids() -> set[str]:
+    raw = os.environ.get("RXYCODE_FEEDBACK_ADMIN_USER_IDS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def is_admin_email(email: str | None) -> bool:
     return bool(email) and email.strip().lower() in admin_emails()
+
+
+def is_admin(user, delivery_channel: str) -> bool:
+    """管理员 = ``RXYCODE_FEEDBACK_ADMIN_USER_IDS`` 命中，或邮箱 allowlist
+    且邮箱所有权可证 —— 仅在 smtp 投递下注册必经邮件验证码（证明所有权）；
+    inline/operator-log/none 部署注册不验邮箱，裸字符串匹配可被抢注 allowlist
+    邮箱，那些环境只认 USER_IDS。"""
+    if user is None:
+        return False
+    if user.id in admin_user_ids():
+        return True
+    return delivery_channel == "smtp" and is_admin_email(user.email)
 
 
 def batch_label(seq: int) -> str:

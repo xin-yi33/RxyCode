@@ -101,7 +101,8 @@ No `.env` file is shipped. Export (or pass inline) per deploy:
 | `RXYCODE_PG_PORT` / `RXYCODE_HTTP_PORT` / `RXYCODE_HTTPS_PORT` | no | `54433` / `8080` / `8443` | loopback-published ports |
 | `RXYCODE_SMTP_URL` | no | empty | password-reset delivery — `smtps://user:pass@host:465` (implicit TLS) or `smtp://…:587` (STARTTLS). Without it `/forgot` stays hidden in cloud mode |
 | `RXYCODE_SMTP_FROM` | no | SMTP user | sender header on reset mail |
-| `RXYCODE_FEEDBACK_ADMIN_EMAILS` | no | empty | comma-separated emails (case-insensitive) granted the feedback admin surface — batch list/detail/md+json export/state patch. Members get `feedback_admin=true` in `/me`; non-members see the admin routes as plain 404 |
+| `RXYCODE_FEEDBACK_ADMIN_USER_IDS` | no | empty | comma-separated `user.id` values granted the feedback admin surface — batch list/detail/md+json export/state patch. Always trusted; preferred over the email list. Members get `feedback_admin=true` in `/me`; non-members see the admin routes as plain 404 |
+| `RXYCODE_FEEDBACK_ADMIN_EMAILS` | no | empty | comma-separated emails (case-insensitive) — only honored when `RXYCODE_SMTP_URL` is set: SMTP registration requires a delivered email code, so mailbox ownership is proven. Without SMTP (local/inline/operator-log delivery), registration never verifies email and this list is ignored — use `USER_IDS` there |
 | `RXYCODE_FEEDBACK_BATCH_SIZE` | no | `20` | items per feedback batch before the open batch rolls (also rolls when the server `build_commit` changes) |
 
 Password reset: `/forgot` always answers 200 with the same body (no account

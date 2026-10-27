@@ -63,6 +63,8 @@ class FeedbackApi(ChatApi):
         self.older_runs: list[dict] = []
         # True → 下一次带 captcha 的提交回 503 FEEDBACK_BUSY。
         self.busy_once = False
+        # True → GET /sessions/{id} 回 500 —— 驱动 isError 态切换。
+        self.session_fail = False
 
     def handle(self, route) -> None:
         request = route.request
@@ -125,6 +127,13 @@ class FeedbackApi(ChatApi):
             return
         if path.startswith("/api/v1/admin/feedback"):
             self._json(route, 200, {"batches": [], "items": [], "groups": {}})
+            return
+        if (
+            self.session_fail
+            and path == f"/api/v1/sessions/{self.session['id']}"
+            and method == "GET"
+        ):
+            self._json(route, 500, {"detail": "boom"})
             return
         if path == f"/api/v1/sessions/{self.session['id']}/runs" and method == "GET":
             before = parse_qs(urlparse(request.url).query).get("before", [None])[0]
@@ -592,5 +601,36 @@ def test_captcha_refreshed_after_busy_submit(browser, production_origin):
         assert posts[0].get("captcha") is None
         assert posts[1].get("captcha") and posts[2].get("captcha")
         assert posts[1]["captcha"] != posts[2]["captcha"]  # 新挑战 → 新 payload
+    finally:
+        context.close()
+
+
+def test_session_error_state_keeps_hooks_intact(browser, production_origin):
+    """session 查询从 200 转 500 → 显示连接错误+重试 UI；hooks 必须在
+    条件 return 之前全部就位（否则 React 抛 Rendered fewer hooks）。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi(
+        sessions=[
+            session_row("session-chat-1", title="会话A"),
+            session_row("session-b", title="会话B"),
+        ],
+        runs=[run_summary("run-live-1", "succeeded", "帮我写排序")],
+        events=chat_events(message="帮我写排序", tool_rows=0, final="完成"),
+    )
+    page = _session_page(context, production_origin, api, "/app/s/session-chat-1")
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    try:
+        page.wait_for_selector('[data-testid="chat-scroll"]', timeout=15_000)
+        api.session_fail = True
+        # 离开再回来 → queryKey 重挂载且 staleTime=0 → refetch → 500 → isError。
+        page.locator('a[href$="/app/s/session-b"]').first.click()
+        page.locator('a[href$="/app/s/session-chat-1"]').first.click()
+        page.wait_for_selector("text=无法连接服务器", timeout=10_000)
+        assert page.locator("text=重试").count() >= 1
+        assert not any(
+            "Rendered fewer hooks" in e or "Rendered more hooks" in e
+            for e in errors
+        ), f"hook-order crash: {errors}"
     finally:
         context.close()
