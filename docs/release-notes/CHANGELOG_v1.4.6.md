@@ -218,11 +218,32 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
   `${VAR:-}` 引用）；`.env.prod.example` 同步并注明邮箱列表仅 SMTP
   投递下生效、USER_IDS 恒可信。
 
+### 合入与上线（2026-10-27，`878592ed` / `web-878592ed`）
+
+- PR #29 squash 合入 master `878592ed`：PR CI 21/21 绿（py3.11 PR 事件 job 一次
+  runner 卡死 65min 超时取消，重跑通过；同 SHA push 事件全绿），Codex 对最终
+  commit `03d4eaca` 复评「Didn't find any major issues」；master CI + web-ci 双绿后部署。
+- 部署源 = **纯 master**（不再叠 `feat/rxycode-web` WIP overlay —— 该 overlay 已落后
+  master v1.4.5，会回滚 `execution/tool_orchestrator.py`、`appserver/tui.py`、`__init__.py`）。
+- 生产：三镜像 `web-878592ed`、alembic `013_feedback`、api/gateway/worker×3 healthy；
+  `.env` 配 `RXYCODE_FEEDBACK_ADMIN_USER_IDS`=站长账号 user.id（容器内 `is_admin`
+  站长 True / smoke 账号 False，投递通道 smtp）。
+- 线上 E2E（`https://rxycode.xyz`，smoke 账号，非管理员）：version、/me 非管理员、
+  设置页反馈区 桌面/手机 × 亮/暗 渲染无溢出零 console 错、真表单 Bug+EXIF 图提交、
+  手机端建议提交、request_id 幂等 200 同 id、同正文 409 `FEEDBACK_DUPLICATE`、
+  SVG/伪 PNG 415、>5MB 413、回读图 EXIF/GPS 已剥离、蜜罐 fake-201 不落库、
+  admin 三路由 404、登录/会话列表/会话页回归 —— 10 PASS；自动询问正例 SKIP
+  （smoke 账号无 BYOK key，run 在 API 层被拒、无终态可评分），负例通过；正例由
+  `tests/web/w3/test_feedback_e2e.py` 覆盖。批次 `FB-0001`（open，build `878592ed`）。
+
 ### 已知边界
 
-- 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。
+- 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示；
+  蜜罐命中也计入提交窗口（先限流后判蜜罐）。
 - 自动询问只在本页面实时观察到的终态触发；刷新后历史 run 不询问。
-- `feedback_admin` 由邮箱环境变量授予，无 DB 角色位；租户隔离对普通用户恒为 404。
+- `feedback_admin` 由 `RXYCODE_FEEDBACK_ADMIN_USER_IDS`（恒可信）或 SMTP 投递下的
+  `RXYCODE_FEEDBACK_ADMIN_EMAILS` 授予，无 DB 角色位；租户隔离对普通用户恒为 404。
+- `GET /feedback/mine` 每条逐个查图片（N+1，≤50/页），当前规模无碍。
 
 ## RxyCode CLI
 
