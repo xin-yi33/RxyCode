@@ -1,6 +1,6 @@
 // 设置 → 反馈：提交表单 + 我的反馈 + 自动询问开关 + 管理面板。
 import { useEffect, useRef, useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   createClient,
   type FeedbackBatchSummary,
@@ -49,12 +49,15 @@ export function batchLabel(seq: number): string {
 }
 
 function MyFeedbackList({ refreshKey }: { refreshKey: number }) {
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: ["feedbackMine", refreshKey],
-    queryFn: ({ signal }) => api.listMyFeedback({ signal }),
+    queryFn: ({ pageParam, signal }) =>
+      api.listMyFeedback({ cursor: pageParam || undefined, signal }),
+    initialPageParam: "",
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
     staleTime: 10_000,
   })
-  const items = query.data?.items ?? []
+  const items = query.data?.pages.flatMap((page) => page.items) ?? []
   return (
     <section className="feedback-mine" data-testid="feedback-mine">
       <h3>我的反馈</h3>
@@ -89,6 +92,17 @@ function MyFeedbackList({ refreshKey }: { refreshKey: number }) {
           ) : null}
         </article>
       ))}
+      {query.hasNextPage ? (
+        <button
+          type="button"
+          className="rxy-ghost-control"
+          data-testid="feedback-mine-more"
+          disabled={query.isFetchingNextPage}
+          onClick={() => void query.fetchNextPage()}
+        >
+          {query.isFetchingNextPage ? "加载中…" : "加载更多"}
+        </button>
+      ) : null}
     </section>
   )
 }

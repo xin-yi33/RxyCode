@@ -65,6 +65,8 @@ class FeedbackApi(ChatApi):
         self.busy_once = False
         # True → GET /sessions/{id} 回 500 —— 驱动 isError 态切换。
         self.session_fail = False
+        # 「我的反馈」分页 stub：按 20/页 + 数字游标切片。
+        self.mine_items: list[dict] = []
 
     def handle(self, route) -> None:
         request = route.request
@@ -101,7 +103,19 @@ class FeedbackApi(ChatApi):
             self._json(route, 201, {"id": "fb-item-1", "batch_seq": 3, "state": "new"})
             return
         if path == "/api/v1/feedback/mine":
-            self._json(route, 200, {"items": [], "next_cursor": None})
+            start = int(
+                parse_qs(urlparse(request.url).query).get("cursor", ["0"])[0]
+            )
+            page_items = self.mine_items[start : start + 20]
+            nxt = start + 20
+            self._json(
+                route,
+                200,
+                {
+                    "items": page_items,
+                    "next_cursor": str(nxt) if nxt < len(self.mine_items) else None,
+                },
+            )
             return
         if path == "/api/v1/auth/altcha" and method == "GET":
             # 可真解的小挑战：maxnumber=64，number=42 —— widget 秒解；
@@ -632,5 +646,47 @@ def test_session_error_state_keeps_hooks_intact(browser, production_origin):
             "Rendered fewer hooks" in e or "Rendered more hooks" in e
             for e in errors
         ), f"hook-order crash: {errors}"
+    finally:
+        context.close()
+
+
+def _mine_item(i: int) -> dict:
+    return {
+        "id": f"fb-mine-{i}",
+        "batch_seq": 1,
+        "kind": "bug",
+        "module": "chat",
+        "state": "new",
+        "title": f"反馈条目 {i}",
+        "created_at": "2026-10-27T00:00:00Z",
+        "images": [],
+    }
+
+
+def test_my_feedback_loads_more(browser, production_origin):
+    """25 条历史 → 首屏 20 + 「加载更多」→ 25 条无重复、按钮消失。"""
+    context = context_for(browser, "desktop-1440")
+    api = FeedbackApi()
+    api.mine_items = [_mine_item(i) for i in range(25)]
+    page = _session_page(context, production_origin, api, "/settings/feedback")
+    try:
+        page.wait_for_selector('[data-testid="feedback-mine"]', timeout=15_000)
+        page.wait_for_selector(
+            '[data-testid="feedback-mine"] article', timeout=10_000
+        )
+        assert (
+            page.locator('[data-testid="feedback-mine"] article').count() == 20
+        )
+        page.locator('[data-testid="feedback-mine-more"]').click()
+        page.wait_for_function(
+            "() => document.querySelectorAll("
+            "'[data-testid=feedback-mine] article').length === 25",
+            timeout=10_000,
+        )
+        assert page.locator('[data-testid="feedback-mine-more"]').count() == 0
+        titles = page.locator(
+            '[data-testid="feedback-mine"] article header strong'
+        ).all_text_contents()
+        assert len(set(titles)) == 25, f"duplicates: {titles}"
     finally:
         context.close()

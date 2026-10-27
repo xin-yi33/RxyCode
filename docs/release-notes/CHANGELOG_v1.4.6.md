@@ -208,6 +208,16 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
   绑定先行 → 删除读到 bound → 404。测试 `test_delete_vs_submit_same_image_
   is_atomic`：交错结果只能是 (204,422)/(201,404)，绝无「201 但图已删」。
 
+**Codex 第六轮（d766e3f4 之后追加）**：
+
+- 「我的反馈」分页：`useQuery` → `useInfiniteQuery` 消费 `next_cursor`，
+  列表尾部 ghost「加载更多」（仅 `hasNextPage` 显示、加载中禁用）。
+  E2E：stub 25 条 → 首屏 20 → 点击后 25 条无重复、按钮消失。
+- `compose.prod.yaml` api environment 增
+  `RXYCODE_FEEDBACK_ADMIN_USER_IDS`（与 ADMIN_EMAILS/BATCH_SIZE 并列的
+  `${VAR:-}` 引用）；`.env.prod.example` 同步并注明邮箱列表仅 SMTP
+  投递下生效、USER_IDS 恒可信。
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。
