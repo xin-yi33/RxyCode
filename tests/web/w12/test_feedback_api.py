@@ -643,6 +643,35 @@ def test_captcha_escalation_is_serialized(postgres_url: str):
     assert cap.status_code == 201, cap.text
 
 
+def test_same_request_id_race_returns_200_not_409(postgres_url: str):
+    """同 request_id + 同正文并发：拿锁后的幂等复查必须先于内容去重 ——
+    恰 [200, 201] 同 id，真重试绝不能被内容去重误成 409。"""
+    client, me = _client(postgres_url, "fb-retray200@example.com")
+    body = _submit_body()  # 同 request_id 同正文
+    hdrs = _headers(_csrf(client))
+
+    results: list[int] = []
+    ids: list[str] = []
+    bodies: list[str] = []
+
+    def send() -> None:
+        worker = TestClient(client.app)
+        worker.cookies.update(client.cookies)
+        resp = _submit(worker, body, headers=hdrs)
+        results.append(resp.status_code)
+        bodies.append(resp.text[:200])
+        if resp.status_code in (200, 201):
+            ids.append(resp.json()["id"])
+
+    threads = [threading.Thread(target=send) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == [200, 201], f"responses: {bodies}"
+    assert len(set(ids)) == 1, f"two different ids: {ids}"
+
+
 def test_dedupe_race_inside_lock(postgres_url: str):
     """同 user 同正文、不同 request_id 并发 —— 锁外去重检查都看不到对方，
     锁内复查必须只放行一个：恰 [201, 409]。"""
@@ -747,6 +776,43 @@ def test_expired_staged_sweep_deletes_blob_and_row(postgres_url: str):
         with pytest.raises(FileNotFoundError):
             with store.open_read(blob_key):
                 pass
+    engine.dispose()
+
+
+def test_sweep_keeps_row_when_blob_delete_fails(postgres_url: str):
+    """store.delete 抛错 → 行必须保留（行是 blob_key 唯一记录，删行就
+    永久孤儿）；恢复后再扫 → 行消失。"""
+    app = _app(postgres_url)
+    client, _ = _client(postgres_url, "fb-sweepfail@example.com", app=app)
+    resp = _upload(client, _png())
+    assert resp.status_code == 201
+    image_id = resp.json()["image_id"]
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        row = db.get(FeedbackImage, image_id)
+        assert row is not None
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.commit()
+
+        from rxycode_server.attachments.store import open_store
+        import rxycode_server.feedback.service as svc
+
+        real = open_store(app.state.attachment_blobs)
+
+        class _FailingStore:
+            def delete(self, key: str) -> None:
+                raise OSError("disk offline")
+
+        swept = svc.sweep_expired_images(db, _FailingStore())
+        assert swept == 0
+        db.commit()
+        assert db.get(FeedbackImage, image_id) is not None
+
+        swept = svc.sweep_expired_images(db, real)
+        assert swept == 1
+        db.commit()
+        assert db.get(FeedbackImage, image_id) is None
     engine.dispose()
 
 
@@ -1095,13 +1161,17 @@ def test_store_construction_stays_off_event_loop(postgres_url: str, monkeypatch)
                 headers={**hdr, "Content-Type": "application/octet-stream"},
             )
 
+        # 先热路径（建连/DNS/线程池预热）再开传 —— 否则首请求的冷连接
+        # ~200ms 会撞阈值造成假失败；本测检测的是 ≥1s 的构造阻塞。
+        probe = httpx.Client(timeout=5.0)
+        assert probe.get(f"{base}/api/v1/version").status_code == 200
         worker = threading.Thread(target=_upload)
         worker.start()
         latencies: list[float] = []
         deadline = time.monotonic() + 10
         while worker.is_alive() and time.monotonic() < deadline:
             t0 = time.monotonic()
-            resp = httpx.get(f"{base}/api/v1/version", timeout=5.0)
+            resp = probe.get(f"{base}/api/v1/version")
             latencies.append(time.monotonic() - t0)
             assert resp.status_code == 200
             time.sleep(0.05)

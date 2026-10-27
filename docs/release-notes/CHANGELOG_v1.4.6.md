@@ -176,6 +176,17 @@
 should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
 `tests/web/w3/test_feedback_e2e.py` 17 passed；`tsc --noEmit` 与 `ruff check` 干净。
 
+**Codex 第四轮（5c585143 之后追加）**：
+
+- `submit_item` 拿 advisory lock 后第一件事重查 `(user_id, request_id)` ——
+  锁与批滚动拆成 `_acquire_batch_lock`/`assign_batch`，并发同 request_id
+  不再被内容去重误成 409、batch 计数也不过账。测试：同 request_id 同正文
+  纯文本双并发 → 恰 `[200, 201]` 同 id。
+- `sweep_expired_images` 的 `store.delete` 失败时保留行（行是 blob_key 的
+  唯一记录，删了行孤儿 blob 再也扫不回来）；仅删除成功或 blob 本就不在
+  （`FileNotFoundError`/S3 `NoSuchKey`/`NoSuchBucket`/404）才删行。测试：
+  delete 抛 `OSError` → 行仍在、swept=0；恢复后再扫 → 行消失。
+
 ### 已知边界
 
 - 反馈图暂存上限 10 张/用户与提交窗口 5/10min 均真实生效，超量浏览器端表现为 429 错误提示。

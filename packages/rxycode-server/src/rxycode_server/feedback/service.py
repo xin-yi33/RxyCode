@@ -235,14 +235,21 @@ def close_batch(db: Session, batch: FeedbackBatch) -> None:
 _BATCH_LOCK_KEY = 0xF33DBAC7
 
 
-def assign_batch(db: Session, item: FeedbackItem) -> FeedbackBatch:
-    """Lock the open batch, roll it when full/stale, attach the item.
-
-    ``SET LOCAL lock_timeout`` 保底：争用时等待上限 5s，超时抛 55P03 交给
-    submit_item 的重试循环 —— 否则一个卡住的事务会把所有提交永久挂在锁上。
-    """
+def _acquire_batch_lock(db: Session) -> None:
+    """``SET LOCAL lock_timeout`` 保底：争用时等待上限 5s，超时抛 55P03
+    交给 submit_item 的重试循环 —— 否则一个卡住的事务会把所有提交永久
+    挂在锁上。"""
     db.execute(text("SET LOCAL lock_timeout = '5s'"))
     db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BATCH_LOCK_KEY})
+
+
+def assign_batch(db: Session, item: FeedbackItem) -> FeedbackBatch:
+    """Roll the open batch when full/stale, attach the item.
+
+    调用方必须已持 ``_BATCH_LOCK_KEY`` 事务级 advisory lock（由
+    ``_acquire_batch_lock`` 取得）——锁与批滚动分离是为了让 submit_item
+    能在计数变更之前先做锁内幂等复查。
+    """
     commit = build_commit()
     capacity = batch_capacity()
     batch = db.scalars(
@@ -292,19 +299,32 @@ def submit_item(
     与验证码升级在拿到 batch 级 advisory lock 之后复查 —— 并发请求在
     锁外看到的是同一份旧计数，锁内复查才是串行真值。
     """
-    for _attempt in range(MAX_SUBMIT_ATTEMPTS):
+    def _lookup_existing() -> tuple[FeedbackItem, int] | None:
         existing = db.scalars(
             select(FeedbackItem).where(
                 FeedbackItem.user_id == item.user_id,
                 FeedbackItem.request_id == item.request_id,
             )
         ).first()
-        if existing is not None:
-            seq = db.scalar(
-                select(FeedbackBatch.seq).where(FeedbackBatch.id == existing.batch_id)
-            ) or 0
-            return existing, int(seq), True
+        if existing is None:
+            return None
+        seq = db.scalar(
+            select(FeedbackBatch.seq).where(FeedbackBatch.id == existing.batch_id)
+        ) or 0
+        return existing, int(seq)
+
+    for _attempt in range(MAX_SUBMIT_ATTEMPTS):
+        hit = _lookup_existing()
+        if hit is not None:
+            return hit[0], hit[1], True
         try:
+            _acquire_batch_lock(db)
+            # 锁内第一件事：幂等复查 —— 并发同 request_id 已落库时直接返回
+            # 原条目；若拖到内容去重才撞见，真重试会被误成 409，且 batch
+            # item_count 已被过账（需要额外回滚路径）。
+            hit = _lookup_existing()
+            if hit is not None:
+                return hit[0], hit[1], True
             batch = assign_batch(db, item)
             # advisory lock 仍持有（xact 级）——此时对计数的读是串行点。
             check_daily_user_cap(db, item.user_id)
@@ -363,8 +383,10 @@ def sweep_expired_images(
     """过期 staged 图片：删 blob + 删行（只改 state 会泄漏存储）。
 
     ``user_id=None`` 时是全局清扫（每次上传顺带跑一趟，LIMIT 50
-    防大清扫阻塞请求）。blob 删除失败不阻塞行删除 —— 孤儿 blob 由
-    下一轮清扫兜底，行必须先走，否则引用会永久悬挂。
+    防大清扫阻塞请求）。blob 删除失败时**保留行** —— 行是 blob_key
+    的唯一记录，删了行孤儿 blob 就再也扫不回来；下轮清扫重试。
+    只有删除成功或 blob 本就不在（FileNotFoundError / S3 NoSuchKey）
+    才删行。返回实际删掉的行数。
     """
     now = datetime.now(timezone.utc)
     query = (
@@ -380,15 +402,25 @@ def sweep_expired_images(
     if user_id is not None:
         query = query.where(FeedbackImage.user_id == user_id)
     rows = list(db.scalars(query))
+    swept = 0
     for row in rows:
         try:
             store.delete(row.blob_key)
-        except Exception:
-            pass
+        except FileNotFoundError:
+            pass  # blob 本就不在 → 可直接删行
+        except Exception as exc:
+            # S3 系：NoSuchKey/404/NoSuchBucket 同样视为「已不在」。
+            response = getattr(exc, "response", None)
+            code = ""
+            if isinstance(response, dict):
+                code = str(response.get("Error", {}).get("Code", ""))
+            if code not in ("NoSuchKey", "404", "NoSuchBucket"):
+                continue
         db.delete(row)
-    if rows:
+        swept += 1
+    if swept:
         db.flush()
-    return len(rows)
+    return swept
 
 
 def staged_image_count(db: Session, user_id: str) -> int:
