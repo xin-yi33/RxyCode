@@ -6,6 +6,14 @@
 
 ---
 
+## 2026-10-29
+
+### 02:40 CST 🐧📦 预置服务商模型目录全量核对 + MODEL_UNAVAILABLE 400 匹配拓宽上线（web-117310ab，PR #34）
+- 代码：PR #34 squash 合入 `117310abb4917291ff9167c3876c35e246136a27`（PR CI 全绿 + Codex review 零 findings；master CI `40734125063` 经两轮 flake 重跑后 success：py3.11 首跑 `test_w9_b1_rate_limit`/`test_unreaped_killed_holder_lock_is_stolen` 计时抖动、py3.12 覆盖层 `test_stall_grading_e2e` kill 路径计时、Windows ChatPanel vitest 5s 超时×3——均与本改动无关，重跑全过）。内容：12 个 `PROVIDER_PRESETS` 上游模型表核对（zen/opencode-go/openrouter 走 live `/models` 200，其余 9 家 401 改官方文档；报告落 `~/.rxycode/output/model-sync/provider-diff.md` 不入库）；`config/model_catalog.json` 24→35 条（新旗舰 qwen3.8-max/flash、kimi-k3.1-pro、glm-5.3(-flash)、gpt-6-astra/luna、doubao-seed-evolving、mimo-v2.6-pro、minimax-m3.1-flash、muse-spark-1.3-contributor；`qwen3.8-max-preview` 标 `status:deprecated` 仅元数据；`doubao-seed-2.1-pro` 刷到 -260915 快照 1M/256K；`deepseek-flash` 经官方文档核实仍系 api.deepseek.com 现役别名予以保留）；`utils/user_facing_errors.py` 硬标记新增 `model is unavailable`/`model unavailable`/`no such model`（自带模型语境，裸 400 不误判）覆盖上游 HTTP 400 `server_error` 包装形态。
+- 生产库只读核对：`-p rxyprod` postgres `user_models` 已无 `deepseek-flash` 行（0 行）、`deepseek-v4.1-flash` 恰 1 行（`m_596ce7c3…`，`display_name` 同步，用户经「切换模型」自助迁移完成，无需 SQL 写入）；BYOK 连接 `model_connections` 仅 opencode-go 一条且无模型字段，无可改；历史 `runs.model_id='deepseek-flash'` 65 行属历史记录不改。仅读取非密钥列，未触 ciphertext/emails。
+- 部署（`deploy_feedback.py 117310ab… all`）：增量 bundle `584b8c28..117310ab` → `/opt/rxycode/src` 精确 checkout（**纯 master，无 overlay**）→ `disk-guard.sh`（14G→12G used，6.0G free）→ 三镜像 `web-117310ab` → `.env` `RXYCODE_IMAGE_TAG` → `compose config -q` → migrate（alembic 仍 `013_feedback`，无新迁移）→ `up -d`。api/gateway/**worker×3** healthy；VM 本机 `:8080` 与公网 `/api/v1/version` 均回 `117310ab…`，`https://rxycode.xyz` 200。切换成功后 `/opt/rxycode/.ops/rollback_tag` 写入 `web-98eb9a11`。
+- 回滚：`.env` `RXYCODE_IMAGE_TAG=web-98eb9a11` + 同 compose 命令 `up -d`；无 schema 变更。
+
 ## 2026-10-28
 
 ### 15:35 CST 🐧📦 模型不可用失败语义 + 移动端设置抽屉上线（web-98eb9a11，PR #32）
