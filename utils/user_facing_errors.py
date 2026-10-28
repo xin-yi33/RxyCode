@@ -40,6 +40,14 @@ MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
 _MODEL_GONE_TEXT_MARKERS = (
     "modeldeprecated",
     "model_not_found",
+    # 2026-10-29：上游网关（OpenCode Go 等）把模型不可用包成 HTTP 400
+    # server_error 返回：{'error': {'type': 'server_error', 'message':
+    # 'Upstream request failed: Model is unavailable.'}}。这几个短语
+    # 自带模型语境 —— 只在模型调用路径的错误文本里出现，裸 400 不会带
+    # 这些字样，所以归硬标记（不另要求 mentions_model）。
+    "model is unavailable",
+    "model unavailable",
+    "no such model",
 )
 _MODEL_GONE_GENERIC_MARKERS = (
     "does not exist",

@@ -177,6 +177,45 @@ def test_model_gone_maps_to_model_unavailable_message(raw: str):
     assert "410" not in friendly and "APIStatusError" not in friendly
 
 
+def test_upstream_400_model_is_unavailable_maps_to_model_unavailable():
+    """HTTP 400 server_error 包装的「Model is unavailable」（上游网关形态）
+    同样是模型停用 —— 必须落 MODEL_UNAVAILABLE，不能漏成普通 400。"""
+    raw = (
+        "Error code: 400 - {'error': {'type': 'server_error', 'message': "
+        "'Upstream request failed: Model is unavailable.'}}"
+    )
+    assert ufe.is_model_unavailable(raw)
+    info = ufe.classify_user_error(raw, provider_name="OpenCode Go")
+    assert info is not None
+    assert info["code"] == ufe.MODEL_UNAVAILABLE
+    friendly = ufe.to_user_facing_error(raw, provider_name="OpenCode Go")
+    _assert_friendly(raw, friendly)
+    assert "停用" in friendly
+    assert "换一个模型" in friendly
+    # 终态：映射出的用户文案必须判 failed（run 不可写成「已完成」）。
+    assert ufe.user_facing_kind(friendly) == "failed"
+
+
+@pytest.mark.parametrize("phrase", [
+    "model is unavailable",
+    "model unavailable",
+    "no such model",
+    "MODEL IS UNAVAILABLE",
+])
+def test_model_unavailable_phrases_are_case_insensitive(phrase: str):
+    assert ufe.is_model_unavailable(f"Upstream request failed: {phrase}")
+
+
+def test_generic_400_without_model_context_is_not_model_unavailable():
+    """保守边界：与模型无关的普通 400（参数校验等）不得误判 MODEL_UNAVAILABLE。"""
+    raw = (
+        "Error code: 400 - {'error': {'type': 'invalid_request_error', "
+        "'message': 'temperature must be between 0 and 2'}}"
+    )
+    assert not ufe.is_model_unavailable(raw)
+    assert ufe.classify_user_error(raw) is None
+
+
 def test_model_gone_message_names_model_and_provider():
     raw = _MODEL_GONE_RAWS[0]
     friendly = ufe.to_user_facing_error(
