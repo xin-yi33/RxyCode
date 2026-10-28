@@ -3963,6 +3963,24 @@ class _ResumeSettled(Exception):
         self.detail = detail
 
 
+class _TurnFailed(RuntimeError):
+    """A PromptResult failure carrying the structured provider error.
+
+    AgentV2 swallows provider exceptions into user-facing strings; the
+    machine-readable code (MODEL_UNAVAILABLE) and the raw provider text
+    travel here so ``run.error`` can expose them without re-parsing prose.
+    """
+
+    def __init__(self, detail: str, *, code: str = "", raw: str = "") -> None:
+        super().__init__(detail)
+        self.code = code
+        self.raw = raw
+
+
+class _TurnCancelled(RuntimeError):
+    """PromptResult(status="cancelled") — 终态走 cancelled，不是 failed。"""
+
+
 class _CtlApproval:
     """ApprovalBroker for confined turns: a call that needs a human decision
     PARKS the whole Harness loop instead of executing or persisting anything.
@@ -5717,6 +5735,8 @@ async def run_sandboxed_turn() -> int:
     result_path = workdir / _TURN_RESULT
 
     turn_error = ""
+    turn_error_code = ""
+    turn_error_raw = ""
     cancelled_by_request = False
     paused_by_approval = False
     harness_pause: HarnessPaused | None = None
@@ -6035,9 +6055,23 @@ async def run_sandboxed_turn() -> int:
                     runtime.record_token_usage(agent_id, delta, run_id=run_id)
                 except Exception:
                     _LOG.warning("run %s: token snapshot failed", run_id, exc_info=True)
+            if getattr(result, "status", "") == "cancelled":
+                raise _TurnCancelled(
+                    getattr(result, "detail", "") or "prompt cancelled"
+                )
             if getattr(result, "status", "") != "succeeded":
-                raise RuntimeError(
-                    getattr(result, "detail", "") or f"prompt status {result.status}"
+                info = getattr(agent, "_last_turn_error", None)
+                if not isinstance(info, dict):
+                    info = {}
+                raise _TurnFailed(
+                    getattr(result, "detail", "")
+                    or f"prompt status {result.status}",
+                    code=str(
+                        getattr(result, "error_code", "") or info.get("code") or ""
+                    ),
+                    raw=str(
+                        getattr(result, "error_raw", "") or info.get("raw") or ""
+                    ),
                 )
             return str(getattr(result, "answer", "") or "")
 
@@ -6100,7 +6134,13 @@ async def run_sandboxed_turn() -> int:
             and agent_task.state != LifecycleState.DONE
         ):
             last = getattr(agent_task, "_last_error", None)
-            if last is not None:
+            if isinstance(last, _TurnCancelled):
+                cancelled_by_request = True
+            elif isinstance(last, _TurnFailed):
+                turn_error = str(last)
+                turn_error_code = last.code
+                turn_error_raw = last.raw
+            elif last is not None:
                 turn_error = f"{type(last).__name__}: {last}"
             elif not cancelled_by_request:
                 turn_error = f"agent ended in state {agent_task.state}"
@@ -6108,6 +6148,16 @@ async def run_sandboxed_turn() -> int:
         harness_pause = pause
     except asyncio.CancelledError:
         cancelled_by_request = True
+    except _TurnCancelled:
+        # PromptResult 报 cancelled（用户取消的友好文案）—— 终态对齐
+        # lease-watchdog 的取消路径：cancelled，不是 failed。
+        cancelled_by_request = True
+    except _TurnFailed as exc:
+        # 供应商错误的结构化 code/raw 一并进结果文件 —— 父进程据此给
+        # run.error 载荷标 code，而不是把友好文案前缀上异常类名。
+        turn_error = str(exc)
+        turn_error_code = exc.code
+        turn_error_raw = exc.raw
     except _ResumeSettled as settled:
         turn_error = settled.detail or settled.status
         recovery_flag = settled.status == "recovery_required"
@@ -6169,6 +6219,8 @@ async def run_sandboxed_turn() -> int:
                             else "failed"
                         ),
                         "error": turn_error[:1500],
+                        "code": turn_error_code,
+                        "raw": turn_error_raw[:1500],
                         "recovery": bool(recovery_flag and not paused_by_approval),
                         "tokens": int(measured["tokens"]),
                     }
@@ -6461,6 +6513,8 @@ async def execute_run(
         return True
 
     turn_error = ""
+    turn_error_code = ""
+    turn_error_raw = ""
     refusal_code = ""
     cancelled_by_request = False
     lost_lease = False
@@ -7000,6 +7054,8 @@ async def execute_run(
             else:
                 recovery = recovery or bool(result.get("recovery"))
                 detail = str(result.get("error") or "")
+                turn_error_code = str(result.get("code") or "")
+                turn_error_raw = str(result.get("raw") or "")
                 if proc.returncode not in (0, None):
                     detail = detail or f"sandboxed turn exited rc={proc.returncode}"
                 if not detail:
@@ -7486,6 +7542,32 @@ async def execute_run(
         }
         if refusal_code:
             error_payload["code"] = refusal_code
+        elif turn_error_code:
+            error_payload["code"] = turn_error_code
+            if turn_error_raw:
+                error_payload["raw"] = turn_error_raw[:1500]
+            if turn_error_code == "MODEL_UNAVAILABLE":
+                # 终态消息以提交时的模型快照为准 —— 子进程拿不到
+                # provider_name 时这里是唯一权威来源。
+                snap = identity.get("model")
+                snap = snap if isinstance(snap, dict) else {}
+                model_id = str(snap.get("model_id") or "")
+                provider_name = str(snap.get("provider_name") or "")
+                error_payload["model"] = model_id
+                error_payload["provider"] = provider_name
+                if model_id or provider_name:
+                    try:
+                        from RxyCode.RxyCode1_1_0.utils.user_facing_errors import (
+                            model_unavailable_message,
+                        )
+                    except ImportError:
+                        from utils.user_facing_errors import (
+                            model_unavailable_message,
+                        )
+
+                    error_payload["detail"] = model_unavailable_message(
+                        model_id, provider_name
+                    )
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(

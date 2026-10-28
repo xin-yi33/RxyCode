@@ -491,6 +491,10 @@ def _run_observability(db: Session, row: Run) -> dict[str, object]:
     imports: list[dict[str, object]] = []
     phases: list[dict[str, object]] = []
     last_error = ""
+    error_code = ""
+    error_raw = ""
+    error_model = ""
+    error_provider = ""
     for event in events:
         payload = event.payload if isinstance(event.payload, dict) else {}
         if event.type == "attachment.import":
@@ -504,6 +508,10 @@ def _run_observability(db: Session, row: Run) -> dict[str, object]:
             )
         elif event.type == "run.error":
             last_error = str(payload.get("message") or payload.get("detail") or "")
+            error_code = str(payload.get("code") or "")
+            error_raw = str(payload.get("raw") or "")
+            error_model = str(payload.get("model") or "")
+            error_provider = str(payload.get("provider") or "")
     status = str(row.status or "")
     diagnostic = {"kind": "none", "detail": "", "recoverable": False}
     if status == "waiting_approval":
@@ -524,6 +532,16 @@ def _run_observability(db: Session, row: Run) -> dict[str, object]:
             "detail": last_error,
             "recoverable": True,
         }
+        # MODEL_UNAVAILABLE 等稳定码 + 原始报文：界面用 code 决定
+        # 「切换模型」动作，raw 折叠进「详情」，不塞进 detail 正文。
+        if error_code:
+            diagnostic["code"] = error_code
+        if error_raw:
+            diagnostic["raw"] = error_raw
+        if error_model:
+            diagnostic["model"] = error_model
+        if error_provider:
+            diagnostic["provider"] = error_provider
     elif status == "recovery_required":
         diagnostic = {
             "kind": "recovery_required",

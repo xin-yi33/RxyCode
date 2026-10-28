@@ -86,6 +86,9 @@ def _assert_friendly(raw: str, friendly: str) -> None:
         ufe.MSG_DEFAULT,
         ufe.MSG_MODEL_PAUSED,
         ufe.MSG_TOOL_REJECTED,
+        # 模型停用文案的两种开头（带/不带模型名）。
+        "模型 ",
+        "当前模型",
     )
     assert any(friendly.startswith(msg) for msg in known), (
         f"消息不以任何已知模板开头: {friendly!r}"
@@ -151,3 +154,96 @@ def test_upstream_403_without_credits_is_the_only_quota_sentence():
     raw = "Error code: 403 - {'error': {'code': 'insufficient_quota', 'message': 'billing hard limit'}}"
     assert ufe.to_user_facing_error(raw) == "您没有额度了"
     assert ufe.to_user_facing_error("Error code: 403 - invalid api key") != "您没有额度了"
+
+
+# ---- 模型下线（MODEL_UNAVAILABLE, 2026-10-28 现场） ---------------------------
+
+_MODEL_GONE_RAWS = (
+    "APIStatusError: Error code: 410 - {'type': 'error', 'error': "
+    "{'type': 'ModelDeprecated', 'message': 'Model deepseek-flash is deprecated'}}",
+    "NotFoundError: Error code: 404 - {'error': {'type': 'model_not_found', "
+    "'message': \"The model `deepseek-flash` does not exist\"}}",
+    "openai.NotFoundError: model deepseek-flash does not exist",
+)
+
+
+@pytest.mark.parametrize("raw", _MODEL_GONE_RAWS)
+def test_model_gone_maps_to_model_unavailable_message(raw: str):
+    friendly = _map(raw)
+    _assert_friendly(raw, friendly)
+    # 文案可读、提到模型与切换路径，不把原始报文内联进正文。
+    assert "停用" in friendly
+    assert "换一个模型" in friendly or "换一个模型后重试" in friendly
+    assert "410" not in friendly and "APIStatusError" not in friendly
+
+
+def test_model_gone_message_names_model_and_provider():
+    raw = _MODEL_GONE_RAWS[0]
+    friendly = ufe.to_user_facing_error(
+        raw, model_name="deepseek-flash", provider_name="OpenCode Go"
+    )
+    assert friendly == (
+        "模型 deepseek-flash 已被服务商（OpenCode Go）停用，"
+        "请在模型选择中换一个模型后重试。"
+    )
+
+
+def test_classify_user_error_extracts_model_from_raw():
+    info = ufe.classify_user_error(
+        _MODEL_GONE_RAWS[0], provider_name="OpenCode Go"
+    )
+    assert info is not None
+    assert info["code"] == ufe.MODEL_UNAVAILABLE
+    assert info["model"] == "deepseek-flash"
+    assert info["provider"] == "OpenCode Go"
+    assert "ModelDeprecated" in info["raw"]
+
+
+def test_classify_user_error_recognizes_own_message():
+    """ swallow 路径只回了文案时，终态化仍能从我们自己的文案里拿回 code。"""
+    message = ufe.model_unavailable_message("deepseek-flash", "OpenCode Go")
+    info = ufe.classify_user_error(message)
+    assert info is not None
+    assert info["code"] == ufe.MODEL_UNAVAILABLE
+    assert info["model"] == "deepseek-flash"
+    assert info["provider"] == "OpenCode Go"
+
+
+def test_classify_user_error_ignores_unrelated_failures():
+    assert ufe.classify_user_error("构建未完成，请重试。") is None
+    assert ufe.classify_user_error("internal failure code 109") is None
+    assert ufe.classify_user_error("") is None
+
+
+def test_model_gone_markers_require_model_context():
+    """Codex P2：「Expected artifact does not exist」和裸 404/410 没有模型
+    语境时绝不能误判 MODEL_UNAVAILABLE。"""
+    assert not ufe.is_model_unavailable(
+        "Expected artifact does not exist: artifacts/report.txt"
+    )
+    assert not ufe.is_model_unavailable(
+        "HTTPError 404 - route /files/report.txt not found"
+    )
+    assert ufe.classify_user_error(
+        "Expected artifact does not exist: artifacts/report.txt"
+    ) is None
+    # 同样的标记带上模型语境就要认。
+    assert ufe.is_model_unavailable("the requested model does not exist")
+    assert ufe.is_model_unavailable("Error code: 404 - model_not_found")
+
+
+@pytest.mark.parametrize("friendly", [
+    ufe.MSG_DEFAULT + "\n原因：APIStatusError: Error code: 410 - ModelDeprecated",
+    ufe.MSG_BUILD_INCOMPLETE,
+    ufe.MSG_TIMEOUT,
+    ufe.MSG_MODEL_PAUSED,
+])
+def test_to_user_facing_error_is_idempotent(friendly: str):
+    """已经是用户可读文案时不再套「处理未完成，请重试。」。"""
+    assert ufe.to_user_facing_error(friendly) == friendly
+
+
+def test_user_facing_kind_marks_cancelled():
+    assert ufe.user_facing_kind(ufe.MSG_CANCELLED) == "cancelled"
+    assert ufe.user_facing_kind("模型 x 已被服务商停用，请换模型。") == "failed"
+    assert ufe.user_facing_kind("这是一个正常回答。") is None

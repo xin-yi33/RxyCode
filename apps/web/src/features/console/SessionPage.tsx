@@ -44,11 +44,13 @@ function RunCard({
   onPreview,
   onTerminal,
   onFeedback,
+  onSwitchModel,
 }: {
   run: RunSummary
   onPreview: (artifact: ArtifactItem) => void
   onTerminal: (signal: RunTerminalSignal) => void
   onFeedback: () => void
+  onSwitchModel: () => void
 }) {
   // W9-F4: 用户消息气泡、状态行、工具/审批/问题/Final 全部由 RunTimeline
   // 渲染 —— 这里不再画重复的状态行。模型行回显提交时的解析快照
@@ -80,7 +82,11 @@ function RunCard({
           </button>
         ) : null}
       </p>
-      <RunTimeline run={run} onTerminal={onTerminal} />
+      <RunTimeline
+        run={run}
+        onTerminal={onTerminal}
+        onSwitchModel={onSwitchModel}
+      />
       <ArtifactRows runId={run.run_id} status={run.status} onPreview={onPreview} />
     </article>
   )
@@ -94,6 +100,9 @@ export function SessionPage() {
   // artifact again must — this nonce is that explicit open signal.
   const [previewNonce, setPreviewNonce] = useState(0)
   const [feedbackTarget, setFeedbackTarget] = useState<FeedbackPrefill | null>(null)
+  // MODEL_UNAVAILABLE 失败行的「切换模型」→ 递增信号让 Composer
+  // 打开既有的同一个 ModelPicker。
+  const [modelPickerSignal, setModelPickerSignal] = useState(0)
   const pendingAnchorRef = useRef<ScrollAnchor | null>(null)
   const seenRunsRef = useRef<Set<string>>(new Set())
 
@@ -280,6 +289,7 @@ export function SessionPage() {
                       run={run}
                       onPreview={openPreview}
                       onTerminal={autoPrompt.observeTerminal}
+                      onSwitchModel={() => setModelPickerSignal((n) => n + 1)}
                       onFeedback={() =>
                         setFeedbackTarget({
                           run_id: run.run_id,
@@ -316,7 +326,11 @@ export function SessionPage() {
             <div className="mx-auto w-full max-w-3xl px-4">
               <SessionFiles sessionId={sessionId} hasActive={active !== null} />
             </div>
-            <Composer sessionId={sessionId} activeRun={active} />
+            <Composer
+              sessionId={sessionId}
+              activeRun={active}
+              modelPickerSignal={modelPickerSignal}
+            />
           </div>
         )}
         {autoPrompt.card ? (

@@ -159,13 +159,14 @@ jobs:
         run: npm run typecheck
 
       - name: Set up Bun
-        # 反馈自动询问语料是纯 TS 测试（无 DOM 依赖），用 bun test 直跑。
+        # 纯 TS 测试（无 DOM 依赖）用 bun test 直跑 —— 反馈自动询问语料 +
+        # run.error 归约契约。
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
 
-      - name: Feedback auto-prompt corpus (bun test)
-        run: bun test src/features/feedback/autoPrompt.test.ts
+      - name: Pure-TS unit corpus (bun test)
+        run: bun test src/features/feedback/autoPrompt.test.ts src/features/runs/eventReducer.test.ts
 
       - name: Production build (vite -> dist)
         run: npm run build

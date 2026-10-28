@@ -105,7 +105,25 @@ def classify_agent_result(answer: str) -> tuple[str, str]:
     # 「没有核实到写入」，界面显示工具执行中断。
     if "模型调用已暂停" in stripped or "circuit breaker" in lowered:
         return "failed", stripped
+    # to_user_facing_error 的输出全部代表失败（除「操作已取消」）——
+    # 2026-10-28 现场：410 ModelDeprecated 被 agent 吞成
+    # 「处理未完成，请重试。」字符串返回，这里曾判成 succeeded，
+    # run 终态被写成「已完成」而徽标是绿的。
+    kind = _user_facing_kind(stripped)
+    if kind == "cancelled":
+        return "cancelled", stripped
+    if kind == "failed":
+        return "failed", stripped
     return "succeeded", answer
+
+
+def _user_facing_kind(text: str) -> str | None:
+    try:
+        from ..utils.user_facing_errors import user_facing_kind
+    except ImportError:  # 以裸顶层 ``log`` 包导入时（worker/测试）
+        from utils.user_facing_errors import user_facing_kind
+
+    return user_facing_kind(text)
 
 
 def trace_status_for_result(answer: str) -> tuple[str, str]:

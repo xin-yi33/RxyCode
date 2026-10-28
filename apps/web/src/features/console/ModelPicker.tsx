@@ -39,6 +39,8 @@ export type ModelPickerProps = {
   onSwitched?: (label: string) => void
   // 选择完成后焦点回到输入框。
   returnFocusRef?: RefObject<HTMLElement | null>
+  // 递增即展开菜单 —— 会话页失败 run 的「切换模型」复用同一选择器。
+  openSignal?: number
 }
 
 export function ModelPicker({
@@ -50,11 +52,20 @@ export function ModelPicker({
   onGuest,
   onSwitched,
   returnFocusRef,
+  openSignal,
 }: ModelPickerProps) {
   const draft = useUi((state) => state.drafts[draftKey])
   const patchDraft = useUi((state) => state.patchDraft)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState("")
+  const onGuestRef = useRef(onGuest)
+  onGuestRef.current = onGuest
+  // 「切换模型」外部信号：登录态直接展开；访客/待确认仍走既有提示路径。
+  useEffect(() => {
+    if (!openSignal) return
+    if (authStatus === "authed") setOpen(true)
+    else if (authStatus === "guest") onGuestRef.current()
+  }, [openSignal, authStatus])
   const [highlight, setHighlight] = useState(0)
   const [mobileMenuPosition, setMobileMenuPosition] = useState<CSSProperties | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)

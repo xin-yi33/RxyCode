@@ -188,3 +188,83 @@ async def test_cancel_and_timeout_after_stream_keep_their_status(
     assert [
         item.text for item in emitted if isinstance(item, MessageDelta)
     ] == ["partial visible text"]
+
+
+MODEL_GONE_RAW = (
+    "APIStatusError: Error code: 410 - {'type': 'error', 'error': "
+    "{'type': 'ModelDeprecated', 'message': 'Model deepseek-flash is deprecated'}}"
+)
+
+
+@pytest.mark.asyncio
+async def test_model_deprecated_answer_is_failed_not_completed(
+    session_workspace: Path,
+) -> None:
+    """2026-10-28 现场回归：服务商 410 被 agent 吞成友好文案字符串返回时，
+    终态必须是 failed（徽标「失败」），不是 succeeded+FinalAnswer 的
+    绿色「已完成」；结构化 code 要能进 run.error 载荷。"""
+    session, tui, emitted = _stack(session_workspace)
+
+    # 现场形态：agent 把异常吞成「处理未完成，请重试。\n原因：<原始报文>」。
+    swallowed = f"处理未完成，请重试。\n原因：{MODEL_GONE_RAW}"
+    result = await session.prompt(
+        _StreamingAgent(swallowed, tui),
+        "use a deprecated model",
+        mode="build",
+        run_id="run-model-deprecated",
+        tui=tui,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "MODEL_UNAVAILABLE"
+    assert "ModelDeprecated" in result.error_raw or "410" in result.error_raw
+    assert not any(isinstance(item, FinalAnswer) for item in emitted)
+    errors = [item for item in emitted if isinstance(item, ErrorNotification)]
+    assert len(errors) == 1
+    assert errors[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_model_unavailable_message_alone_still_carries_code(
+    session_workspace: Path,
+) -> None:
+    """ swallow 路径只回了新文案（无原始报文）时，own-message 识别
+    仍给出 MODEL_UNAVAILABLE —— 界面才能给「切换模型」。"""
+    session, tui, emitted = _stack(session_workspace)
+
+    friendly = to_user_facing_error(
+        MODEL_GONE_RAW,
+        model_name="deepseek-flash",
+        provider_name="OpenCode Go",
+    )
+    assert "停用" in friendly
+    result = await session.prompt(
+        _StreamingAgent(friendly, tui),
+        "use a deprecated model",
+        mode="build",
+        run_id="run-model-deprecated-2",
+        tui=tui,
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "MODEL_UNAVAILABLE"
+    assert not any(isinstance(item, FinalAnswer) for item in emitted)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_friendly_message_is_cancelled_not_succeeded(
+    session_workspace: Path,
+) -> None:
+    """「操作已取消。」也曾被 classify 判成 succeeded+FinalAnswer。"""
+    session, tui, emitted = _stack(session_workspace)
+
+    result = await session.prompt(
+        _StreamingAgent("操作已取消。", tui),
+        "cancel please",
+        mode="build",
+        run_id="run-user-cancelled",
+        tui=tui,
+    )
+
+    assert result.status == "cancelled"
+    assert not any(isinstance(item, FinalAnswer) for item in emitted)

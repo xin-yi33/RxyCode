@@ -1,6 +1,7 @@
-import { useState } from "react"
-import { Link, NavLink, Navigate, useLocation, useNavigate, useParams } from "react-router"
+import { useEffect, useRef, useState } from "react"
+import { Link, NavLink, Navigate, useLocation, useParams } from "react-router"
 
+import { IconChevronDown, IconClose, IconMenu } from "../../components/icons"
 import { useI18n } from "../../lib/i18n"
 import { lastAppPath } from "../../lib/lastAppPath"
 import { loginPathFor } from "../../app/AuthGate"
@@ -63,15 +64,79 @@ function sectionOf(raw: string | undefined): SectionId | null {
 }
 
 // /settings/:section 外壳：左侧分区导航 + 右侧面板。SET-01 返回应用、
-// SET-02 六分区路由、SET-03 本地分区搜索；小屏分区导航改下拉选择。
+// SET-02 六分区路由、SET-03 本地分区搜索；小屏分区导航走左侧抽屉
+// （与会话侧栏同一套 slide-in 形态），不再是 <select>。
 export function SettingsShell() {
   const params = useParams()
-  const navigate = useNavigate()
   const { t } = useI18n()
   const [filter, setFilter] = useState("")
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const drawerRef = useRef<HTMLDivElement>(null)
   const section = sectionOf(params.section)
+
+  // 选中分区 → 路由变化 → 抽屉关闭。
+  useEffect(() => setDrawerOpen(false), [section])
+
+  // 抽屉打开期间：Esc 关闭、Tab/Shift+Tab 焦点圈禁在抽屉内、
+  // 锁背景滚动、关闭后焦点回到触发按钮（与会话侧栏同一套行为）。
+  useEffect(() => {
+    if (!drawerOpen) return
+    const root = drawerRef.current
+    const previous = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    // 视口越过 md 断点（如手机横屏）时抽屉被 md:hidden 隐藏 ——
+    // 逻辑上也必须关闭，否则焦点圈禁和背景锁还作用在桌面页面上。
+    const mq = window.matchMedia("(min-width: 768px)")
+    const onBreak = (event: MediaQueryListEvent) => {
+      if (event.matches) setDrawerOpen(false)
+    }
+    mq.addEventListener("change", onBreak)
+    root
+      ?.querySelector<HTMLElement>("button, a[href]")
+      ?.focus({ preventScroll: true })
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setDrawerOpen(false)
+        return
+      }
+      if (event.key !== "Tab" || !root) return
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          "a[href], button:not([disabled]), input, select, textarea, " +
+            '[tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (focusables.length === 0) return
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      if (!root.contains(document.activeElement)) {
+        event.preventDefault()
+        first.focus()
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener("keydown", onKey, true)
+    return () => {
+      document.removeEventListener("keydown", onKey, true)
+      mq.removeEventListener("change", onBreak)
+      document.body.style.overflow = previousOverflow
+      if (previous instanceof HTMLElement && previous.isConnected) {
+        previous.focus({ preventScroll: true })
+      }
+    }
+  }, [drawerOpen])
+
   if (!section) return <Navigate to="/settings/general-settings" replace />
 
+  const current = SECTIONS.find((s) => s.id === section)
   const needle = filter.trim().toLowerCase()
   const visible = needle
     ? SECTIONS.filter(
@@ -125,21 +190,24 @@ export function SettingsShell() {
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm"
           />
         </div>
-        {/* 手机：分区改下拉选择，不横向挤六项（规格 §01 自适应）。 */}
-        <label className="block md:hidden">
-          <span className="sr-only">{t("settings.nav.aria")}</span>
-          <select
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-            value={section}
-            onChange={(e) => navigate(`/settings/${e.target.value}`)}
-          >
-            {SECTIONS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {t(s.key)}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* 手机：分区走左侧滑入抽屉（会话侧栏同款），不横向挤六项。 */}
+        <button
+          type="button"
+          data-testid="settings-nav-trigger"
+          aria-haspopup="dialog"
+          aria-expanded={drawerOpen}
+          className={
+            "rxy-ghost-control flex w-full items-center justify-between " +
+            "rounded-md border border-border bg-background px-3 py-2 text-sm md:hidden"
+          }
+          onClick={() => setDrawerOpen(true)}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <IconMenu size={16} className="shrink-0 text-muted" />
+            <span className="truncate">{current ? t(current.key) : t("settings.nav.aria")}</span>
+          </span>
+          <IconChevronDown size={14} className="shrink-0 text-muted" />
+        </button>
         <div className="hidden md:block">{nav(false)}</div>
       </aside>
       <div className="min-w-0 max-w-3xl flex-1">
@@ -171,6 +239,52 @@ export function SettingsShell() {
           </PrivateSetting>
         ) : null}
       </div>
+      {drawerOpen ? (
+        <>
+          <button
+            type="button"
+            aria-label={t("settings.nav.close")}
+            className="fixed inset-0 z-30 bg-black/40 md:hidden"
+            onClick={() => setDrawerOpen(false)}
+          />
+          <div
+            ref={drawerRef}
+            data-testid="settings-nav-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("settings.nav.aria")}
+            className={
+              "rxy-sidebar-drawer fixed inset-y-0 left-0 z-40 flex w-72 " +
+              "flex-col border-r border-border bg-sidebar md:hidden"
+            }
+          >
+            <div className="flex items-center justify-between px-3 py-3">
+              <span className="px-1 text-sm font-semibold">
+                {t("settings.nav.aria")}
+              </span>
+              <button
+                type="button"
+                aria-label={t("settings.nav.close")}
+                className="rounded-md p-1 text-muted hover:bg-card"
+                onClick={() => setDrawerOpen(false)}
+              >
+                <IconClose size={18} />
+              </button>
+            </div>
+            {/* 点当前分区也要关抽屉 —— 命中同一路由时不会有路由变化。 */}
+            <div
+              className="flex-1 overflow-y-auto px-2 pb-3"
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("a")) {
+                  setDrawerOpen(false)
+                }
+              }}
+            >
+              {nav(true)}
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }
