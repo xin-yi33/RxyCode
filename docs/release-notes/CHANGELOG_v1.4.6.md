@@ -287,4 +287,45 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
 
 ## RxyCode CLI
 
+### 预置服务商模型目录全量核对 + MODEL_UNAVAILABLE 匹配拓宽（2026-10-29，`fix/model-catalog-sync`）
+
+- **上游核对**：对 `config/model_manager.py` 全部 12 个 `PROVIDER_PRESETS`
+  逐一取现役模型表 —— `zen`/`opencode-go`/`openrouter` 走 live
+  `GET {base_url}/models`（200，83/30/456 条），其余 9 家 `/models` 均需
+  鉴权（401）改用官方文档表核对。产出 diff 报告
+  `~/.rxycode/output/model-sync/provider-diff.md`。
+- **catalog 刷新（`config/model_catalog.json`，24→35 条）**：新增现役旗舰
+  `qwen/qwen3.8-max`、`qwen/qwen3.8-flash`、`kimi/kimi-k3.1-pro`、
+  `glm/glm-5.3`、`glm/glm-5.3-flash`、`openai/gpt-6-astra`、
+  `openai/gpt-6-luna`、`doubao/doubao-seed-evolving`、
+  `mimo/mimo-v2.6-pro`、`minimax/minimax-m3.1-flash`、
+  `muse_spark/muse-spark-1.3-contributor`；官方文档未给出能力值的沿用
+  同系既有记录的保守值并在报告中标注。`doubao/doubao-seed-2.1-pro`
+  别名现役对应方舟 `doubao-seed-2-1-pro-260915`（1024k/256k），
+  ctx 262144→1048576、out null→262144。
+- **下线标记**：`qwen/qwen3.8-max-preview` 被 `qwen3.8-max` GA 取代，
+  上游不再列出 —— 记录保留并加 `"status": "deprecated"`（schema 未禁
+  附加字段；`ModelCatalog`/`core/catalog.py` 均忽略未知键，存量配置
+  仍能解析限额，不落 unknown_fallback）。`deepseek/deepseek-flash`
+  经官方文档核实仍是 api.deepseek.com 现役别名（V4.1-Flash-1017，
+  仅 OpenCode Go 网关改用 `deepseek-v4.1-flash` 拼法）**不**标记。
+- **siliconflow 不可核**：`/models` 401 且官方无静态模型表，报告
+  明示「无法验证」，未臆造任何 model id。
+- **MODEL_UNAVAILABLE 拓宽（`utils/user_facing_errors.py`）**：上游
+  网关会把模型不可用包成 HTTP 400 `server_error`（`'Upstream request
+  failed: Model is unavailable.'`）。硬标记新增 `model is
+  unavailable` / `model unavailable` / `no such model`（自带模型语境，
+  仅命中模型调用路径的错误文本；裸 400/资源类错误不误判），
+  `does not exist` 原有模型语境检查已覆盖。
+- **web 侧核查**：`apps/web` ModelPicker/Composer/设置页均消费 live
+  `GET /models` + discovery，无硬编码预置模型清单；opentui/desktop
+  同。无需同步。
+- **测试**：`tests/test_model_catalog.py` 加新旗舰记录断言（10 条）、
+  contributor 占位形态、doubao 快照追踪、`status:"deprecated"` 仅作
+  元数据仍可解析且 `deepseek-flash` 未被误标；
+  `tests/test_core/test_user_facing_errors_matrix.py` 加 400
+  `server_error` 精确载荷 → `MODEL_UNAVAILABLE` + 中文停用文案 +
+  `user_facing_kind=="failed"`、三短语大小写不敏感、无模型语境的
+  普通 400 不误判。
+
 （本版本暂无 CLI 侧变更。）

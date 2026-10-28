@@ -157,6 +157,77 @@ def test_muse_catalog_only_claims_verified_go_contributor_metadata():
     assert contributor.model_max_output_tokens is None
 
 
+def test_bundled_catalog_contains_2026_10_flagship_sync_records():
+    """2026-10-29 preset provider model-list refresh: new flagship records
+    must resolve with the reviewed capability values."""
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+    expectations = {
+        ("qwen", "qwen3.8-max"): (1_000_000, 65_536),
+        ("qwen", "qwen3.8-flash"): (1_000_000, 65_536),
+        ("kimi", "kimi-k3.1-pro"): (1_048_576, 131_072),
+        ("glm", "glm-5.3"): (1_048_576, 131_072),
+        ("glm", "glm-5.3-flash"): (1_048_576, 131_072),
+        ("openai", "gpt-6-astra"): (1_050_000, 128_000),
+        ("openai", "gpt-6-luna"): (1_050_000, 128_000),
+        ("doubao", "doubao-seed-evolving"): (1_048_576, 262_144),
+        ("mimo", "mimo-v2.6-pro"): (1_048_576, None),
+        ("minimax", "minimax-m3.1-flash"): (1_048_576, None),
+    }
+    for (provider, model), (ctx, out) in expectations.items():
+        record, key, _ = catalog.lookup(provider, model)
+        assert record is not None, f"{provider}:{model} missing from catalog"
+        assert key is not None
+        assert record.model_context_window == ctx, f"{provider}:{model} ctx"
+        assert record.model_max_output_tokens == out, f"{provider}:{model} out"
+
+
+def test_muse_spark_13_contributor_placeholder_shape():
+    """muse-spark-1.3-contributor follows the 1.2-contributor shape: null
+    capability values (unverified contributor tier), required source fields."""
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+    record, key, _ = catalog.lookup("muse_spark", "muse-spark-1.3-contributor")
+    assert record is not None
+    assert key is not None
+    assert record.model_context_window is None
+    assert record.model_max_output_tokens is None
+
+
+def test_doubao_seed_21_pro_tracks_current_upstream_snapshot():
+    """doubao-seed-2.1-pro alias resolves to upstream -260915 (1024k/256k);
+    record updated in the 2026-10-29 sync."""
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+    record, _, _ = catalog.lookup("doubao", "doubao-seed-2.1-pro")
+    assert record is not None
+    assert record.model_context_window == 1_048_576
+    assert record.model_max_output_tokens == 262_144
+
+
+def test_deprecated_status_marker_is_metadata_only():
+    """Records marked \"status\": \"deprecated\" stay loadable and resolvable —
+    consumers (ModelCatalog/core.catalog) ignore unknown fields, so existing
+    configs keep resolving limits instead of falling to unknown_fallback."""
+    raw = json.loads(Path(DEFAULT_CATALOG_PATH).read_text(encoding="utf-8"))
+    marked = [
+        record
+        for record in raw["records"]
+        if record.get("status") == "deprecated"
+    ]
+    # exactly the preview superseded by qwen3.8-max GA is marked today
+    assert [r["model_id"] for r in marked] == ["qwen3.8-max-preview"]
+
+    catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
+    record, key, _ = catalog.lookup("qwen", "qwen3.8-max-preview")
+    assert record is not None
+    assert key is not None
+    # deepseek-flash was verified still live at api.deepseek.com — must not
+    # be marked deprecated (it was only removed on the OpenCode Go gateway).
+    deeps = [
+        r for r in raw["records"]
+        if r["provider_id"] == "deepseek" and r["model_id"] == "deepseek-flash"
+    ]
+    assert deeps and deeps[0].get("status") != "deprecated"
+
+
 def test_hy3_catalog_contains_only_the_formal_model_limits():
     catalog = ModelCatalog.load(DEFAULT_CATALOG_PATH)
 
