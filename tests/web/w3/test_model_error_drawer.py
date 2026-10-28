@@ -222,6 +222,30 @@ def test_mobile_settings_drawer_esc_and_backdrop_close(browser, production_origi
         context.close()
 
 
+def test_mobile_drawer_closes_when_viewport_crosses_desktop(
+    browser, production_origin
+):
+    """Codex P2：抽屉开着时视口越过 md 断点（横屏），必须逻辑关闭 —
+    否则焦点圈禁与背景滚动锁还作用在桌面页面上。"""
+    context = context_for(browser, "mobile-375")
+    page = _session_page(
+        context, production_origin, ChatApi(), "/settings/general-settings"
+    )
+    try:
+        page.locator('[data-testid="settings-nav-trigger"]').click()
+        page.wait_for_selector('[data-testid="settings-nav-drawer"]', timeout=5_000)
+        assert page.evaluate("document.body.style.overflow") == "hidden"
+        page.set_viewport_size({"width": 900, "height": 844})
+        page.wait_for_selector(
+            '[data-testid="settings-nav-drawer"]', state="detached", timeout=5_000
+        )
+        assert page.evaluate("document.body.style.overflow") != "hidden"
+        # 桌面侧栏恢复可见、键盘 Tab 不再被圈禁。
+        assert dom_visible(page, "aside nav")
+    finally:
+        context.close()
+
+
 def test_desktop_settings_sidebar_unchanged_no_trigger(browser, production_origin):
     context = context_for(browser, "desktop-1440")
     page = _session_page(

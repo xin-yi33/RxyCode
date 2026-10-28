@@ -85,6 +85,13 @@ export function SettingsShell() {
     const previous = document.activeElement
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = "hidden"
+    // 视口越过 md 断点（如手机横屏）时抽屉被 md:hidden 隐藏 ——
+    // 逻辑上也必须关闭，否则焦点圈禁和背景锁还作用在桌面页面上。
+    const mq = window.matchMedia("(min-width: 768px)")
+    const onBreak = (event: MediaQueryListEvent) => {
+      if (event.matches) setDrawerOpen(false)
+    }
+    mq.addEventListener("change", onBreak)
     root
       ?.querySelector<HTMLElement>("button, a[href]")
       ?.focus({ preventScroll: true })
@@ -119,6 +126,7 @@ export function SettingsShell() {
     document.addEventListener("keydown", onKey, true)
     return () => {
       document.removeEventListener("keydown", onKey, true)
+      mq.removeEventListener("change", onBreak)
       document.body.style.overflow = previousOverflow
       if (previous instanceof HTMLElement && previous.isConnected) {
         previous.focus({ preventScroll: true })
