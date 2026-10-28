@@ -394,15 +394,17 @@ class Session:
                 )
 
             status, detail = classify_agent_result(answer)
-            _structured = classify_user_error(
-                detail or answer,
-                model_name=str(_cfg.get("model_name") or ""),
-                provider_name=str(_cfg.get("provider_name") or ""),
-            )
+            # agent 记录的结构化错误优先 —— 它拿着原始供应商报文；
+            # 对返回文案的再分类只是拿不到记录时的兜底。
+            _structured = getattr(agent, "_last_turn_error", None)
+            if not isinstance(_structured, dict):
+                _structured = None
             if _structured is None:
-                _last = getattr(agent, "_last_turn_error", None)
-                if isinstance(_last, dict):
-                    _structured = _last
+                _structured = classify_user_error(
+                    detail or answer,
+                    model_name=str(_cfg.get("model_name") or ""),
+                    provider_name=str(_cfg.get("provider_name") or ""),
+                )
             after = primary_usage_counters()
             delta_input = int(after["input_tokens"]) - int(previous["input_tokens"])
             delta_output = int(after["output_tokens"]) - int(previous["output_tokens"])

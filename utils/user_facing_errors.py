@@ -34,9 +34,14 @@ MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
 #   APIStatusError: Error code: 410 - {'error': {'type': 'ModelDeprecated', ...}}
 #   NotFoundError: Error code: 404 - {'error': {'type': 'model_not_found'}}
 #   "The model `x` does not exist"
+# 自带模型语境的硬标记；「does not exist」/裸 404|410 必须另有
+# model/模型 字样才认 —— 「Expected artifact does not exist」这类
+# 构建产物缺失绝不能误判成模型下线。
 _MODEL_GONE_TEXT_MARKERS = (
     "modeldeprecated",
     "model_not_found",
+)
+_MODEL_GONE_GENERIC_MARKERS = (
     "does not exist",
 )
 _MODEL_GONE_STATUS = re.compile(r"\b(404|410)\b")
@@ -122,6 +127,13 @@ def is_model_unavailable(raw: str) -> bool:
     text = str(raw or "")
     lowered = text.lower()
     if any(marker in lowered for marker in _MODEL_GONE_TEXT_MARKERS):
+        return True
+    # 泛化标记必须有模型语境 —— 「file/artifact does not exist」
+    # 和资源类 404 不是模型问题。
+    mentions_model = "model" in lowered or "模型" in text
+    if not mentions_model:
+        return False
+    if any(marker in lowered for marker in _MODEL_GONE_GENERIC_MARKERS):
         return True
     return bool(_MODEL_GONE_STATUS.search(text))
 

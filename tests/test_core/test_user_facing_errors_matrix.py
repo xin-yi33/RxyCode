@@ -215,6 +215,23 @@ def test_classify_user_error_ignores_unrelated_failures():
     assert ufe.classify_user_error("") is None
 
 
+def test_model_gone_markers_require_model_context():
+    """Codex P2：「Expected artifact does not exist」和裸 404/410 没有模型
+    语境时绝不能误判 MODEL_UNAVAILABLE。"""
+    assert not ufe.is_model_unavailable(
+        "Expected artifact does not exist: artifacts/report.txt"
+    )
+    assert not ufe.is_model_unavailable(
+        "HTTPError 404 - route /files/report.txt not found"
+    )
+    assert ufe.classify_user_error(
+        "Expected artifact does not exist: artifacts/report.txt"
+    ) is None
+    # 同样的标记带上模型语境就要认。
+    assert ufe.is_model_unavailable("the requested model does not exist")
+    assert ufe.is_model_unavailable("Error code: 404 - model_not_found")
+
+
 @pytest.mark.parametrize("friendly", [
     ufe.MSG_DEFAULT + "\n原因：APIStatusError: Error code: 410 - ModelDeprecated",
     ufe.MSG_BUILD_INCOMPLETE,
