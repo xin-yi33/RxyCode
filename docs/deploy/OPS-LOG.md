@@ -6,6 +6,16 @@
 
 ---
 
+## 2026-10-28
+
+### 15:35 CST 🐧📦 模型不可用失败语义 + 移动端设置抽屉上线（web-98eb9a11，PR #32）
+- 代码：PR #32 squash 合入 `98eb9a117456dca351b7ebc0132e03dd1051f694`（master CI `40645524074`/`40645524125` 双 success 后上线）。内容：供应商 HTTP 404/410 + `ModelDeprecated`/`model_not_found`/`does not exist` 归一稳定错误码 `MODEL_UNAVAILABLE`，run 终态落 `failed`（此前误显"已完成"）；前端失败卡片 `role=alert` + `详情` 折叠原始报文 + `切换模型` 打开既有 ModelPicker；移动端 `/settings` 分区 `<select>` 换左侧滑入抽屉（backdrop/Esc/焦点圈禁/`aria-modal`，复用 `rxy-sidebar-drawer`，md 断点穿越时自动释放）。
+- 根因：`core/agent_v2.py` 捕获供应商异常后把友好错误文本装进正常 turn 结果返回，`log/log_helpers.py:classify_agent_result()` 将"处理未完成"类用户可读错误判为成功答案 → worker 终态写 `succeeded`。修法：`utils/user_facing_errors.py` 新增分类与 `user_facing_kind()` 幂等识别；`Session.prompt()` 的 `PromptResult` 携带 `error_code/error_raw`；worker `_TurnFailed`/`_TurnCancelled` 保住终态语义，子进程 result JSON 透 `code/raw`，父进程写 `run.error`（含 model/provider 元数据）；`api/runs.py` 观测字段透出；取消仍落 `cancelled` 不变。
+- 模型映射：OpenCode Go 线上 `/models`（免鉴权端点，38 个模型）已无 `deepseek-flash`，现行等价 `deepseek-v4.1-flash`。生产库只读统计：`user_models` 引用旧 id 1 行、BYOK 连接 1 条（仅计数，未改用户数据、未触其他账号）。`config/model_catalog.json` 中 `deepseek-flash` 属直连 `deepseek` 供应商记录、非 opencode-go 预设，未动。
+- 部署（`deploy_feedback.py 98eb9a11… all`）：增量 bundle `878592ed..98eb9a11` → `/opt/rxycode/src` 精确 checkout（**纯 master，无 overlay**）→ `disk-guard.sh`（6.0G free，无需清理）→ 三镜像 `web-98eb9a11` → `.env` `RXYCODE_IMAGE_TAG` → `compose config -q` → migrate（alembic 仍 `013_feedback`，无新迁移）→ `up -d`。api/gateway/**worker×3** healthy；VM 本机 `:8080` 与公网 `/api/v1/version` 均 `98eb9a11…`，`https://rxycode.xyz` 200。切换成功后 `/opt/rxycode/.ops/rollback_tag` 写入 `web-878592ed`（`web-584b8c28` 镜像仍留作更早回滚点）。
+- 上线实测：headless Chromium 被 Cloudflare managed challenge 间歇拦截（公网 UI 不可达）→ 经 paramiko 本地转发打 VM `127.0.0.1:8080` 同栈验证：390×844 `/settings/general-settings` 无 `<select>`、触发按钮显"通用"、抽屉 `aria-modal=true` 7 项、选中跳 `/settings/appearance` 并自闭、Esc 关闭。截图 `C:\Users\Administrator\.rxycode\output\fix-model-mobile\prod-settings-drawer.png`。`MODEL_UNAVAILABLE` 真 410 路径在生产无法确定性触发（需账号配置已下线模型），以 PR 内单测 + Playwright 合约为准（本地 5 passed）。ops 验收会话复用 smoke 账号只读，未新增数据。
+- 回滚：`.env` `RXYCODE_IMAGE_TAG=web-878592ed` + 同 compose 命令 `up -d`；无 schema 变更。
+
 ## 2026-10-27
 
 ### 22:50 CST 🐧🪟 VM 自维护化：磁盘守护 + 开机自恢复 + 隧道自愈 + 宿主保活
