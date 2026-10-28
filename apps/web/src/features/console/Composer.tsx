@@ -39,6 +39,8 @@ type ComposerProps = {
   // 会话当前活跃 run —— 有则发送键变为方形停止键、输入框禁用。
   activeRun?: RunSummary | null
   onSubmitted?: (accepted: RunAccepted) => void
+  // 递增即打开 ModelPicker —— 失败行「切换模型」复用同一个选择器。
+  modelPickerSignal?: number
 }
 
 const PROFILES: { value: PermissionProfile; label: string; hint: string }[] = [
@@ -66,7 +68,12 @@ function formatBytes(size: number): string {
   return `${size}B`
 }
 
-export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
+export function Composer({
+  sessionId,
+  activeRun,
+  onSubmitted,
+  modelPickerSignal,
+}: ComposerProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const queryClient = useQueryClient()
@@ -594,6 +601,7 @@ export function Composer({ sessionId, activeRun, onSubmitted }: ComposerProps) {
                 onGuest={() => setLoginPrompt("model")}
                 onSwitched={showModelHint}
                 returnFocusRef={areaRef}
+                openSignal={modelPickerSignal}
               />
               {active ? (
                 <Button

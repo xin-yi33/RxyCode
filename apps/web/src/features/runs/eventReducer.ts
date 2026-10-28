@@ -86,6 +86,15 @@ export type TimelineItem =
       invalid?: boolean
     }
   | { kind: "final"; seq: number; text: string }
+  // run.error 终态事件：detail 是可读文案，code 是稳定机器码
+  // （MODEL_UNAVAILABLE → 「切换模型」动作），raw 折叠进「详情」。
+  | {
+      kind: "error"
+      seq: number
+      text: string
+      code?: string
+      raw?: string
+    }
 
 export type RunUsage = {
   tokens?: number
@@ -331,6 +340,19 @@ export function reduceEvents(
       case "worker.lease": {
         const epoch = num(payload.epoch)
         if (epoch !== undefined) leases.add(epoch)
+        return
+      }
+      case "run.error": {
+        const text = str(payload.detail ?? payload.message)
+        if (text) {
+          view.timeline.push({
+            kind: "error",
+            seq: event.seq,
+            text,
+            code: str(payload.code) || undefined,
+            raw: str(payload.raw) || undefined,
+          })
+        }
         return
       }
       case "assistant.delta": {

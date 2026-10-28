@@ -149,6 +149,7 @@ const DICT = {
   "settings.backToApp": { "zh-CN": "返回应用", en: "Back to app" },
   "settings.nav.search": { "zh-CN": "搜索设置", en: "Search settings" },
   "settings.nav.aria": { "zh-CN": "设置分区", en: "Settings sections" },
+  "settings.nav.close": { "zh-CN": "关闭设置分区", en: "Close sections" },
   "settings.nav.empty": { "zh-CN": "没有匹配的分区", en: "No matching section" },
   "settings.loginRequired": {
     "zh-CN": "登录后可管理此分区。",

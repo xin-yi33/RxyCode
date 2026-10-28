@@ -44,10 +44,14 @@ export function Timeline({
   view,
   connected,
   createdAt,
+  onSwitchModel,
 }: {
   view: RunView
   connected?: boolean
   createdAt?: string | null
+  // MODEL_UNAVAILABLE 失败行上的「切换模型」动作 —— 由 SessionPage
+  // 透传到 Composer 的 ModelPicker。
+  onSwitchModel?: () => void
 }) {
   const active = isActiveRunStatus(view.status)
   const seenKeysRef = useRef<Set<string>>(new Set())
@@ -153,6 +157,36 @@ export function Timeline({
               return (
                 <li key={key} data-answer>
                   <Markdown text={item.text} />
+                </li>
+              )
+            case "error":
+              return (
+                <li key={key} data-run-error>
+                  <div
+                    role="alert"
+                    className="rounded-lg border border-failure/40 bg-failure/10 px-3 py-2 text-sm text-failure"
+                  >
+                    <p className="whitespace-pre-wrap">{item.text}</p>
+                    {item.code === "MODEL_UNAVAILABLE" && onSwitchModel ? (
+                      <button
+                        type="button"
+                        className="rxy-ghost-control mt-2 rounded-md px-2 py-1 text-xs text-failure-ink underline"
+                        onClick={onSwitchModel}
+                      >
+                        切换模型
+                      </button>
+                    ) : null}
+                    {item.raw ? (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-muted-ink">
+                          详情
+                        </summary>
+                        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-xs text-muted">
+                          {item.raw}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
                 </li>
               )
             default:

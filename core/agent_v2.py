@@ -274,7 +274,11 @@ from RxyCode.RxyCode1_1_0.tools.task_tool import clear_session_tasks
 from RxyCode.RxyCode1_1_0.tools.workflow_tool import clear_session_workflows
 from RxyCode.RxyCode1_1_0.utils.streaming import DEFAULT_CONTEXT_MAX, token_stats
 from RxyCode.RxyCode1_1_0.utils.tui import get_tui
-from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import (
+    classify_user_error,
+    is_model_unavailable,
+    to_user_facing_error,
+)
 from RxyCode.RxyCode1_1_0.validation.side_effects import (
     has_verified_side_effect,
     task_requires_side_effect_evidence,
@@ -10611,6 +10615,9 @@ class AgentV2:
             lowered = result.strip().lower()
             if lowered.startswith("[model unavailable]"):
                 return "model_error"
+            head = result.strip().split("\n", 1)[0]
+            if (head.startswith("模型 ") or head.startswith("当前模型")) and "停用" in head:
+                return "model_error"
             if lowered.startswith("[build incomplete"):
                 return "verification_error"
             if lowered.startswith(("[evidence failed", "[workflow error", "[executor error")):
@@ -10896,6 +10903,19 @@ class AgentV2:
             reset_turn_user_text(turn_text_token)
             reset_session_binding(session_token)
 
+    def _user_facing_failure(self, exc: BaseException) -> str:
+        """供应商错误的用户可读文案 + 结构化记录（worker 终态化的 code/raw）。"""
+        raw = f"{type(exc).__name__}: {exc}"
+        config = self.model_config if isinstance(self.model_config, dict) else {}
+        model_name = str(config.get("model_name") or "")
+        provider_name = str(config.get("provider_name") or "")
+        self._last_turn_error = classify_user_error(
+            raw, model_name=model_name, provider_name=provider_name
+        )
+        return to_user_facing_error(
+            raw, model_name=model_name, provider_name=provider_name
+        )
+
     def cancel(self) -> bool:
         """Cancel the currently awaited request, if one is active."""
         active_task = getattr(self, "_active_task", None)
@@ -10926,6 +10946,9 @@ class AgentV2:
         # It is intentionally reset once per top-level request, not per tool
         # round or sub-agent.
         self._side_effecting_tool_attempted = False
+        # 本轮的结构化供应商错误（MODEL_UNAVAILABLE 等）—— agent 把异常
+        # 吞成字符串返回时，worker 从这里取 code/raw 写进 run.error 载荷。
+        self._last_turn_error: dict | None = None
         self._workflow_gate_this_turn = False
         # 2026-09-23：每次顶层请求清空传输耗尽记录，避免上一次的网络断
         # 污染本次的证据门判定。
@@ -11067,6 +11090,10 @@ class AgentV2:
                 if os.environ.get("RXYCODE_STRICT_ERRORS") == "1":
                     raise
                 _logger.error("no-tool fast path failed: %s", exc, exc_info=True)
+                # 模型被服务商下线不是「没想好怎么回」—— 如实失败，
+                # 让 run 终态进 failed + MODEL_UNAVAILABLE。
+                if is_model_unavailable(str(exc)):
+                    return self._user_facing_failure(exc)
                 return (
                     "刚才没能完整回复你，我在这儿听着呢。"
                     "你可以再说一次，或者换个说法。"
@@ -11083,6 +11110,8 @@ class AgentV2:
                     _logger.warning(
                         "social chat fast path failed (no graph): %s", exc
                     )
+                    if is_model_unavailable(str(exc)):
+                        return self._user_facing_failure(exc)
                     return (
                         "刚才没能完整回复你，我在这儿听着呢。"
                         "你可以再说一次，或者换个说法。"
@@ -11102,7 +11131,7 @@ class AgentV2:
                     "tool-aware fast path failed (no graph fallback): %s",
                     exc,
                 )
-                return to_user_facing_error(f"{type(exc).__name__}: {exc}")
+                return self._user_facing_failure(exc)
 
         if decision.path == "compose":
             try:

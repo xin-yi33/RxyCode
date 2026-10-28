@@ -245,6 +245,46 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
   `RXYCODE_FEEDBACK_ADMIN_EMAILS` 授予，无 DB 角色位；租户隔离对普通用户恒为 404。
 - `GET /feedback/mine` 每条逐个查图片（N+1，≤50/页），当前规模无碍。
 
+### 模型下线终态修复 + 移动端设置抽屉（2026-10-28，`fix/model-deprecated-mobile-settings`）
+
+- **根因**：服务商 410 `ModelDeprecated`（如 OpenCode Go 下架 `deepseek-flash`）
+  在 `core/agent_v2.py` 被吞成 `to_user_facing_error` 友好字符串返回；
+  `classify_agent_result`（`log/log_helpers.py`）只认方括号失败前缀，
+  中文文案被判 `succeeded` → `Session.prompt` 发 `FinalAnswer` →
+  confined 子进程结果文件写 `succeeded` → `commit_terminal` 落 succeeded →
+  界面绿色「已完成」徽标 + 原始报文截断内联。
+- **修复链路**：`utils/user_facing_errors.py` 新增稳定码 `MODEL_UNAVAILABLE`
+  （410/404、`ModelDeprecated`、`model_not_found`、`does not exist` 及
+  自家文案的幂等识别），`classify_user_error` 输出
+  code/model/provider/message/raw；`user_facing_kind` 让所有
+  `to_user_facing_error` 输出可幂等判定（失败 / cancelled），
+  `classify_agent_result` 据此把吞成字符串的供应商错误判 failed —
+  「操作已取消。」判 cancelled 而不再是 succeeded。
+  `PromptResult` 带 `error_code`/`error_raw`；`AgentV2._last_turn_error`
+  记结构化供应商错误；`_TurnFailed`/`_TurnCancelled` 把 code/raw
+  带过 confined 子进程结果文件 → 父进程 `run.error` 载荷带
+  code/raw/model/provider，detail 覆盖为人话文案；
+  `GET /runs/{id}` diagnostic 透出 code/raw/model/provider。
+- **界面**：`run.error` → 时间线 error 卡片（失败样式 + 「详情」`<details>`
+  折叠原始报文）；`MODEL_UNAVAILABLE` 显示「切换模型」按钮，经
+  `modelPickerSignal` 打开 Composer 既有 `ModelPicker`；状态徽标按终态
+  显示「失败」。
+- **移动端设置**：`<768px` 的分区 `<select>` 换成左侧滑入抽屉 —— 触发钮
+  显示当前分区名 + menu 图标，`role=dialog` `aria-modal`、焦点圈禁、
+  Esc/遮罩点击关闭、选中导航并关闭、关闭后焦点回触发钮，复用
+  `rxy-sidebar-drawer` 会话侧栏形态；桌面布局不变。
+- **目录核对**：OpenCode Go 上游 live `/zen/go/v1/models` 已无
+  `deepseek-flash`（等价现役 `deepseek-v4.1-flash`）；
+  `config/model_catalog.json` 的 `deepseek-flash` 条目属 `deepseek`
+  直连服务商记录，上游不可证伪故保留；无 web 侧 OpenCode Go 模型
+  预设清单可改。生产库只读核对：`user_models` 引用 `deepseek-flash`
+  共 **1** 行（未改动用户数据，用户经「切换模型」自助迁移）。
+- **测试**：ufe 矩阵加 MODEL_UNAVAILABLE 用例与幂等断言；会话终态真值
+  加「410 吞成文案→failed+error_code」「操作已取消→cancelled」；
+  w7 加结果文件 code/raw 与 `_TurnFailed`/`_TurnCancelled` 单测；
+  `eventReducer.test.ts`（bun test，CI 同步进 web-ci）；w3 浏览器契约
+  加失败徽标/错误卡/切换模型→ModelPicker/移动端抽屉开合与无 `<select>`。
+
 ## RxyCode CLI
 
 （本版本暂无 CLI 侧变更。）

@@ -26,7 +26,10 @@ from RxyCode.RxyCode1_1_0.core.agents.teams import load_builtin_team
 from RxyCode.RxyCode1_1_0.log.log_helpers import classify_agent_result
 from RxyCode.RxyCode1_1_0.recovery.error_recovery import should_emit_event_error
 from RxyCode.RxyCode1_1_0.utils.streaming import token_stats
-from RxyCode.RxyCode1_1_0.utils.user_facing_errors import to_user_facing_error
+from RxyCode.RxyCode1_1_0.utils.user_facing_errors import (
+    classify_user_error,
+    to_user_facing_error,
+)
 
 
 EmitCallback = Callable[[BaseModel], None]
@@ -103,6 +106,10 @@ class PromptResult:
     status: str
     detail: str = ""
     thinking: str = ""
+    # 结构化失败原因（MODEL_UNAVAILABLE 等）—— worker 把它落进
+    # run.error 载荷的 code/raw，界面凭 code 决定是否给「切换模型」。
+    error_code: str = ""
+    error_raw: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_hit_tokens: int | None = None
@@ -307,6 +314,8 @@ class Session:
         }
         run_module = _run_context_module()
         run_token = run_module.bind_run_context(bound_run)
+        _cfg = getattr(agent, "model_config", None)
+        _cfg = _cfg if isinstance(_cfg, dict) else {}
         try:
             set_working_directory(workspace, persist=False)
             try:
@@ -347,7 +356,16 @@ class Session:
                 answer = str(exc) or "team budget exceeded"
             except Exception as exc:
                 raw = f"{type(exc).__name__}: {exc}"
-                detail = to_user_facing_error(raw)
+                detail = to_user_facing_error(
+                    raw,
+                    model_name=str(_cfg.get("model_name") or ""),
+                    provider_name=str(_cfg.get("provider_name") or ""),
+                )
+                _error_info = classify_user_error(
+                    raw,
+                    model_name=str(_cfg.get("model_name") or ""),
+                    provider_name=str(_cfg.get("provider_name") or ""),
+                )
                 # 2026-09-23：exhaust_active_recovery 只在有活跃恢复记录时才发，
                 # 避免和 ErrorNotification 重复显示同一条消息。
                 recovery_had_active = False
@@ -367,9 +385,24 @@ class Session:
                             status="failed",
                         )
                     )
-                return PromptResult(answer="", status="failed", detail=detail)
+                return PromptResult(
+                    answer="",
+                    status="failed",
+                    detail=detail,
+                    error_code=(_error_info or {}).get("code", ""),
+                    error_raw=(_error_info or {}).get("raw", ""),
+                )
 
             status, detail = classify_agent_result(answer)
+            _structured = classify_user_error(
+                detail or answer,
+                model_name=str(_cfg.get("model_name") or ""),
+                provider_name=str(_cfg.get("provider_name") or ""),
+            )
+            if _structured is None:
+                _last = getattr(agent, "_last_turn_error", None)
+                if isinstance(_last, dict):
+                    _structured = _last
             after = primary_usage_counters()
             delta_input = int(after["input_tokens"]) - int(previous["input_tokens"])
             delta_output = int(after["output_tokens"]) - int(previous["output_tokens"])
@@ -471,6 +504,8 @@ class Session:
                 status=status,
                 detail=detail,
                 thinking=thinking,
+                error_code=(_structured or {}).get("code", ""),
+                error_raw=(_structured or {}).get("raw", ""),
                 **occupancy_kwargs,
                 **usage_kwargs,
             )

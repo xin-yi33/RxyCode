@@ -13,11 +13,14 @@ import { isTerminalRunStatus } from "./status"
 export function RunTimeline({
   run,
   onTerminal,
+  onSwitchModel,
 }: {
   run: RunSummary
   // v1.4.6 自动反馈询问：挂载期间观察到 非终态→终态 的真实转换时上报
   // （历史回放 run.status 一开始就是终态，不会触发）。
   onTerminal?: (signal: RunTerminalSignal) => void
+  // 失败行 MODEL_UNAVAILABLE 的「切换模型」→ 打开 Composer 的 ModelPicker。
+  onSwitchModel?: () => void
 }) {
   const {
     view,
@@ -74,7 +77,12 @@ export function RunTimeline({
   )
   return (
     <div>
-      <Timeline view={view} connected={connected} createdAt={run.created_at} />
+      <Timeline
+        view={view}
+        connected={connected}
+        createdAt={run.created_at}
+        onSwitchModel={onSwitchModel}
+      />
       {!hasOutput && run.final_preview ? (
         <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
           {run.final_preview}

@@ -25,6 +25,55 @@ MSG_MODEL_PAUSED = (
 MSG_CANCELLED = "操作已取消。"
 MSG_DEFAULT = "处理未完成，请重试。"
 
+#: 稳定的运行级错误码：服务商已下架/改名/停用当前模型（HTTP 404/410、
+#: ModelDeprecated、model_not_found、"does not exist"）。web 用它决定
+#: 失败 run 是否给「切换模型」动作；与 drain 的凭证拒绝复用同一 code。
+MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+
+# 服务商把模型下线时各家的原始文案形态：
+#   APIStatusError: Error code: 410 - {'error': {'type': 'ModelDeprecated', ...}}
+#   NotFoundError: Error code: 404 - {'error': {'type': 'model_not_found'}}
+#   "The model `x` does not exist"
+_MODEL_GONE_TEXT_MARKERS = (
+    "modeldeprecated",
+    "model_not_found",
+    "does not exist",
+)
+_MODEL_GONE_STATUS = re.compile(r"\b(404|410)\b")
+
+# 从原始错误里捞模型 id。覆盖三类常见形态：
+#   'message': 'Model deepseek-flash is deprecated'
+#   "The model `gpt-x` does not exist"
+#   {'error': {'model': 'deepseek-flash'}}
+_MODEL_NAME_PATTERNS = (
+    re.compile(r"[Mm]odel [`'\"]([\w./-]+)[`'\"]"),
+    re.compile(
+        r"[Mm]odel ([A-Za-z0-9][\w./-]*?)\s+"
+        r"(?:is|was|does|has been|no longer|deprecated|not)",
+    ),
+    re.compile(r"['\"]model['\"]\s*:\s*['\"]([\w./-]+)['\"]"),
+    # 我们自己的文案：「模型 deepseek-flash 已被服务商…停用」
+    re.compile(r"模型 ([\w./-]+) 已被"),
+)
+
+_MODEL_UNAVAILABLE_HEAD = re.compile(r"^(模型 \S|当前模型)")
+_MODEL_PROVIDER_HEAD = re.compile(r"服务商（([^）]+)）")
+
+# 每条面向用户文案的首子句 —— user_facing_kind 用它做幂等识别与终态分类。
+_USER_FACING_HEADS = tuple(
+    msg.split("，")[0].split("：")[0].split("。")[0]
+    for msg in (
+        MSG_BUILD_INCOMPLETE,
+        MSG_GROUNDING,
+        MSG_TOOL_INTERRUPTED,
+        MSG_TOOL_REJECTED,
+        MSG_TIMEOUT,
+        MSG_MODEL_PAUSED,
+        MSG_DEFAULT,
+        "您没有额度了",
+    )
+)
+
 _GROUNDING_MARKERS = (
     "grounded claim",
     "claim manifest",
@@ -68,7 +117,94 @@ def _extract_error_detail(raw: str) -> str:
     return first_line
 
 
-def to_user_facing_error(raw: str) -> str:
+def is_model_unavailable(raw: str) -> bool:
+    """原始错误是否表示模型已被服务商下线/改名/停用。"""
+    text = str(raw or "")
+    lowered = text.lower()
+    if any(marker in lowered for marker in _MODEL_GONE_TEXT_MARKERS):
+        return True
+    return bool(_MODEL_GONE_STATUS.search(text))
+
+
+def _extract_model_name(text: str) -> str:
+    for pattern in _MODEL_NAME_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def model_unavailable_message(model_name: str = "", provider_name: str = "") -> str:
+    """模型停用的人话。服务商名未知时省略括号，不编造。"""
+    provider = f"（{provider_name}）" if provider_name else ""
+    if model_name:
+        return (
+            f"模型 {model_name} 已被服务商{provider}停用，"
+            "请在模型选择中换一个模型后重试。"
+        )
+    return f"当前模型已被服务商{provider}停用，请在模型选择中换一个模型后重试。"
+
+
+def classify_user_error(
+    raw: str,
+    *,
+    model_name: str = "",
+    provider_name: str = "",
+) -> dict[str, str] | None:
+    """模型停用 → 结构化错误信息（code/可读文案/模型/服务商/原文）。
+
+    agent 把异常吞成字符串返回值时，结构化信息经此附在
+    ``AgentV2._last_turn_error`` / ``PromptResult.error_code`` 上，
+    worker 终态化时写进 ``run.error`` 事件的 ``code``/``raw`` 载荷 —
+    界面凭 code 给「切换模型」动作、凭 raw 给可展开的「详情」。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    head = text.split("\n", 1)[0]
+    own_message = bool(_MODEL_UNAVAILABLE_HEAD.match(head)) and "停用" in head
+    if not own_message and not is_model_unavailable(text):
+        return None
+    model = model_name or _extract_model_name(text)
+    provider = provider_name
+    if not provider:
+        match = _MODEL_PROVIDER_HEAD.search(head)
+        provider = match.group(1) if match else ""
+    return {
+        "code": MODEL_UNAVAILABLE,
+        "model": model,
+        "provider": provider,
+        "message": model_unavailable_message(model, provider),
+        "raw": text[:1500],
+    }
+
+
+def user_facing_kind(text: str) -> str | None:
+    """文本已是我们的用户可读错误文案时返回终态类别，否则 None。
+
+    ``to_user_facing_error`` 的输出全部代表失败（除「操作已取消」）。
+    classify_agent_result 据此把吞成字符串的错误正确判成 failed —
+    2026-10-28 现场：410 ModelDeprecated 经 MSG_DEFAULT 返回后被
+    classify 当成成功文本，run 终态被写成「已完成」。
+    """
+    head = str(text or "").strip().split("\n", 1)[0]
+    if not head:
+        return None
+    if head.startswith(MSG_CANCELLED.split("。")[0]):
+        return "cancelled"
+    if any(head.startswith(prefix) for prefix in _USER_FACING_HEADS):
+        return "failed"
+    if (head.startswith("模型 ") or head.startswith("当前模型")) and "停用" in head:
+        return "failed"
+    return None
+
+
+def to_user_facing_error(
+    raw: str,
+    *,
+    model_name: str = "",
+    provider_name: str = "",
+) -> str:
     """Return a short Chinese message without internal jargon.
 
     2026-09-23：每条消息后面附上原始错误的关键信息（_extract_error_detail），
@@ -77,6 +213,11 @@ def to_user_facing_error(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
         return MSG_DEFAULT
+
+    # 幂等：输入已是本模块产出的文案（例如 classify 后的 detail）就直接返回，
+    # 不再套一层「处理未完成，请重试。」。
+    if user_facing_kind(text) is not None:
+        return text
 
     detail = _extract_error_detail(text)
     suffix = f"\n原因：{detail}" if detail else ""
@@ -107,6 +248,14 @@ def to_user_facing_error(raw: str) -> str:
         or lowered.startswith("cancel")
     ):
         return MSG_CANCELLED
+
+    # 模型被服务商下线（410 ModelDeprecated / 404 model_not_found）：
+    # 人话里不带原始报文 —— 原文由 run.error 的 raw 载荷折叠进「详情」。
+    info = classify_user_error(
+        text, model_name=model_name, provider_name=provider_name
+    )
+    if info is not None:
+        return str(info["message"])
 
     # 熔断冷却的英文里有 Timeout。必须先于下面的通用超时判断。
     # 废弃代码（2026-09-22）：看到 timeout 就显示「请求超时」，

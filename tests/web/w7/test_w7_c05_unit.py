@@ -2152,3 +2152,47 @@ def test_w7_c05_upsert_recompute_under_lock(postgres_url: str) -> None:
         assert total == 130  # rolled back — nothing committed
     finally:
         engine.dispose()
+
+
+def test_w7_c05_turn_result_file_carries_error_code_and_raw(tmp_path: Path) -> None:
+    """Confined 子进程结果文件必须带回 code/raw —— 父进程据此给
+    run.error 载荷标 MODEL_UNAVAILABLE，而不是只剩友好文案。"""
+    import json as _json
+
+    import rxycode_worker.drain as drain
+
+    workdir = tmp_path / "ws"
+    workdir.mkdir()
+    payload = {
+        "run_id": "run-model-dep",
+        "status": "failed",
+        "error": "模型 deepseek-flash 已被服务商（OpenCode Go）停用，请切换模型后重试。",
+        "code": "MODEL_UNAVAILABLE",
+        "raw": "APIStatusError: Error code: 410 - ModelDeprecated deepseek-flash",
+        "recovery": False,
+        "tokens": 0,
+    }
+    (workdir / drain._TURN_RESULT).write_text(
+        _json.dumps(payload) + "\n", encoding="utf-8"
+    )
+    row = drain._read_turn_result(workdir)
+    assert row["status"] == "failed"
+    assert row["code"] == "MODEL_UNAVAILABLE"
+    assert "ModelDeprecated" in row["raw"]
+    assert row["error"].startswith("模型 deepseek-flash")
+
+
+def test_w7_c05_turn_exceptions_carry_structured_fields() -> None:
+    """_TurnFailed 的 code/raw 即 run.error 载荷的 code/raw；
+    _TurnCancelled 走 cancelled 终态而不是 failed。"""
+    import rxycode_worker.drain as drain
+
+    err = drain._TurnFailed(
+        "模型 deepseek-flash 已被服务商停用",
+        code="MODEL_UNAVAILABLE",
+        raw="APIStatusError: 410 ModelDeprecated",
+    )
+    assert str(err).startswith("模型")
+    assert err.code == "MODEL_UNAVAILABLE"
+    assert "410" in err.raw
+    assert isinstance(drain._TurnCancelled("cancelled"), RuntimeError)
