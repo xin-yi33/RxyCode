@@ -2172,9 +2172,7 @@ def test_w7_c05_turn_result_file_carries_error_code_and_raw(tmp_path: Path) -> N
         "recovery": False,
         "tokens": 0,
     }
-    (workdir / drain._TURN_RESULT).write_text(
-        _json.dumps(payload) + "\n", encoding="utf-8"
-    )
+    (workdir / drain._TURN_RESULT).write_text(_json.dumps(payload) + "\n", encoding="utf-8")
     row = drain._read_turn_result(workdir)
     assert row["status"] == "failed"
     assert row["code"] == "MODEL_UNAVAILABLE"
