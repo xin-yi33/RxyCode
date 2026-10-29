@@ -36,6 +36,7 @@ from tests.web.w9.test_runs_api import (  # noqa: E402
     _client,
     _csrf,
     _headers,
+    _strip_grant,
 )
 
 CANARY = "sk-canary-cc0099dd11223344"
@@ -95,6 +96,10 @@ def test_resolver_requires_byok_despite_allowlist_switches(monkeypatch):
                 return SimpleNamespace(default_model_ref="platform")
             return None
 
+        def scalars(self, _statement):
+            # grant_for_user lookup — this actor holds no grant row.
+            return SimpleNamespace(one_or_none=lambda: None)
+
     record = SimpleNamespace(user_id="superuser", tenant_id="tenant")
     with pytest.raises(HTTPException) as error:
         resolve_run_model(_DB(), record, None, mode="local")
@@ -111,6 +116,9 @@ def test_enforced_without_model_denies_and_orphans_nothing(
     postgres_url, byok_env
 ):
     client, me = _user(postgres_url, "nobyok@example.com")
+    # W13: registration auto-claimed a grant slot; this test asserts the
+    # BYOK-only denial, so release it first (11th+ registrant semantics).
+    _strip_grant(postgres_url, me["user"]["id"])
     resp = _task(client)
     assert resp.status_code == 403
     assert resp.json()["code"] == "BYOK_REQUIRED"
@@ -156,6 +164,8 @@ def test_foreign_model_ref_is_404(postgres_url, byok_env):
 
 def test_cleared_key_is_model_unavailable(postgres_url, byok_env):
     client, me = _user(postgres_url, "cleared@example.com")
+    # Grant released: the catalogue must hold only the BYOK row.
+    _strip_grant(postgres_url, me["user"]["id"])
     model_ref = _make_model(client)
     conn_id = client.get("/api/v1/models").json()["models"][0]["connection_id"]
     cleared = client.post(
@@ -172,11 +182,17 @@ def test_platform_ref_is_rejected_even_for_allowlisted_user(
     postgres_url, byok_env, monkeypatch
 ):
     client, me = _user(postgres_url, "pleb@example.com")
+    # W13: a grant holder CAN submit platform — the denial case needs a
+    # grant-less user, so release the auto-claimed slot first.
+    _strip_grant(postgres_url, me["user"]["id"])
     denied = _task(client, model_ref="platform")
     assert denied.status_code == 404
     assert denied.json()["code"] == "MODEL_NOT_FOUND"
     internal, internal_me = _user(postgres_url, "ops@example.com")
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", internal_me["user"]["id"])
+    # The retired allowlist env grants nothing — the released user is
+    # refused identically.
+    _strip_grant(postgres_url, internal_me["user"]["id"])
     denied = _task(internal, model_ref="platform")
     assert denied.status_code == 404
     assert denied.json()["code"] == "MODEL_NOT_FOUND"
@@ -184,6 +200,8 @@ def test_platform_ref_is_rejected_even_for_allowlisted_user(
 
 def test_legacy_platform_default_does_not_resolve(postgres_url, byok_env):
     client, me = _user(postgres_url, "old-platform-default@example.com")
+    # The stale-default path is only reachable once the grant is gone.
+    _strip_grant(postgres_url, me["user"]["id"])
     with Session(create_engine(postgres_url)) as db:
         user = db.get(User, me["user"]["id"])
         user.default_model_ref = "platform"
@@ -195,6 +213,8 @@ def test_legacy_platform_default_does_not_resolve(postgres_url, byok_env):
 
 def test_session_continuation_enforced(postgres_url, byok_env):
     client, me = _user(postgres_url, "cont@example.com")
+    # BYOK-only denial: release the auto-claimed grant first.
+    _strip_grant(postgres_url, me["user"]["id"])
     # A session row exists (created via the project API, no run attached).
     project_id = me["default_project_id"]
     session = client.post(
@@ -293,13 +313,18 @@ def test_enforcement_off_still_requires_byok(postgres_url, byok_env, monkeypatch
     """The legacy switch cannot restore Web's platform environment gateway."""
     monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
     client, me = _user(postgres_url, "legacy@example.com")
+    # With no grant and no BYOK model the submit must still refuse.
+    _strip_grant(postgres_url, me["user"]["id"])
     resp = _task(client)
     assert resp.status_code == 403
     assert resp.json()["code"] == "BYOK_REQUIRED"
 
 
 def test_platform_default_ref_is_rejected(postgres_url, byok_env):
-    client, _ = _user(postgres_url, "set-platform-default@example.com")
+    client, me = _user(postgres_url, "set-platform-default@example.com")
+    # Grant holders may set the platform default (W13); the rejection case
+    # needs a grant-less user.
+    _strip_grant(postgres_url, me["user"]["id"])
     denied = client.post(
         "/api/v1/models/default",
         json={"model_ref": "platform"},

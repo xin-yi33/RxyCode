@@ -501,9 +501,14 @@ def test_model_picker_and_byok_modal_fit_phone_and_landscape(
     context.close()
 
 
-def test_model_picker_hides_platform_and_keeps_duplicate_refs_distinct(
+def test_model_picker_platform_item_and_duplicate_refs_distinct(
     browser: Browser, production_origin: str, screenshot_dir: Path
 ) -> None:
+    """W13: the grant-holder's catalog carries a real ``source=platform``
+    item — the picker now renders it (with the quota badge) as a
+    selectable option instead of hiding it. A *stale* default ref (one
+    not present in the catalog at all) is still ignored and the composer
+    still refuses to send against it."""
     blocked: list[str] = []
     long_provider = "synthetic-provider-name-that-must-only-be-searchable-" * 3
     long_model = "Synthetic shared model display name that is intentionally very long " * 2
@@ -532,18 +537,24 @@ def test_model_picker_hides_platform_and_keeps_duplicate_refs_distinct(
                 "status": "available",
             },
             {
-                "model_ref": "legacy-platform-ref",
-                "model_id": "synthetic-platform-id",
-                "display_name": "SYNTHETIC_PLATFORM_MODEL_MUST_NOT_APPEAR",
-                "provider_id": "platform",
-                "provider_name": "平台额度",
-                "connection_id": "platform",
-                "connection_name": "平台额度",
+                "model_ref": "platform",
+                "model_id": "deepseek-v4.1-flash",
+                "display_name": "平台赠送 · DeepSeek Flash",
+                "provider_id": "opencode-go",
+                "provider_name": "OpenCode Go",
+                "connection_id": "",
+                "connection_name": "OpenCode Go",
                 "source": "platform",
                 "status": "available",
+                "quota": {
+                    "token_cap": 10_000_000,
+                    "tokens_used": 0,
+                    "tokens_remaining": 10_000_000,
+                },
             },
         ],
-        "default_model_ref": "legacy-platform-ref",
+        # A dead ref — absent from the catalog entirely (no grant).
+        "default_model_ref": "ghost-platform-ref",
     }
 
     context = browser.new_context(
@@ -568,17 +579,20 @@ def test_model_picker_hides_platform_and_keeps_duplicate_refs_distinct(
     composer.fill("synthetic request guard check")
     page.get_by_role("button", name="发送").click()
     expect(page.get_by_role("alert")).to_contain_text("重新选择自有模型")
-    assert blocked == [], "legacy platform default must not issue any task request"
+    assert blocked == [], "ghost platform default must not issue any task request"
 
     picker.click()
     menu = page.get_by_role("dialog", name="选择模型")
     options = menu.get_by_role("option")
-    expect(options).to_have_count(2)
+    expect(options).to_have_count(3)
     menu_text = menu.inner_text()
     assert long_provider not in menu_text
     assert "another-synthetic-provider" not in menu_text
     assert "synthetic-shared-id" not in menu_text
-    assert "SYNTHETIC_PLATFORM_MODEL_MUST_NOT_APPEAR" not in menu_text
+    # The granted platform item IS a real option now — with the live
+    # quota badge, not the old hidden-ref treatment.
+    assert "平台赠送 · DeepSeek Flash" in menu_text
+    assert "剩余约 1000 万 tokens" in menu_text
     menu_bounds = menu.evaluate(
         "node => {const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,width:r.width}}"
     )
@@ -863,18 +877,26 @@ def _model_picker_live_smoke(
                 "status": "available",
             },
             {
-                "model_ref": "live-synthetic-legacy-platform",
-                "model_id": "SYNTHETIC_PLATFORM_ID",
-                "display_name": "SYNTHETIC_PLATFORM_MODEL_MUST_NOT_APPEAR",
-                "provider_id": "platform",
-                "provider_name": "平台额度",
-                "connection_id": "platform",
-                "connection_name": "平台额度",
+                # W13: the grant-holder's catalog carries a REAL platform
+                # item — the picker renders it (quota badge); a stale
+                # default is now a ref that is simply absent.
+                "model_ref": "platform",
+                "model_id": "deepseek-v4.1-flash",
+                "display_name": "平台赠送 · DeepSeek Flash",
+                "provider_id": "opencode-go",
+                "provider_name": "OpenCode Go",
+                "connection_id": "",
+                "connection_name": "OpenCode Go",
                 "source": "platform",
                 "status": "available",
+                "quota": {
+                    "token_cap": 10_000_000,
+                    "tokens_used": 0,
+                    "tokens_remaining": 10_000_000,
+                },
             },
         ],
-        "default_model_ref": "live-synthetic-legacy-platform",
+        "default_model_ref": "live-synthetic-ghost-platform",
     }
     blocked: list[str] = []
     blocked_telemetry: list[str] = []
@@ -934,9 +956,10 @@ def _model_picker_live_smoke(
 
                 picker.click()
                 menu = page.get_by_role("dialog", name="选择模型")
-                expect(menu.get_by_role("option")).to_have_count(2)
+                expect(menu.get_by_role("option")).to_have_count(3)
                 menu_text = menu.inner_text()
-                assert "SYNTHETIC_PLATFORM_MODEL_MUST_NOT_APPEAR" not in menu_text
+                assert "平台赠送 · DeepSeek Flash" in menu_text
+                assert "剩余约 1000 万 tokens" in menu_text
                 assert "live-synthetic-shared-id" not in menu_text
                 assert "live-synthetic-provider-searchable" not in menu_text
                 bounds = menu.evaluate(
@@ -960,7 +983,10 @@ def _model_picker_live_smoke(
                     timeout=45000,
                 )
                 page.get_by_text("模型目录", exact=True).wait_for(state="visible", timeout=30000)
-                assert "SYNTHETIC_PLATFORM_MODEL_MUST_NOT_APPEAR" not in page.locator("body").inner_text()
+                # Settings filters the platform item out of the BYOK list —
+                # the grant surfaces only via the access-quota card (absent
+                # here: the synthetic access payload carries no quota).
+                assert "平台赠送 · DeepSeek Flash" not in page.locator("body").inner_text()
                 assert "可先使用平台模型" not in page.locator("body").inner_text()
                 screenshot = screenshot_dir / f"live-model-settings-{suffix}.png"
                 page.screenshot(path=str(screenshot), full_page=True)

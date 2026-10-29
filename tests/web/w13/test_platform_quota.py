@@ -67,7 +67,10 @@ def _seed_user(postgres_url: str, *, with_membership: bool = True) -> tuple[str,
 
 
 def _claim(postgres_url: str, user_id: str, tenant_id: str) -> PlatformGrant:
-    with Session(create_engine(postgres_url)) as db:
+    # expire_on_commit=False: callers read slot_no/id/user_id AFTER the
+    # session closes — a default session would expire attributes at commit
+    # and detached access would raise DetachedInstanceError.
+    with Session(create_engine(postgres_url), expire_on_commit=False) as db:
         grant = pq.claim_slot(db, user_id=user_id, tenant_id=tenant_id)
         db.commit()
         assert grant is not None
@@ -161,7 +164,8 @@ def test_claim_concurrent_distinct_users(postgres_url):
     def worker(tenant_id: str, user_id: str) -> None:
         try:
             engine = create_engine(postgres_url)
-            with Session(engine) as db:
+            # grant attributes are read after the session closes.
+            with Session(engine, expire_on_commit=False) as db:
                 grant = pq.claim_slot(db, user_id=user_id, tenant_id=tenant_id)
                 db.commit()
                 with lock:
@@ -694,7 +698,7 @@ def test_set_default_platform_ref(postgres_url, monkeypatch):
         db.commit()
     denied = client.post("/api/v1/models/default", json={"model_ref": "platform"}, headers=headers)
     assert denied.status_code == 404
-    assert denied.json()["detail"] == "MODEL_NOT_FOUND"
+    assert denied.json()["code"] == "MODEL_NOT_FOUND"
     engine.dispose()
 
 
@@ -725,7 +729,7 @@ def test_runs_api_platform_ref_denied_for_non_holder(postgres_url, monkeypatch):
         db.commit()
     resp = _post_task(client, "platform")
     assert resp.status_code == 404, resp.text
-    assert resp.json()["detail"] == "MODEL_NOT_FOUND"
+    assert resp.json()["code"] == "MODEL_NOT_FOUND"
     engine.dispose()
 
 

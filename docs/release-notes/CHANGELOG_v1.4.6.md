@@ -469,6 +469,11 @@ Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险�
   `PLATFORM_QUOTA_EXHAUSTED`=「平台赠送额度已用完」（与后端
   `PLATFORM_EXHAUSTED_TEXT` 同文案）、`platform_quota` reason、
   `PLATFORM_NOT_ALLOWED`/`PLATFORM_UNAVAILABLE`。
+- Composer：`modelNeedsReselection` 同步新语义 —— 目录中存在且
+  `status==="available"` 的平台条目允许提交（此前一律拦截，
+  等于把持有者的赠送模型变成不可发送）；ref 不在目录
+  （无 grant/被撤）仍拦截，平台项 exhausted 时文案区分
+  「平台赠送额度已用完」。
 
 **部署（`infra/compose`）**
 
@@ -498,8 +503,17 @@ Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险�
   语义（错 pin → MODEL_UNAVAILABLE、无 grant →
   PLATFORM_NOT_ALLOWED、env allowlist 不启用 env 网关），
   `test_byok_api.py` 目录单元桩补 `scalars`。
-- 本机无 Docker/Postgres：pg 套件标记待 CI/有库环境执行；AST、
-  `ruff check`、`tsc --noEmit` 已绿。
+- w9 BYOK-only 断言对齐：`test_runs_api.py` 新增 `_strip_grant`
+  （释放注册自动认领的槽位，等价第 11+ 注册者无 grant），
+  `test_byok_api.py`/`test_byok_runs.py` 共 11 个旧语义用例先
+  strip 再断言；resolver 单元桩 `_DB` 补 `scalars`；
+  `test_access_endpoint_shape` 期望键集补 `platform_quota: None`。
+- w3 Playwright：`test_model_picker_platform_item_and_duplicate_refs_distinct`
+  重写为新语义 —— 平台条目带 quota 徽标出现在选项列表（计数
+  3），stale 默认改用不在目录的 ghost ref 仍被 composer 拦截。
+- VM docker 实跑（`vm_w13_tests.sh`，api 镜像挂载源码 +
+  rxy-w9-pg/rxy-w13-pg 实库）：w13 27/27、w9 125/125 通过
+  （w9 `test_e2e.py` 标记 e2e+live+serial，CI 本不收集）。
 
 ## RxyCode CLI
 
