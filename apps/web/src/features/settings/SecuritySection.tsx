@@ -60,7 +60,10 @@ function ReauthDialog({
   // Esc 挂 document：点过遮罩后焦点回落 body，overlay onKeyDown 收不到。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onClose()
+      }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

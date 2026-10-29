@@ -164,7 +164,7 @@ function ConfirmDialog({
             type="button"
             className={
               "rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 " +
-              (danger ? "bg-failure text-white" : "bg-accent text-accent-ink")
+              (danger ? "bg-failure text-background" : "bg-accent text-accent-ink")
             }
             disabled={busy}
             onClick={onConfirm}
@@ -293,7 +293,11 @@ function ScheduleEditor({
   // 点过遮罩后焦点落在 body，overlay 内的 onKeyDown 不再收到事件。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") {
+        // 拦截到 window 层为止：下层面板的全局 Esc 监听不得同时收层。
+        e.stopPropagation()
+        onClose()
+      }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

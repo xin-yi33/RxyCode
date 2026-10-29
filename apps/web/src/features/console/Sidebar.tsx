@@ -692,10 +692,15 @@ function CreateProjectModal({
     cancelRef.current?.focus()
   }, [])
   // Esc 挂 document：点过遮罩后焦点回落到 body，弹层内的 onKeyDown
-  // 不再收到事件 —— 显式 Esc 出口必须在任何焦点位置都可用。
+  // 不再收到事件 —— 显式 Esc 出口必须在任何焦点位置都可用。必须
+  // stopPropagation：window 层监听（ConsolePanel/SplitWorkspace）只豁免
+  // 原生 dialog[open]，本 div 弹层不拦截会把同一 Esc 传到下层面板。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel()
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        onCancel()
+      }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

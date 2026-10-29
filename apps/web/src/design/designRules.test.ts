@@ -72,10 +72,13 @@ describe("表单弹层：遮罩点击不得静默丢输入", () => {
     expect(src).toContain('variant={danger ? "danger" : "default"}')
   })
 
-  test("Button 具备 danger 变体（实心 failure，仅二次确认使用）", () => {
+  test("Button 具备 danger 变体（实心 failure + 主题反色字，仅二次确认）", () => {
     const src = read("components/ui/button.tsx")
     expect(src).toContain("danger:")
     expect(src).toContain("bg-failure")
+    // 暗色 failure 是浅红 #f87171 —— 白字不达标，必须主题感知反色。
+    expect(src).toContain("text-background")
+    expect(src).not.toContain("text-white")
   })
 
   test.each([
@@ -103,6 +106,7 @@ describe("表单弹层：遮罩点击不得静默丢输入", () => {
     const projectBackdrop = region(projectSlice, 'role="presentation"', 'role="dialog"')
     expect(projectBackdrop).not.toMatch(/onClick|onMouseDown/)
     expect(projectSlice).toContain('document.addEventListener("keydown"')
+    expect(projectSlice).toContain("e.stopPropagation()")
 
     const reauth = read("features/settings/SecuritySection.tsx")
     const reauthSlice = reauth.slice(
@@ -112,6 +116,7 @@ describe("表单弹层：遮罩点击不得静默丢输入", () => {
     const reauthBackdrop = region(reauthSlice, "bg-black/40", "<form")
     expect(reauthBackdrop).not.toMatch(/onClick|onMouseDown/)
     expect(reauthSlice).toContain('document.addEventListener("keydown"')
+    expect(reauthSlice).toContain("e.stopPropagation()")
 
     const schedules = read("features/schedule/SchedulesPage.tsx")
     const editor = schedules.slice(
@@ -121,8 +126,9 @@ describe("表单弹层：遮罩点击不得静默丢输入", () => {
     const editorBackdrop = region(editor, "bg-black/40", "max-h-[85vh]")
     expect(editorBackdrop).not.toMatch(/onClick|onMouseDown/)
     // Esc 出口必须挂 document 级 —— overlay onKeyDown 在遮罩被点过
-    // （焦点回落 body）后失效。
+    // （焦点回落 body）后失效；且必须 stopPropagation 防下层面板同收。
     expect(editor).toContain('document.addEventListener("keydown"')
+    expect(editor).toContain("e.stopPropagation()")
 
     const confirm = schedules.slice(
       schedules.indexOf("function ConfirmDialog"),
@@ -136,7 +142,9 @@ describe("表单弹层：遮罩点击不得静默丢输入", () => {
     const src = read("features/schedule/SchedulesPage.tsx")
     const confirm = src.slice(src.indexOf("function ConfirmDialog"), src.indexOf("function ScheduleEditor"))
     expect(confirm).toContain('role="alertdialog"')
-    expect(confirm).toContain('"bg-failure text-white"')
+    // 主题感知反色：暗色 failure=#f87171 配 text-white 仅 2.77:1（P2 评审）。
+    expect(confirm).toContain('"bg-failure text-background"')
+    expect(confirm).not.toContain("text-white")
     expect(src).toContain("danger\n")
   })
 })

@@ -300,11 +300,16 @@ Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险�
   创建项目弹窗、重新验证身份弹窗、定时任务编辑器（手浮层同策略）。
 - 二次确认不得被误点遮罩静默取消：共享 `ConfirmDialog` 改为
   `role="alertdialog"` + `maskClosable={false}` + `danger` 走新
-  `Button` `danger` 变体（实心 failure + 白字）；SchedulesPage 本地
-  确认框同步 alertdialog/遮罩不可关/删除任务用 danger。
+  `Button` `danger` 变体（实心 failure + `text-background` 主题感知
+  反色 —— 暗色 failure=#f87171 上白字仅 2.77:1 不达 AA，Codex P2 复审
+  修正）；SchedulesPage 本地确认框同步 alertdialog/遮罩不可关/删除任务
+  用 danger。
 - Esc 仍作显式出口但原先挂在弹层 `onKeyDown` 上：点过遮罩后焦点回落
   `body`，Esc 彻底失效。改为挂 `document` 级监听（编辑器/创建项目/
-  重验三处），编辑器首字段 `autoFocus` 兜底焦点位置。
+  重验三处），编辑器首字段 `autoFocus` 兜底焦点位置；document 监听
+  补 `stopPropagation` —— window 层 Esc 监听（ConsolePanel/
+  SplitWorkspace）只豁免原生 `dialog[open]`，不拦截会同时收掉下层面板
+  （Codex P2）。
 
 **审批中立与危险语义**
 
