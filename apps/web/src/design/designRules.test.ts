@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 import { isBackdropDismissClick } from "../components/ui/dialog"
+import { ACCENTS, THEMES, accentInkFor } from "../lib/appearance"
 
 const SRC = fileURLToPath(new URL("..", import.meta.url))
 const WEB = fileURLToPath(new URL("../..", import.meta.url))
@@ -195,13 +196,64 @@ describe("accent 令牌通道", () => {
     expect(cfg).toContain('"accent-ink"')
   })
 
-  test("globals.css 提供 --rxy-accent-rgb 默认通道", () => {
-    expect(read("styles/globals.css")).toContain("--rxy-accent-rgb:")
+  test("globals.css 提供 --rxy-accent-rgb / --rxy-accent-ink 默认通道", () => {
+    const css = read("styles/globals.css")
+    expect(css).toContain("--rxy-accent-rgb:")
+    expect(css).toContain("--rxy-accent-ink:")
   })
 
-  test("外观引擎写入 accent 时同步 -rgb 通道（/30 透明度修饰可用）", () => {
+  test("accent-ink 走 CSS 变量而非固定白字（亮 accent 需深墨反色）", () => {
+    const cfg = readWeb("tailwind.config.js")
+    expect(cfg).toContain('"accent-ink": "var(--rxy-accent-ink)"')
+  })
+
+  test("外观引擎写入 accent 时同步 -rgb 与 -ink；空 accent 清掉全部覆盖", () => {
     const src = read("lib/appearance.ts")
     expect(src).toContain("--rxy-accent-rgb")
     expect(src).toContain("hexToRgbChannels")
+    expect(src).toContain('setProperty("--rxy-accent-ink", accentInkFor(accent))')
+    // 切回「默认」主题时 -rgb/-ink 不能残留，否则按钮继续用上一 profile 色。
+    expect(src).toContain('removeProperty("--rxy-accent")')
+    expect(src).toContain('removeProperty("--rxy-accent-rgb")')
+    expect(src).toContain('removeProperty("--rxy-accent-ink")')
+  })
+})
+
+describe("accentInkFor 前景墨反色", () => {
+  /** WCAG 相对亮度 + 对比度（测试内独立实现，验证选择结果达标）。 */
+  const lum = (hex: string) => {
+    const n = Number.parseInt(hex.slice(1), 16)
+    const lin = [16, 8, 0].map((s) => {
+      const v = ((n >> s) & 255) / 255
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+    })
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+  }
+  const contrast = (a: string, b: string) => {
+    const la = lum(a)
+    const lb = lum(b)
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+  }
+
+  test("深色 accent 配白字，亮色 accent 配深墨", () => {
+    // 默认深蓝 #0f62fe：白字 ~5.0:1 达标，保持白字。
+    expect(accentInkFor("#0f62fe")).toBe("#ffffff")
+    // Rxy Dark #7aa2ff / Rxy Midnight #58a6ff：白字仅 ~2.5:1，必须深墨。
+    expect(accentInkFor("#7aa2ff")).toBe("#212121")
+    expect(accentInkFor("#58a6ff")).toBe("#212121")
+    // 无法解析的输入保守回落白字（accent 本身也不会生效）。
+    expect(accentInkFor("")).toBe("#ffffff")
+    expect(accentInkFor("not-a-color")).toBe("#ffffff")
+  })
+
+  test("目录内全部 accent（主题 + 自选色板）所选 ink 均达 WCAG AA 4.5:1", () => {
+    const accents = [
+      ...THEMES.map((t) => t.accent),
+      ...ACCENTS.map((a) => a.color).filter(Boolean),
+    ]
+    expect(accents.length).toBeGreaterThanOrEqual(8)
+    for (const accent of accents) {
+      expect(contrast(accent, accentInkFor(accent))).toBeGreaterThanOrEqual(4.5)
+    }
   })
 })

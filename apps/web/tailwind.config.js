@@ -23,10 +23,10 @@ export default {
         "success-ink": variableColor("success-ink"),
         "failure-ink": variableColor("failure-ink"),
         "muted-ink": variableColor("muted-ink"),
-        // 强调色：--rxy-accent(-rgb) 由外观引擎按主题写入；accent-ink 固定
-        // 白字（与 bg-failure text-white 的既有按钮约定一致）。
+        // 强调色：--rxy-accent(-rgb) 与 --rxy-accent-ink 由外观引擎写入；
+        // ink 按 accent 亮度反色（Rxy Dark #7aa2ff 等亮 accent 上白字不达 AA）。
         accent: variableColor("accent"),
-        "accent-ink": "#ffffff",
+        "accent-ink": "var(--rxy-accent-ink)",
       },
       opacity: {
         15: "0.15",

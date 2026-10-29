@@ -133,6 +133,33 @@ function hexToRgbChannels(hex: string): string | null {
   return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`
 }
 
+/** WCAG 相对亮度（0–1），供 accent → ink 反色判定。 */
+function relLuminance(hex: string): number | null {
+  const rgb = hexToRgbChannels(hex)
+  if (!rgb) return null
+  const lin = rgb.split(",").map((s) => {
+    const v = Number(s) / 255
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+  })
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+}
+
+const ACCENT_INK_LIGHT = "#ffffff"
+const ACCENT_INK_DARK = "#212121" // 与暗色 --rxy-bg 一致的深墨
+
+/**
+ * 按 accent 亮度挑可读前景墨：默认深蓝 #0f62fe 配白字；亮色 accent
+ * （Rxy Dark #7aa2ff / Rxy Midnight #58a6ff 上白字仅 ~2.5:1）配深墨。
+ */
+export function accentInkFor(accent: string): string {
+  const l = relLuminance(accent)
+  if (l == null) return ACCENT_INK_LIGHT
+  const cLight = 1.05 / (l + 0.05)
+  const darkL = relLuminance(ACCENT_INK_DARK)
+  const cDark = darkL == null ? 0 : (l + 0.05) / (darkL + 0.05)
+  return cLight >= cDark ? ACCENT_INK_LIGHT : ACCENT_INK_DARK
+}
+
 export function applyAppearance(resolved: ResolvedAppearance): void {
   if (typeof document === "undefined") return
   const root = document.documentElement
@@ -148,9 +175,17 @@ export function applyAppearance(resolved: ResolvedAppearance): void {
   const { accent, background, foreground, theme_id } = resolved.profile
   if (accent) {
     root.style.setProperty("--rxy-accent", accent)
-    // 与 --rxy-accent 同步，Tailwind accent/30 等透明度修饰只认 -rgb 通道。
+    // 与 --rxy-accent 同步，Tailwind accent/30 等透明度修饰只认 -rgb 通道；
+    // accent-ink 按 accent 亮度反色（亮色 accent 上白字不达 AA）。
     const rgb = hexToRgbChannels(accent)
     if (rgb) root.style.setProperty("--rxy-accent-rgb", rgb)
+    root.style.setProperty("--rxy-accent-ink", accentInkFor(accent))
+  } else {
+    // “默认”/空 profile 必须清掉全部三个覆盖，样式表默认值才能回来
+    // —— 否则残留的 -rgb/-ink 让按钮和选中环继续用上一个 profile 的色。
+    root.style.removeProperty("--rxy-accent")
+    root.style.removeProperty("--rxy-accent-rgb")
+    root.style.removeProperty("--rxy-accent-ink")
   }
   if (background) root.style.setProperty("--rxy-bg", background)
   if (foreground) root.style.setProperty("--rxy-fg", foreground)

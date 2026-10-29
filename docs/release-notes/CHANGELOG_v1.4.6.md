@@ -322,9 +322,19 @@ Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险�
   源码中早已使用但 Tailwind 未注册 `accent` 颜色 —— 一律不产出 CSS
   （按钮/开关实际无强调底色）。`tailwind.config.js` 注册
   `accent`（`-rgb` 通道）与 `accent-ink`；`globals.css` 补
-  `--rxy-accent-rgb` 默认值；`appearance.ts` 写 `--rxy-accent` 时经
-  `hexToRgbChannels` 同步 `-rgb` 通道，`accent/30` 透明度修饰可用。
-  构建产物确认 `bg-accent` → `rgba(var(--rxy-accent-rgb),1)`。
+  `--rxy-accent-rgb`/`--rxy-accent-ink` 默认值；`appearance.ts` 写
+  `--rxy-accent` 时经 `hexToRgbChannels` 同步 `-rgb` 通道，`accent/30`
+  透明度修饰可用。构建产物确认 `bg-accent` →
+  `rgba(var(--rxy-accent-rgb),1)`。
+- `accent-ink` 不再是固定 `#ffffff`：Rxy Dark `#7aa2ff` 与 Rxy
+  Midnight `#58a6ff` 是亮蓝 accent，白字实测仅 ~2.5:1 不达 AA。
+  `accentInkFor()` 按 WCAG 相对亮度在 `#ffffff`/`#212121` 之间反色
+  （与暗色 `--rxy-bg` 一致的深墨），经 `var(--rxy-accent-ink)` 落到
+  Tailwind；目录全部 accent（4 主题 + 5 色板）所选墨均 ≥4.5:1，
+  `designRules.test.ts` 逐色断言钉死。
+- 切回「默认」主题（profile.accent 为空）时原先只清 `--rxy-accent`
+  本身，`-rgb` 通道残留会让按钮继续用上一主题的色 —— 现在三个覆盖
+  （accent/-rgb/-ink）一并 `removeProperty`。
 
 **移动端安全区**
 
