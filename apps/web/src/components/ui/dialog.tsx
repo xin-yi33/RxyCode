@@ -7,15 +7,40 @@ import { useEffect, useRef, type ReactNode } from "react"
 import { cn } from "../../lib/cn"
 import { Button } from "./button"
 
+/** 遮罩点击关闭判定：点击目标必须是 <dialog> 自身、弹层允许遮罩关闭
+    （maskClosable）、且点击点落在内容盒之外（= 点了 ::backdrop）。
+    导出为纯函数便于纯 TS 契约测试（无 DOM 依赖）。 */
+export function isBackdropDismissClick(
+  maskClosable: boolean,
+  event: { target: EventTarget | null; clientX: number; clientY: number },
+  dialog: Element | null,
+): boolean {
+  if (!dialog || !maskClosable || event.target !== dialog) return false
+  const rect = dialog.getBoundingClientRect()
+  return (
+    event.clientX < rect.left ||
+    event.clientX > rect.right ||
+    event.clientY < rect.top ||
+    event.clientY > rect.bottom
+  )
+}
+
 export function Modal({
   onClose,
   label,
   className,
+  maskClosable = true,
+  role,
   children,
 }: {
   onClose: () => void
   label: string
   className?: string
+  // 对应设计规范 maskClosable：携带表单的弹层必须传 false，避免点遮罩
+  // 静默丢输入；只读/提示层保持默认 true。Esc 与显式取消不受影响。
+  maskClosable?: boolean
+  // 二次确认传 "alertdialog"（ARIA 强确认语义）；普通弹层保持原生 dialog。
+  role?: "dialog" | "alertdialog"
   children?: ReactNode
 }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -70,6 +95,7 @@ export function Modal({
     <dialog
       ref={ref}
       aria-label={label}
+      role={role}
       className={cn(
         "rxy-modal m-auto max-h-[85vh] w-[calc(100vw-2rem)] max-w-md overflow-y-auto " +
           "rounded-xl border border-border bg-card p-0 text-foreground " +
@@ -79,16 +105,10 @@ export function Modal({
       // Esc（cancel）与程序化 close 都走这里，统一由父层卸载本组件。
       onClose={() => onCloseRef.current()}
       onClick={(event) => {
-        const el = ref.current
-        if (!el || event.target !== el) return
         // 点击落在 dialog 内容盒之外 = 点了 ::backdrop。
-        const rect = el.getBoundingClientRect()
-        const inside =
-          event.clientX >= rect.left &&
-          event.clientX <= rect.right &&
-          event.clientY >= rect.top &&
-          event.clientY <= rect.bottom
-        if (!inside) onCloseRef.current()
+        if (isBackdropDismissClick(maskClosable, event, ref.current)) {
+          onCloseRef.current()
+        }
       }}
     >
       {children}
@@ -113,8 +133,15 @@ export function ConfirmDialog({
   onConfirm: () => void
   onClose: () => void
 }) {
+  // 高风险二次确认：maskClosable=false —— 误点遮罩不得静默取消确认语境。
   return (
-    <Modal onClose={onClose} label={title} className="max-w-sm">
+    <Modal
+      onClose={onClose}
+      label={title}
+      className="max-w-sm"
+      maskClosable={false}
+      role="alertdialog"
+    >
       <div className="p-5">
         <h3 className="text-base font-semibold">{title}</h3>
         {body ? <div className="mt-2 text-sm text-muted">{body}</div> : null}
@@ -124,9 +151,9 @@ export function ConfirmDialog({
           </Button>
           <Button
             size="sm"
+            variant={danger ? "danger" : "default"}
             onClick={onConfirm}
             disabled={busy}
-            className={danger ? "bg-failure text-background" : undefined}
           >
             {busy ? "处理中…" : confirmLabel}
           </Button>

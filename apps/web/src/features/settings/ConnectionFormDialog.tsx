@@ -113,7 +113,12 @@ export function ConnectionFormDialog({
   }
 
   return (
-    <Modal onClose={onClose} label={editing ? "编辑连接" : "添加连接"}>
+    // 表单弹层 maskClosable=false：误点遮罩不得丢弃已填的 Key/字段。
+    <Modal
+      onClose={onClose}
+      label={editing ? "编辑连接" : "添加连接"}
+      maskClosable={false}
+    >
       <form onSubmit={submit} className="space-y-4 p-5">
         <h3 className="text-base font-semibold">
           {editing ? "编辑连接" : "添加连接"}

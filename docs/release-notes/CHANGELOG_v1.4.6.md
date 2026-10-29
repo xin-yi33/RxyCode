@@ -285,6 +285,89 @@ should-hide:17/17 FP=0 FN=0）；`pytest tests/web/w12` 51 passed；
   `eventReducer.test.ts`（bun test，CI 同步进 web-ci）；w3 浏览器契约
   加失败徽标/错误卡/切换模型→ModelPicker/移动端抽屉开合与无 `<select>`。
 
+### 设计规范合规审计修复（2026-10-29，`feat/design-skills-frontend`）
+
+对 `apps/web` 跑 B 端 + 移动端设计规范双审计脚本并人工复查
+Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险按钮/composer，
+按用户影响排序后只做高影响低风险修复，不改产品形态、不换配色。
+
+**表单弹层遮罩安全（maskClosable）**
+
+- 共享 `Modal`（`components/ui/dialog.tsx`）新增 `maskClosable`（默认
+  `true`）与 `role` 属性；遮罩判定抽为纯函数 `isBackdropDismissClick`。
+- 携带输入的弹层一律 `maskClosable={false}`，点遮罩不再静默丢表单：
+  连接表单（`ConnectionFormDialog`）、会话页反馈表单（`SessionPage`）、
+  创建项目弹窗、重新验证身份弹窗、定时任务编辑器（手浮层同策略）。
+- 二次确认不得被误点遮罩静默取消：共享 `ConfirmDialog` 改为
+  `role="alertdialog"` + `maskClosable={false}` + `danger` 走新
+  `Button` `danger` 变体（实心 failure + `text-background` 主题感知
+  反色 —— 暗色 failure=#f87171 上白字仅 2.77:1 不达 AA，Codex P2 复审
+  修正）；SchedulesPage 本地确认框同步 alertdialog/遮罩不可关/删除任务
+  用 danger。
+- Esc 仍作显式出口但原先挂在弹层 `onKeyDown` 上：点过遮罩后焦点回落
+  `body`，Esc 彻底失效。改为挂 `document` 级监听（编辑器/创建项目/
+  重验三处），编辑器首字段 `autoFocus` 兜底焦点位置；document 监听
+  补 `stopPropagation` —— window 层 Esc 监听（ConsolePanel/
+  SplitWorkspace）只豁免原生 `dialog[open]`，不拦截会同时收掉下层面板
+  （Codex P2）。
+
+**审批中立与危险语义**
+
+- `ApprovalItem` 批准/拒绝统一 `variant="outline"`，不再用主按钮引导
+  选择（设计规范决策中立）。
+
+**accent 令牌接线（存量死 class 修复）**
+
+- `bg-accent`/`text-accent-ink`/`border-accent`/`ring-accent/30` 在
+  源码中早已使用但 Tailwind 未注册 `accent` 颜色 —— 一律不产出 CSS
+  （按钮/开关实际无强调底色）。`tailwind.config.js` 注册
+  `accent`（`-rgb` 通道）与 `accent-ink`；`globals.css` 补
+  `--rxy-accent-rgb`/`--rxy-accent-ink` 默认值；`appearance.ts` 写
+  `--rxy-accent` 时经 `hexToRgbChannels` 同步 `-rgb` 通道，`accent/30`
+  透明度修饰可用。构建产物确认 `bg-accent` →
+  `rgba(var(--rxy-accent-rgb),1)`。
+- `accent-ink` 不再是固定 `#ffffff`：Rxy Dark `#7aa2ff` 与 Rxy
+  Midnight `#58a6ff` 是亮蓝 accent，白字实测仅 ~2.5:1 不达 AA。
+  `accentInkFor()` 按 WCAG 相对亮度在 `#ffffff`/`#212121` 之间反色
+  （与暗色 `--rxy-bg` 一致的深墨），经 `var(--rxy-accent-ink)` 落到
+  Tailwind；目录全部 accent（4 主题 + 5 色板）所选墨均 ≥4.5:1，
+  `designRules.test.ts` 逐色断言钉死。
+- 切回「默认」主题（profile.accent 为空）时原先只清 `--rxy-accent`
+  本身，`-rgb` 通道残留会让按钮继续用上一主题的色 —— 现在三个覆盖
+  （accent/-rgb/-ink）一并 `removeProperty`。
+
+**移动端安全区**
+
+- `.feedback-auto-prompt` 底部全宽卡加
+  `padding-bottom: max(0.75rem, env(safe-area-inset-bottom))`（Home
+  Bar 不再压按钮）；Toast 底距 `max(1.5rem, env(safe-area-inset-bottom))`；
+  PreviewDrawer overlay 全屏头加 `safe-area-inset-top` 兜底。
+- TOTP 设置验证码输入补 `autoComplete="one-time-code"`（与
+  登录/注册/找回密码既有 `inputMode="numeric"` + one-time-code 对齐）。
+
+**审计确认已合规（未改动）**
+
+- 状态徽章全部走语义色 + `*-ink`（running/waiting/success/failure/
+  muted）；`index.html viewport-fit=cover`；`useMobileViewport` 同步
+  visualViewport；设置移动抽屉锁 `body.overflow` + 焦点还原 + 断点
+  自动关；composer/PreviewDrawer safe-area 路径已存在；DeleteChatModal
+  等确认层本就遮罩不可关。
+
+**测试与验证**
+
+- 新增纯 TS 契约 `src/design/designRules.test.ts`（bun test，
+  23 用例）：`isBackdropDismissClick` 五分支真值 + 源码不变量
+  （表单弹层 maskClosable、alertdialog+danger、验证码属性、
+  滚动锁、审批中立、accent 通道、safe-area）；`web-ci.yml` bun test
+  行追加该文件。
+- `tsc --noEmit` 干净；`vite build` 干净，产物含 accent 工具类。
+- Playwright 实机验证（vite preview + 桩 API，Chromium 1440/390
+  light/dark）：遮罩点击全部表单/确认层 0 关闭、Esc 全通、alertdialog
+  语义、删除按钮 `rgb(220,38,38)`、run-now 确认按钮 accent
+  `rgb(15,98,254)`、抽屉开 `body.overflow='hidden'`/关恢复 —
+  15/15 通过；21 张截图存
+  `~/.rxycode/output/design-audit/`（含 capture.py/verify.py 脚本）。
+
 ## RxyCode CLI
 
 ### 预置服务商模型目录全量核对 + MODEL_UNAVAILABLE 匹配拓宽（2026-10-29，`fix/model-catalog-sync`）
