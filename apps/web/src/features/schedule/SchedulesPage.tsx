@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useSearchParams } from "react-router"
 
@@ -116,6 +116,7 @@ function ConfirmDialog({
   title,
   body,
   confirmLabel,
+  danger = false,
   busy,
   error,
   onCancel,
@@ -124,23 +125,24 @@ function ConfirmDialog({
   title: string
   body: string
   confirmLabel: string
+  danger?: boolean
   busy: boolean
   error: string
   onCancel: () => void
   onConfirm: () => void
 }) {
   const { t } = useI18n()
+  // 高风险确认 maskClosable=false：遮罩不可点击取消（设计规范）——
+  // 只留「取消」按钮与 Esc 之外的显式出口。
   return (
     <div
       role="presentation"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
-      onClick={onCancel}
     >
       <div
         role="alertdialog"
         aria-modal="true"
         className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-base font-semibold">{title}</h2>
         <p className="mt-2 text-sm text-muted">{body}</p>
@@ -160,7 +162,10 @@ function ConfirmDialog({
           </button>
           <button
             type="button"
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-60"
+            className={
+              "rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-60 " +
+              (danger ? "bg-failure text-white" : "bg-accent text-accent-ink")
+            }
             disabled={busy}
             onClick={onConfirm}
           >
@@ -283,18 +288,24 @@ function ScheduleEditor({
   const projectList = projects.data ?? []
   const sessionList = sessions.data?.sessions ?? []
 
+  // 表单弹层 maskClosable=false：遮罩点击不再关闭（避免误点丢表单），
+  // 取消走右上 ✕ / 底部「取消」按钮 / Esc。Esc 挂在 document 上：
+  // 点过遮罩后焦点落在 body，overlay 内的 onKeyDown 不再收到事件。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={schedule ? "编辑定时任务" : "新建定时任务"}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose()
-      }}
     >
       <div className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-border bg-card shadow-xl">
         <div className="flex items-center justify-between border-b border-border p-4">
@@ -319,6 +330,9 @@ function ScheduleEditor({
               id="sched-name"
               value={name}
               maxLength={100}
+              // 首字段自动聚焦：弹层打开即落在表单内，Esc（overlay onKeyDown）
+              // 与键盘流立即可用 —— 与 CreateProjectModal 同一约定。
+              autoFocus
               onChange={(e) => setName(e.target.value)}
               className={input}
             />
@@ -1077,6 +1091,7 @@ export function SchedulesPage() {
           title="删除定时任务"
           body="删除定时任务，已生成的聊天保留。确认删除？"
           confirmLabel={t("app.delete")}
+          danger
           busy={remove.isPending}
           error=""
           onCancel={() => setConfirm(null)}

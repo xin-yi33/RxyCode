@@ -247,6 +247,8 @@
     width: 100%;
     border-radius: var(--rxy-composer-radius, 1rem)
       var(--rxy-composer-radius, 1rem) 0 0;
+    /* 底部全宽贴边卡必须避开 Home Bar（与 .rxy-composer-dock 同一规则）。 */
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
 }
 

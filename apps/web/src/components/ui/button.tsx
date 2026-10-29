@@ -18,6 +18,10 @@ const buttonVariants = cva(
         // Ghost controls put the focus ring inside the control via the shared
         // .rxy-ghost-control rule, so they never draw a second outer outline.
         ghost: "rxy-ghost-control text-muted-ink",
+        // 危险确认键：实心 failure 底 + 白字（与 DeleteChatModal/归档删除一致）。
+        // 只用于二次确认弹窗的确认动作，普通列表行仍用 text-failure 链接。
+        danger:
+          "bg-failure text-white focus-visible:outline-2 focus-visible:outline-offset-2",
       },
       size: {
         default: "",

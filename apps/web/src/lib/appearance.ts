@@ -123,6 +123,16 @@ export function resolveAppearance(
   }
 }
 
+/** "#rgb"/"#rrggbb" → "r, g, b"（--rxy-accent 的 Tailwind 通道同步）。 */
+function hexToRgbChannels(hex: string): string | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return null
+  let h = m[1]
+  if (h.length === 3) h = [...h].map((c) => c + c).join("")
+  const n = Number.parseInt(h, 16)
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`
+}
+
 export function applyAppearance(resolved: ResolvedAppearance): void {
   if (typeof document === "undefined") return
   const root = document.documentElement
@@ -136,7 +146,12 @@ export function applyAppearance(resolved: ResolvedAppearance): void {
   root.style.setProperty("--rxy-code-font", `${resolved.codeFontPx}px`)
   root.classList.toggle("reduced-motion", resolved.reducedMotion)
   const { accent, background, foreground, theme_id } = resolved.profile
-  if (accent) root.style.setProperty("--rxy-accent", accent)
+  if (accent) {
+    root.style.setProperty("--rxy-accent", accent)
+    // 与 --rxy-accent 同步，Tailwind accent/30 等透明度修饰只认 -rgb 通道。
+    const rgb = hexToRgbChannels(accent)
+    if (rgb) root.style.setProperty("--rxy-accent-rgb", rgb)
+  }
   if (background) root.style.setProperty("--rxy-bg", background)
   if (foreground) root.style.setProperty("--rxy-fg", foreground)
   root.dataset.themeId = theme_id ?? (resolved.mode === "dark" ? "rxy-dark" : "rxy-light")

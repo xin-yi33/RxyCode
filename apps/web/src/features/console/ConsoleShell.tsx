@@ -80,7 +80,7 @@ function ToastHost() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-6 left-1/2 z-[80] -translate-x-1/2 rounded-md border border-border bg-card px-3 py-2 text-sm shadow-md"
+      className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] left-1/2 z-[80] -translate-x-1/2 rounded-md border border-border bg-card px-3 py-2 text-sm shadow-md"
     >
       {toast.text}
     </div>

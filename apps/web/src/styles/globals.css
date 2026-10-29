@@ -297,6 +297,8 @@ body {
   --rxy-ui-font: 14px;
   --rxy-code-font: 13px;
   --rxy-accent: #0f62fe;
+  /* Tailwind accent 颜色走 -rgb 通道（支持 /30 等不透明度修饰）。 */
+  --rxy-accent-rgb: 15, 98, 254;
 }
 
 .rxy-app-shell {

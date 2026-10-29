@@ -354,7 +354,13 @@ export function SessionPage() {
           />
         ) : null}
         {feedbackTarget ? (
-          <Modal onClose={() => setFeedbackTarget(null)} label="反馈此回答" className="max-w-lg">
+          // 反馈表单是输入型弹层：maskClosable=false，遮罩误点不丢草稿。
+          <Modal
+            onClose={() => setFeedbackTarget(null)}
+            label="反馈此回答"
+            className="max-w-lg"
+            maskClosable={false}
+          >
             <h3 className="mb-3 text-base font-semibold">反馈此回答</h3>
             <FeedbackForm
               prefill={feedbackTarget}

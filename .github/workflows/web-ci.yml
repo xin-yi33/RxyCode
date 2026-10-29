@@ -166,7 +166,7 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Pure-TS unit corpus (bun test)
-        run: bun test src/features/feedback/autoPrompt.test.ts src/features/runs/eventReducer.test.ts
+        run: bun test src/features/feedback/autoPrompt.test.ts src/features/runs/eventReducer.test.ts src/design/designRules.test.ts
 
       - name: Production build (vite -> dist)
         run: npm run build

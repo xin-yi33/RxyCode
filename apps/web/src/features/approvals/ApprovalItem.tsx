@@ -126,9 +126,11 @@ export function ApprovalItem({
           </div>
         ) : null}
       </dl>
+      {/* 审批中立（设计规范 §07）：批准/拒绝同用次级按钮，不做视觉引导。 */}
       <div className="mt-3 flex items-center gap-2">
         <Button
           size="sm"
+          variant="outline"
           disabled={submitting !== null}
           onClick={() => void decide("approved")}
         >

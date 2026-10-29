@@ -40,7 +40,8 @@ export function PreviewDrawer({ job, title, open = true, onClose }: PreviewDrawe
           : "flex h-full min-h-0 w-full flex-col bg-card"
       }
     >
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+      {/* overlay 全屏时 header 顶到状态栏：safe-area 兜底（pane 模式 env=0）。 */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))]">
         <span className="min-w-0 flex-1 text-sm">
           <FileName name={title} />
         </span>

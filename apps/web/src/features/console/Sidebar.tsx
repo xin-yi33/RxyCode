@@ -691,27 +691,30 @@ function CreateProjectModal({
   useEffect(() => {
     cancelRef.current?.focus()
   }, [])
+  // Esc 挂 document：点过遮罩后焦点回落到 body，弹层内的 onKeyDown
+  // 不再收到事件 —— 显式 Esc 出口必须在任何焦点位置都可用。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel()
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onCancel])
   const submit = () => {
     if (name.trim()) onCreate(name.trim(), memoryMode)
   }
+  // 表单弹层 maskClosable=false：遮罩点击不关闭（误点不丢项目名/记忆设置），
+  // 关闭走右上 ✕ / 「取消」/ Esc。
   return (
     <div
       role="presentation"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
-      onClick={onCancel}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-project-title"
         className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation()
-            onCancel()
-          }
-        }}
       >
         <div className="flex items-start justify-between">
           <h2 id="create-project-title" className="text-base font-semibold">

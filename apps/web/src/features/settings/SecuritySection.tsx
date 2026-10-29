@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { Button } from "../../components/ui/button"
@@ -56,15 +56,21 @@ function ReauthDialog({
     onSuccess: (data) => onToken(data.reauth_token),
     onError: (err) => setError(apiErrorText(err)),
   })
+  // 表单弹层 maskClosable=false：遮罩点击不关闭，关闭走「取消」按钮 / Esc。
+  // Esc 挂 document：点过遮罩后焦点回落 body，overlay onKeyDown 收不到。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       role="dialog"
       aria-modal="true"
       aria-label="重新验证身份"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
     >
       <form
         className="w-full max-w-sm rounded-xl border border-border bg-card p-4 shadow-xl"
@@ -144,6 +150,7 @@ function TotpSetup({ token, onDone }: { token: string; onDone: () => void }) {
               onChange={(e) => setCode(e.target.value)}
               placeholder="6 位验证码"
               inputMode="numeric"
+              autoComplete="one-time-code"
               className="w-32 rounded-md border border-border bg-background px-2 py-1.5 text-sm"
             />
             <Button size="sm" disabled={code.trim().length < 6 || confirm.isPending} onClick={() => confirm.mutate()}>
