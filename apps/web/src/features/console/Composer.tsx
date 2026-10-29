@@ -97,9 +97,16 @@ export function Composer({
   const effectiveCatalogModel = catalog.data?.models.find(
     (model) => model.model_ref === effectiveModelRef,
   )
+  // 平台赠送项是合法的可提交模型：目录里存在且 status==="available"
+  // 即放行；ref 不在目录（无 grant/被撤）或平台项 exhausted 才拦截。
   const modelNeedsReselection =
     effectiveModelRef != null &&
-    (effectiveCatalogModel?.source === "platform" || !effectiveCatalogModel)
+    (!effectiveCatalogModel ||
+      (effectiveCatalogModel.source === "platform" &&
+        effectiveCatalogModel.status !== "available"))
+  const platformQuotaExhausted =
+    effectiveCatalogModel?.source === "platform" &&
+    effectiveCatalogModel.status === "exhausted"
   const [sending, setSending] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [files, setFiles] = useState<PendingFile[]>([])
@@ -305,10 +312,15 @@ export function Composer({
       return
     }
     if (modelNeedsReselection) {
-      fail("当前模型已停止提供，请配置或重新选择自有模型", {
-        to: "/app/settings?section=models",
-        label: "管理模型",
-      })
+      fail(
+        platformQuotaExhausted
+          ? "平台赠送额度已用完，请配置或重新选择自有模型"
+          : "当前模型已停止提供，请配置或重新选择自有模型",
+        {
+          to: "/app/settings?section=models",
+          label: "管理模型",
+        },
+      )
       return
     }
     let rid = requestId

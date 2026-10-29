@@ -580,6 +580,42 @@ class UsageRecord(Base):
     run: Mapped[Run] = relationship()
 
 
+class PlatformGrant(Base):
+    """One platform-funded free-quota slot (migration 014).
+
+    Ten rows are seeded unclaimed (``user_id NULL``); registration claims the
+    lowest open slot atomically. ``tokens_used`` is the durable counter —
+    settled from real run metering at finalize time and clamped at
+    ``token_cap`` by the conditional UPDATE in platform_quota.service, so
+    the platform credential can never overspend the grant.
+    """
+
+    __tablename__ = "platform_grants"
+    __table_args__ = (
+        UniqueConstraint("slot_no", name="uq_platform_grants_slot"),
+        Index(
+            "uq_platform_grants_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    slot_no: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    tenant_id: Mapped[str] = mapped_column(String(64), default="")
+    model_id: Mapped[str] = mapped_column(String(256), default="")
+    token_cap: Mapped[int] = mapped_column(BigInteger, default=0)
+    tokens_used: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    granted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User | None] = relationship()
+
+
 class UserSessionMeta(Base):
     """Per-user navigation state for a session — pin is a preference, not a
     permission. Ordering positions are optional ints; null = unordered."""
@@ -997,6 +1033,7 @@ WEB_TABLES = (
     "feedback_batches",
     "feedback_items",
     "feedback_images",
+    "platform_grants",
     "security_events",
     "authorized_apps",
 )

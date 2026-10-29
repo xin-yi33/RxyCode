@@ -171,22 +171,52 @@ def test_resolve_gateway_cleared_revoked_deleted(postgres_url, byok_keyring):
         assert err.value.code == "MODEL_UNAVAILABLE"
 
 
-def test_platform_not_allowed():
-    tenant_id, user_id = "tenant", "actor"
-    snapshot = _snap("", source="platform")
-    snapshot.update({"model_ref": "platform", "model_id": "deployed"})
+def _platform_snap() -> dict:
+    """The only snapshot shape the platform credential may ever serve."""
+    return {
+        "model_ref": "platform",
+        "model_id": "deepseek-v4.1-flash",
+        "provider_id": "opencode-go",
+        "provider_name": "OpenCode Go",
+        "credential_source": "platform",
+        "connection_id": "",
+        "credential_version": 0,
+    }
+
+
+def test_platform_wrong_model_refused(postgres_url, monkeypatch):
+    """A platform snapshot pinned to any other model id is a forgery."""
+    tenant_id, user_id = _seed_user(postgres_url, "p1")
+    monkeypatch.setenv("RXYCODE_PLATFORM_API_KEY", CANARY)
+    snapshot = _platform_snap()
+    snapshot["model_id"] = "deployed"
     with pytest.raises(drain._CredentialRefused) as err:
         drain._resolve_run_gateway(
-            "unused-database-url", "run-3", _identity(tenant_id, user_id, snapshot), snapshot
+            postgres_url, "run-3", _identity(tenant_id, user_id, snapshot), snapshot
+        )
+    assert err.value.code == "MODEL_UNAVAILABLE"
+
+
+def test_platform_grant_missing_refused(postgres_url, monkeypatch):
+    """Pinned model + env key still fail closed without an ACTIVE grant."""
+    tenant_id, user_id = _seed_user(postgres_url, "p2")
+    monkeypatch.setenv("RXYCODE_PLATFORM_API_KEY", CANARY)
+    snapshot = _platform_snap()
+    with pytest.raises(drain._CredentialRefused) as err:
+        drain._resolve_run_gateway(
+            postgres_url, "run-3b", _identity(tenant_id, user_id, snapshot), snapshot
         )
     assert err.value.code == "PLATFORM_NOT_ALLOWED"
 
 
 def test_platform_allowlist_cannot_enable_env_gateway(
-    monkeypatch,
+    postgres_url, monkeypatch
 ):
-    tenant_id, user_id = "tenant", "actor"
+    """The retired RXYCODE_PLATFORM_MODEL_USERS env allowlist grants nothing:
+    without a durable grant row the run is refused before env is read."""
+    tenant_id, user_id = _seed_user(postgres_url, "p3")
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", user_id)
+    monkeypatch.setenv("RXYCODE_PLATFORM_API_KEY", CANARY)
     monkeypatch.setenv("RXYCODE_LLM_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("RXYCODE_API_KEY", "sk-canary-platform")
     monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "0")
@@ -194,11 +224,10 @@ def test_platform_allowlist_cannot_enable_env_gateway(
         "rxycode_worker.egress.model_gateway_from_env",
         lambda: pytest.fail("platform gateway must not be read or called"),
     )
-    snapshot = _snap("", source="platform")
-    snapshot.update({"model_ref": "platform", "model_id": "deployed"})
+    snapshot = _platform_snap()
     with pytest.raises(drain._CredentialRefused) as err:
         drain._resolve_run_gateway(
-            "unused-database-url", "run-4", _identity(tenant_id, user_id, snapshot), snapshot
+            postgres_url, "run-4", _identity(tenant_id, user_id, snapshot), snapshot
         )
     assert err.value.code == "PLATFORM_NOT_ALLOWED"
 

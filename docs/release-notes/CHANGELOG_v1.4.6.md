@@ -368,6 +368,153 @@ Settings/反馈/模型接入/控制台/认证/抽屉弹层/状态徽章/危险�
   15/15 通过；21 张截图存
   `~/.rxycode/output/design-audit/`（含 capture.py/verify.py 脚本）。
 
+### 平台赠送额度：前 10 名注册用户 × 10M tokens（`feat/platform-quota`）
+
+产品承诺「前 10 名注册用户各得 10,000,000 tokens 的平台买单额度」落为
+持久化 grant 行 + 单模型 pinning + 父进程侧凭证，不用平台名额的用户
+（BYOK）路径完全不变。
+
+**数据层（migration `014_platform_quota`，down_revision=`013_feedback`）**
+
+- 新表 `platform_grants`：`slot_no`（1..10 唯一 + CHECK 范围）、
+  `user_id`（可空，`users.id` FK）、`tenant_id`、`model_id`
+  （pin `deepseek-v4.1-flash`）、`token_cap`（10M）、`tokens_used`
+  （BigInteger 持久化计数器，CHECK ≥0）、`status`、`granted_at`/`claimed_at`。
+- 部分唯一索引 `uq_platform_grants_user ON (user_id) WHERE user_id IS NOT NULL`
+  —— 一个用户至多一个 grant，未认领槽位可共存；部分索引
+  `ix_platform_grants_open ON (slot_no) WHERE user_id IS NULL` 服务
+  「最低空槽」扫描。
+- **迁移即播种**：`WHERE NOT EXISTS` 保护插入 `pg_slot_01..10`——
+  即使此刻用户数 <10，十个名额全部预留；重跑不覆盖已认领行。
+  全部 DDL 幂等（表/索引存在即跳过），带 downgrade。
+
+**名额认领（`platform_quota/service.py`）**
+
+- `claim_slot`：注册事务内 `FOR UPDATE SKIP LOCKED` 选最低空槽 +
+  `UPDATE … WHERE user_id IS NULL` 条件写——并发注册不可能超额、
+  不可能同槽双发；同用户并发认领撞部分唯一索引时走 SAVEPOINT，
+  回滚到嵌套事务后返回胜者行（幂等），外层注册事务不受污染。
+- 挂接点：邮箱注册（`POST /auth/register`，与用户行同一事务，
+  注册与 grant 同生同灭）、GitHub 建号（`_github_account` 新用户分支）、
+  local 模式首个用户创建。已存在用户的登录路径绝不补发——历史用户
+  由回填覆盖。
+- `scripts/platform_slots.py`：`status` 打印槽位 JSON（仅 user id +
+  slot 号，无邮箱无密钥）、`backfill` 按 `users.created_at` 升序为
+  迁移前已存在用户确定性认领（幂等，满槽为空操作）。直连
+  `RXYCODE_WEB_DATABASE_URL`，不读平台 API key。
+
+**模型解析与目录（`byok/resolver.py`、`api/models.py`）**
+
+- `model_ref="platform"` 仅对持有 ACTIVE grant 的用户解析为平台快照
+  （`credential_source="platform"`、pin `deepseek-v4.1-flash` /
+  provider `opencode-go`，快照只含标识符、绝无 key）；非持有者
+  提交该 ref 得 404 `MODEL_NOT_FOUND`（与未知 ref 同形，不泄露存在）。
+- grant 持有者的隐式默认模型即平台模型（未传 model_ref 即走平台），
+  目录 `GET /api/v1/models` 顶部注入平台条目（带 `quota`
+  快照：cap/used/remaining，用尽时 `status="exhausted"`）；
+  `default_model_ref` 联动。`POST /models/default` 仅持有者可把
+  `platform` 设为默认；失效 grant 的残留默认按死 ref 处理。
+- `GET /api/v1/models/access` 增加 `platform_allowed` 与
+  `platform_quota`。退役的 `RXYCODE_PLATFORM_MODEL_USERS` 环境变量
+  不再授予任何东西（仅剩注释）。
+
+**准入与计数（`runs/service.py`、`platform_quota`）**
+
+- `create_run` 在 per-user advisory lock（`gate.reserve` 已持）下
+  `check_admission`：grant 行 `FOR UPDATE` 复读
+  `tokens_used < token_cap`，并拒绝该用户第二个 ACTIVE 平台 run
+  （`PLATFORM_RUN_ACTIVE`）——两个并发平台 run 不可能同时穿过
+  临界检查。`PlatformQuotaRefused` 在 API 层映射：
+  `PLATFORM_NOT_ALLOWED` → 404 `MODEL_NOT_FOUND`；
+  `PLATFORM_QUOTA_EXHAUSTED` → 429 `{code:QUOTA_EXCEEDED,
+  reason:"platform_quota"}`；`PLATFORM_RUN_ACTIVE` → 429
+  `reason:"concurrency"`。定时任务与手动 run-now 走同一
+  `resolve_run_model` + `create_run` 路径，手动路径同码映射。
+- `settle_grant`（worker finalize/spool 回放调用）：以 run 累计
+  计量总数对账——`platform.settled` 事件标记的 `applied_total`
+  为已记账量，`LEAST(tokens_used + delta, token_cap)` 在持锁的
+  grant 行上原子折叠，标记与计数器同一 commit。租约丢失的
+  重复 finalize 只补差值：不重复计费、不丢账；grant 不存在视为
+  已结清（usage 台账仍记支出）。计数器被 LEAST 钳制，**永不超 cap**。
+- `grant_overrun`（worker 中途看门狗，~3s 轮询）：durable 计数 +
+  本 run 未记账计量 ≥ cap 即 `cut.set()` + cancel turn，
+  `run.error` 落 `PLATFORM_QUOTA_EXHAUSTED`。真正上游花费的超调
+  被一次计量轮询周期封顶——有界，不是无底线消耗 owner 套餐。
+
+**Worker 凭证路径（`drain.py`，父进程专属）**
+
+- `_resolve_run_gateway` 对 `credential_source="platform"`：先校验
+  快照 model_id 恰为 `deepseek-v4.1-flash`（否则
+  `MODEL_UNAVAILABLE`——伪造快照 fail closed），再 `grant_active`
+  对库复读（提交后 grant 被撤销 → `PLATFORM_NOT_ALLOWED`），然后
+  才读 `RXYCODE_PLATFORM_API_KEY`（缺失 → `PLATFORM_UNAVAILABLE`）
+  与 `RXYCODE_PLATFORM_BASE_URL`（默认
+  `https://opencode.ai/zen/go/v1`），构造 vet=True 的
+  `ModelGateway`（host/port/base_path 白名单化解析）。
+- 机密边界：`RXYCODE_PLATFORM_API_KEY` 只存在于 worker 父进程
+  env——`_CHILD_ENV_PASS` 不含它，`_build_child_config` 的模型覆写
+  只写 `api_key:"confined"` + loopback base_url，run 快照/事件
+  payload/API 响应均无 key 实体；真实 Authorization 头由父进程
+  egress 在上游一跳注入。API 容器不挂该变量。平台 run 不走
+  `model_gateway_from_env` 泛型兜底。
+
+**前端（`apps/web`）**
+
+- ModelPicker：目录不再过滤 `source==="platform"`——持有者的平台
+  条目可选并显示「剩余约 N 万 tokens」角标；两种失效分流：
+  ref 消失（grant 撤销/未持有）→「已停止提供」、exhausted →
+  「额度已用完」，均引导改选自有模型。设置页模型区显示平台额度
+  卡片（剩余/上限）。`sdk/client.ts` 类型补 `platform_quota` 与
+  `ModelItem.quota`/`status:"exhausted"`；`sdk/errors.ts` 映射
+  `PLATFORM_QUOTA_EXHAUSTED`=「平台赠送额度已用完」（与后端
+  `PLATFORM_EXHAUSTED_TEXT` 同文案）、`platform_quota` reason、
+  `PLATFORM_NOT_ALLOWED`/`PLATFORM_UNAVAILABLE`。
+- Composer：`modelNeedsReselection` 同步新语义 —— 目录中存在且
+  `status==="available"` 的平台条目允许提交（此前一律拦截，
+  等于把持有者的赠送模型变成不可发送）；ref 不在目录
+  （无 grant/被撤）仍拦截，平台项 exhausted 时文案区分
+  「平台赠送额度已用完」。
+
+**部署（`infra/compose`）**
+
+- `compose.prod.yaml` 与 `compose.yaml` 仅向 worker 服务透传
+  `RXYCODE_PLATFORM_API_KEY` / `RXYCODE_PLATFORM_BASE_URL`（api 服务
+  不挂）；`.env.prod.example` 文档化。存量 `RXYCODE_LLM_*` 泛型变量
+  不变，平台凭证独立配置。
+
+**测试（`tests/web/w13/test_platform_quota.py`，Postgres 实库）**
+
+- 槽位：迁移播种恰 10 行开槽/pin/cap；最低槽认领与幂等；第 11 人
+  无槽；20 线程并发认领→恰 10 个不同槽/不同用户；同用户并发认领
+  →单 grant（部分唯一索引 + SAVEPOINT 幂等）；回填 created_at
+  确定性顺序 + 幂等 + 10 人封顶。
+- 解析：持有者 platform ref/隐式默认 → 平台快照；非持有者/失效
+  grant → 404；stale 默认不复活访问；env allowlist 不授予。
+- 计数：cap 拒绝、`PLATFORM_RUN_ACTIVE`、settle 单调/钳制/标记
+  幂等、overrun 看门狗阈值与已记账抵扣。
+- Worker：grant+env → opencode.ai:443 `/zen/go/v1` 网关且 canary
+  只在父进程 headers；无 key → `PLATFORM_UNAVAILABLE`；错模型 pin
+  → `MODEL_UNAVAILABLE`；子 env/config 无 canary、无 opencode.ai；
+  `run.created` payload 无 key 且回显平台快照。
+- HTTP：注册即认领 slot 1；目录/默认/access 三端按 grant 分流；
+  非持有者 POST platform → 404；用尽 → 429 `platform_quota`；
+  持有者 202 且 run 行/platform 快照正确。
+- 存量回归：`tests/web/w9/test_byok_worker.py` 平台用例改写为新
+  语义（错 pin → MODEL_UNAVAILABLE、无 grant →
+  PLATFORM_NOT_ALLOWED、env allowlist 不启用 env 网关），
+  `test_byok_api.py` 目录单元桩补 `scalars`。
+- w9 BYOK-only 断言对齐：`test_runs_api.py` 新增 `_strip_grant`
+  （释放注册自动认领的槽位，等价第 11+ 注册者无 grant），
+  `test_byok_api.py`/`test_byok_runs.py` 共 11 个旧语义用例先
+  strip 再断言；resolver 单元桩 `_DB` 补 `scalars`；
+  `test_access_endpoint_shape` 期望键集补 `platform_quota: None`。
+- w3 Playwright：`test_model_picker_platform_item_and_duplicate_refs_distinct`
+  重写为新语义 —— 平台条目带 quota 徽标出现在选项列表（计数
+  3），stale 默认改用不在目录的 ghost ref 仍被 composer 拦截。
+- VM docker 实跑（`vm_w13_tests.sh`，api 镜像挂载源码 +
+  rxy-w9-pg/rxy-w13-pg 实库）：w13 27/27、w9 125/125 通过
+  （w9 `test_e2e.py` 标记 e2e+live+serial，CI 本不收集）。
+
 ## RxyCode CLI
 
 ### 预置服务商模型目录全量核对 + MODEL_UNAVAILABLE 匹配拓宽（2026-10-29，`fix/model-catalog-sync`）

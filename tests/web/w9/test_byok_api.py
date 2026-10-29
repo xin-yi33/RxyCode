@@ -31,6 +31,7 @@ from tests.web.w9.test_runs_api import (  # noqa: E402
     _client,
     _csrf,
     _headers,
+    _strip_grant,
 )
 
 CANARY = "sk-canary-a1b2c3d4e5f60718"
@@ -89,6 +90,10 @@ def test_platform_catalogue_policy_unit(monkeypatch):
 
         def execute(self, _statement):
             return SimpleNamespace(all=lambda: [])
+
+        def scalars(self, _statement):
+            # grant_for_user lookup — this actor holds no grant row.
+            return SimpleNamespace(one_or_none=lambda: None)
 
     db = _DB()
     monkeypatch.setattr(models_api, "current_record", lambda _request: actor)
@@ -309,6 +314,9 @@ def test_discover_and_add_models(postgres_url, byok_keyring, monkeypatch):
 
 def test_models_list_and_default(postgres_url, byok_keyring, monkeypatch):
     client, me = _reg(postgres_url, "default@example.com", monkeypatch)
+    # W13: registration claimed a grant slot — this test asserts the
+    # BYOK-only catalogue shape, so release it first.
+    _strip_grant(postgres_url, me["user"]["id"])
     conn_id = _create_connection(client).json()["connection"]["id"]
     model_ref = _add_models(client, conn_id, ["deepseek-chat"]).json()[
         "results"
@@ -342,6 +350,9 @@ def test_delete_model_and_connection_clears_default(
     postgres_url, byok_keyring, monkeypatch
 ):
     client, me = _reg(postgres_url, "delete@example.com", monkeypatch)
+    # W13: grant released — catalogue holds BYOK rows only, and with the
+    # last model gone the default ref must be None, not the platform ref.
+    _strip_grant(postgres_url, me["user"]["id"])
     conn_id = _create_connection(client).json()["connection"]["id"]
     refs = [
         r["model_ref"]
@@ -454,12 +465,16 @@ def test_billable_probe_requires_opt_in(postgres_url, byok_keyring, monkeypatch)
 
 def test_access_endpoint_shape(postgres_url, byok_keyring, monkeypatch):
     client, me = _reg(postgres_url, "access@example.com", monkeypatch)
+    # W13: grant released — a grant-less user sees platform_allowed=False.
+    _strip_grant(postgres_url, me["user"]["id"])
     monkeypatch.setenv("RXYCODE_BYOK_ENFORCE", "1")
     access = client.get("/api/v1/models/access")
     assert access.status_code == 200
     assert access.json() == {
         "require_byok": True,
         "platform_allowed": False,
+        # W13: the quota snapshot key is always present — null off-grant.
+        "platform_quota": None,
         "byok_available": True,
         "default_model_ref": None,
     }
@@ -476,6 +491,8 @@ def test_legacy_platform_default_is_hidden_on_catalogue_reads(
     postgres_url, byok_keyring, monkeypatch
 ):
     client, me = _reg(postgres_url, "stale-default@example.com", monkeypatch)
+    # The stale-default-hiding path is only reachable once the grant is gone.
+    _strip_grant(postgres_url, me["user"]["id"])
     with Session(create_engine(postgres_url)) as db:
         user = db.get(User, me["user"]["id"])
         user.default_model_ref = "platform"

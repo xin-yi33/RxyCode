@@ -23,6 +23,9 @@ const CODE_TEXT: Record<string, string> = {
   RESET_INVALID: "重置链接无效或已过期，请重新发起",
   MODEL_NOT_FOUND: "模型不存在或已移除",
   MODEL_UNAVAILABLE: "该模型当前不可用（连接已变更）",
+  PLATFORM_QUOTA_EXHAUSTED: "平台赠送额度已用完",
+  PLATFORM_NOT_ALLOWED: "模型不存在或已移除",
+  PLATFORM_UNAVAILABLE: "平台模型服务暂不可用",
   BYOK_REQUIRED: "请先配置自己的 API Key",
   BYOK_UNAVAILABLE: "模型服务暂不可用",
   INVALID_BASE_URL: "接口地址无效（需 HTTPS 公网地址）",
@@ -48,6 +51,10 @@ const QUOTA_REASON_TEXT: Record<string, string> = {
   task: "今日任务数已用完",
   token: "您没有额度了",
   upstream: "您没有额度了",
+  // 平台赠送额度（v1.4.6）：持久化计数器到顶后 create_run 以
+  // QUOTA_EXCEEDED + platform_quota 拒绝 —— 与后端
+  // platform_quota.service.PLATFORM_EXHAUSTED_TEXT 同一文案。
+  platform_quota: "平台赠送额度已用完",
 }
 
 export function apiErrorText(error: unknown): string {

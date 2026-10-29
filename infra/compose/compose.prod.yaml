@@ -164,6 +164,14 @@ services:
       RXYCODE_BYOK_KEYRING_FILE: /run/secrets/byok-keyring.json
       RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
       RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      # Platform free-quota credential (v1.4.6): the owner-funded OpenCode
+      # Go key — read ONLY here, in the drain parent. It is deliberately
+      # absent from the api environment and never enters a confined turn:
+      # _child_env rebuilds the child's env from an allowlist and the
+      # egress proxy injects this auth on the upstream hop only, scoped
+      # to the deepseek-v4.1-flash model pin.
+      RXYCODE_PLATFORM_API_KEY: ${RXYCODE_PLATFORM_API_KEY:-}
+      RXYCODE_PLATFORM_BASE_URL: ${RXYCODE_PLATFORM_BASE_URL:-https://opencode.ai/zen/go/v1}
       # Attachment import (W11): staged bytes live in the same object store
       # the API writes to — workers fetch by manifest object_key.
       RXYCODE_S3_ENDPOINT: ${RXYCODE_S3_ENDPOINT:-http://minio:9000}

@@ -127,6 +127,27 @@ def _client(postgres_url: str, email: str, *, app=None) -> tuple[TestClient, dic
     return client, response.json()
 
 
+def _strip_grant(postgres_url: str, user_id: str) -> None:
+    """Release the platform slot registration auto-claimed for this user.
+
+    W13: the first ten registrants hold a grant, which changes every
+    defaulting surface (catalog, implicit default, run admission). Tests
+    written for the BYOK-only policy release the slot — the user then
+    behaves exactly like the 11th+ registrant who never got one.
+    """
+    from rxycode_server.persistence.models import PlatformGrant
+
+    engine = create_engine(postgres_url)
+    with Session(engine) as db:
+        db.execute(
+            update(PlatformGrant)
+            .where(PlatformGrant.user_id == user_id)
+            .values(user_id=None, claimed_at=None)
+        )
+        db.commit()
+    engine.dispose()
+
+
 def _post_task(client: TestClient, message: str, request_id: str | None = None, **extra):
     body = {
         "message": message,

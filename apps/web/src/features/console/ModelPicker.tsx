@@ -24,6 +24,15 @@ import type { AuthStatus } from "../auth/useAuth"
 const STATUS_REASON: Record<string, string> = {
   revoked: "连接已变更",
   no_key: "未配置密钥",
+  exhausted: "额度已用完",
+}
+
+// 平台赠送项的剩余额度角标（服务端 quota 快照；缺失即不显示）。
+const quotaLabel = (model: ModelItem): string | null => {
+  if (model.source !== "platform" || !model.quota) return null
+  const left = Math.max(0, model.quota.tokens_remaining)
+  if (left >= 10_000) return `剩余约 ${Math.round(left / 10_000)} 万 tokens`
+  return `剩余 ${left} tokens`
 }
 
 export type ModelPickerProps = {
@@ -73,7 +82,10 @@ export function ModelPicker({
   const optionId = (ref: string) => `model-opt-${ref}`
 
   const catalogModels = catalog.data?.models ?? []
-  const models = catalogModels.filter((model) => model.source !== "platform")
+  // 平台赠送项（source === "platform"）由服务端按 grant 注入目录——
+  // 持有者可选、额度随 quota 快照展示；非持有者的目录里根本不存在该
+  // ref，草稿里残留的选中值走 selectedPlatformModel 的失效提示路径。
+  const models = catalogModels
   const catalogDefaultRef = catalog.data?.default_model_ref ?? null
   const defaultRef = models.some((model) => model.model_ref === catalogDefaultRef)
     ? catalogDefaultRef
@@ -81,8 +93,12 @@ export function ModelPicker({
   // undefined = 跟随服务端默认；catalog 未加载时按 null 处理。
   const selectedRef = draft?.modelRef !== undefined ? draft.modelRef : defaultRef
   const selectedModel = models.find((m) => m.model_ref === selectedRef) ?? null
-  const selectedPlatformModel =
-    catalogModels.find((m) => m.model_ref === selectedRef && m.source === "platform") ?? null
+  // 平台赠送 ref 的两类失效：目录里已没有该 ref（grant 撤销/无 grant）
+  // → "已停止提供"；仍在目录但 exhausted（额度归零）→ "额度已用完"。
+  const selectedPlatformRef = selectedRef === "platform"
+  const selectedPlatformGone = selectedPlatformRef && selectedModel === null
+  const selectedPlatformExhausted =
+    selectedModel?.source === "platform" && selectedModel.status === "exhausted"
   const selectedBroken =
     selectedRef != null && (!selectedModel || selectedModel.status !== "available")
 
@@ -173,10 +189,12 @@ export function ModelPicker({
       title = "模型目录加载失败，点击可重试"
     } else if (selectedRef != null) {
       if (selectedBroken) {
-        label = selectedPlatformModel ? "需重新选择模型" : "模型不可用"
-        title = selectedPlatformModel
-          ? "该模型已停止提供，请重新选择自有模型"
-          : "所选模型已失效，请重新选择"
+        label = selectedPlatformRef ? "需重新选择模型" : "模型不可用"
+        title = selectedPlatformExhausted
+          ? "平台赠送额度已用完，请配置或重新选择自有模型"
+          : selectedPlatformRef
+            ? "该模型已停止提供，请重新选择自有模型"
+            : "所选模型已失效，请重新选择"
       } else if (selectedModel) {
         label = selectedModel.display_name || selectedModel.model_id
         title = label
@@ -282,8 +300,8 @@ export function ModelPicker({
             </div>
           ) : models.length === 0 ? (
             <div className="space-y-2 p-3">
-              <p className={selectedPlatformModel ? "text-xs text-failure" : "text-xs text-muted"}>
-                {selectedPlatformModel
+              <p className={selectedPlatformGone ? "text-xs text-failure" : "text-xs text-muted"}>
+                {selectedPlatformGone
                   ? "该模型已停止提供，请配置或重新选择自有模型"
                   : "尚未添加模型"}
               </p>
@@ -299,9 +317,11 @@ export function ModelPicker({
             <>
               {selectedBroken ? (
                 <p className="border-b border-border px-3 py-2 text-xs text-failure">
-                  {selectedPlatformModel
-                    ? "该模型已停止提供，请配置或重新选择自有模型"
-                    : "当前所选模型不可用，请重新选择"}
+                  {selectedPlatformExhausted
+                    ? "平台赠送额度已用完，请配置或重新选择自有模型"
+                    : selectedPlatformGone
+                      ? "该模型已停止提供，请配置或重新选择自有模型"
+                      : "当前所选模型不可用，请重新选择"}
                 </p>
               ) : null}
               <div className="border-b border-border p-2">
@@ -356,6 +376,11 @@ export function ModelPicker({
                           <span className="rxy-weight-medium min-w-0 flex-1 truncate">
                             {m.display_name || m.model_id}
                           </span>
+                          {quotaLabel(m) ? (
+                            <span className="shrink-0 rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent-ink">
+                              {quotaLabel(m)}
+                            </span>
+                          ) : null}
                           {m.model_ref === defaultRef ? (
                             <span className="shrink-0 rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] text-success-ink">
                               默认
