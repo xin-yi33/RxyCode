@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-10-30
+
+### 00:55 CST 🐧📦 Web 设计规范合规审计修复上线（web-96071583，PR #36）
+- 代码：PR #36 squash 合入 `19d4c503974b86338663a1324fd128a6e3fd05e6`（分支 `feat/design-skills-frontend` 三提交：`bd767183` 审计修复 + `58ba5feb` Codex 修复 + `96071583` accent-ink 亮度反转；部署树与 master 树逐位一致 `fda9ed49`，线上无需为 squash sha 重部署）。PR CI 三工作流全绿（CI `40900770639`、web-ci `40900770693`、release-gate `40900770655`）；Codex review 对 tip `96071583` completed 零 findings（前轮 4 条 P2——Esc 冒泡串层、danger 白字对比 2.77:1、accent-ink 在浅蓝 accent 上仅 ~2.5:1、重置主题残留 `-rgb` 覆盖——已由 `58ba5feb`/`96071583` 全部修复）。master CI `40907531727` 首跑 py3.12 覆盖层 `test_concurrent_upload_submit_real_uvicorn` 并发 1.2s 窗口单上传 401（与本改动无关的计时竞态），`--failed` 重跑后 success。
+- 内容（B 端 + 移动端设计规范审计，视觉令牌不动）：共享 Modal 增 `maskClosable`+`role`，遮罩误点判定抽纯函数 `isBackdropDismissClick`，连接表单/反馈表单/创建项目/重新认证/定时任务编辑器全部改为遮罩点击不关、Esc 可关；删除确认统一 `role="alertdialog"` + danger 按钮 `text-background`（暗色 5.82:1 / 亮色 ~5.6:1，替原 `text-white` 2.77:1）；新 `accentInkFor()` 按 WCAG 相对亮度在 `#ffffff`/`#212121` 间选墨并写入 `--rxy-accent-ink` channel（tailwind `accent-ink` 改 var 解析）；重置默认主题 `removeProperty` 清齐 `accent`/`-rgb`/`-ink` 三覆盖；document 级 Esc 监听 `stopPropagation`（ConsolePanel/SplitWorkspace window 监听只豁免原生 `dialog[open]`，div 弹层不再串层关闭）；移动端抽屉 body 滚动锁 + safe-area padding。`designRules.test.ts` 契约 67 用例钉住全部不变量。
+- 部署（`deploy_design_96071583.py all`，前一轮 `deploy_design_58ba5feb.py` 已先上线中间提交）：增量 bundle → `/opt/rxycode/src` 精确 checkout `96071583`（纯分支提交）→ `disk-guard.sh --if-needed`（12G used / 6.0G free，无需清理）→ 三镜像 `web-96071583` → `.env` `RXYCODE_IMAGE_TAG` → `compose config -q` → migrate exit 0（alembic 仍 `013_feedback`，无新迁移）→ `up -d`。api/gateway/**worker×3** 全部 healthy；VM 本机 `:8080` 与公网 `/api/v1/version` 均回 `96071583…`，`https://rxycode.xyz` 200。切换成功后 `/opt/rxycode/.ops/rollback_tag` 写入 `web-58ba5feb`（镜像保留）。
+- 上线实测：serve 的 `index-D2Sxm3Kf.js`/`index-u43OMKuX.css` 与本机构建逐哈希一致，在线 grep 确认 `stopPropagation`×4 / `alertdialog`×3 / `rxy-accent-ink`×1 / `safe-area`×1 已随包上线；同一产物经 headless Chromium Playwright 行为验证 15/15（连接表单/定时任务编辑器/创建项目遮罩点击不关、Esc 关，模型与任务删除确认 `alertdialog`+遮罩不关+danger 底 `rgb(220,38,38)`，非危险确认 accent 蓝 `rgb(15,98,254)`，390×844 设置抽屉开 `body.overflow=hidden` 关恢复）。公网 headless 直开 `rxycode.xyz` 200、无 Cloudflare challenge、pageerror 0。验证脚本 `~/.rxycode/output/design-audit/{capture,verify}.py`，截图 21 张同目录。
+- 回滚：`.env` `RXYCODE_IMAGE_TAG=web-58ba5feb` + 同 compose 命令 `up -d`；无 schema 变更。
+
 ## 2026-10-29
 
 ### 02:40 CST 🐧📦 预置服务商模型目录全量核对 + MODEL_UNAVAILABLE 400 匹配拓宽上线（web-117310ab，PR #34）
