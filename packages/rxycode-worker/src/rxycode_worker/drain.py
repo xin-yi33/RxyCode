@@ -351,9 +351,67 @@ def _resolve_run_gateway(
     tenant_id = str(identity.get("tenant_id") or "")
 
     if source == "platform":
-        raise _CredentialRefused(
-            "PLATFORM_NOT_ALLOWED",
-            "platform credentials are disabled for Web runs",
+        # Platform-funded grant path (v1.4.6): the key lives ONLY in this
+        # worker parent's environment — the child keeps the "confined"
+        # placeholder and the loopback base_url like any other run.
+        from rxycode_server.platform_quota.service import (
+            PLATFORM_MODEL_ID,
+            env_api_key,
+            env_base_url,
+            grant_active,
+        )
+
+        # Model pin: the platform credential serves exactly one model id;
+        # a snapshot bound to anything else is a forgery — fail closed.
+        if str(snap.get("model_id") or "") != PLATFORM_MODEL_ID:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE",
+                "platform snapshot is not bound to the approved model",
+            )
+        # Worker-side grant re-check: the API admitted the run, but the
+        # grant may have been revoked between submission and claim.
+        if not grant_active(database_url, actor):
+            raise _CredentialRefused(
+                "PLATFORM_NOT_ALLOWED",
+                "platform grant is not active for this user",
+            )
+        api_key = env_api_key()
+        if not api_key:
+            raise _CredentialRefused(
+                "PLATFORM_UNAVAILABLE",
+                "platform credential is not configured on this worker",
+            )
+        base = env_base_url()
+        split = urlsplit(base if "://" in base else f"https://{base}")
+        scheme = (split.scheme or "https").lower()
+        if scheme not in {"http", "https"}:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "platform base_url scheme is not http/https"
+            )
+        host = _normalize_gateway_host(split.hostname or "")
+        if not host:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "platform base_url has no host"
+            )
+        try:
+            port = int(split.port or (443 if scheme == "https" else 80))
+        except ValueError:
+            raise _CredentialRefused(
+                "MODEL_UNAVAILABLE", "platform base_url port is invalid"
+            ) from None
+        from rxycode_worker.egress import ModelGateway
+
+        return ModelGateway(
+            scheme=scheme,
+            host=host,
+            port=port,
+            base_path=(split.path or "").rstrip("/"),
+            headers={
+                "authorization": f"Bearer {api_key}",
+                "x-api-key": api_key,
+                "api-key": api_key,
+            },
+            vet=True,
         )
 
     if source == "byok":
@@ -1011,6 +1069,15 @@ def _replay_usage_spool(database_url: str, workspaces_root: str) -> None:
                 exc_info=True,
             )
             continue
+        # Platform-funded runs still owe the grant counter — settle inside
+        # the same retry window; a failure keeps the file so a later pass
+        # converges it (idempotent via the platform.settled marker).
+        try:
+            ident = _run_identity(database_url, run_id)
+        except Exception:
+            ident = {}
+        if not _settle_platform_grant(database_url, ident, run_id, total):
+            continue
         try:
             path.unlink(missing_ok=True)
         except OSError:
@@ -1615,6 +1682,57 @@ async def _lease_watchdog(
         if turn.done():
             return
         await asyncio.sleep(min(poll, max(0.05, deadline - time.monotonic() - margin)))
+
+
+async def _platform_budget_watch(
+    database_url: str,
+    *,
+    user_id: str,
+    run_id: str,
+    turn: "asyncio.Task[Any]",
+    cut: "asyncio.Event",
+) -> None:
+    """Cancel the turn the moment the grant's durable counter plus this
+    run's UNCHARGED metered spend reaches the cap.
+
+    The durable counter itself can never exceed ``token_cap`` (the
+    settlement UPDATE clamps with LEAST); what this bounds is real
+    upstream spend on the owner's plan — overshoot is one metering poll
+    (~3s of tokens), never an unbounded drain. ``cut`` marks the stop
+    reason so the finalize path journals the honest failure code instead
+    of a generic "turn produced no result". Read failures never kill a
+    turn — settlement still reconciles at finalize.
+    """
+    from rxycode_server.platform_quota.service import grant_overrun
+
+    while not turn.done():
+        try:
+            metered, _attributions = await asyncio.wait_for(
+                asyncio.to_thread(_run_metering_total, database_url, run_id),
+                timeout=_LEASE_IO_BUDGET,
+            )
+            over = await asyncio.wait_for(
+                asyncio.to_thread(
+                    grant_overrun,
+                    database_url,
+                    user_id=user_id,
+                    run_id=run_id,
+                    metered=int(metered),
+                ),
+                timeout=_LEASE_IO_BUDGET,
+            )
+        except Exception:
+            over = False
+        if over:
+            _LOG.warning(
+                "run %s: platform grant budget reached mid-flight; "
+                "cancelling turn",
+                run_id,
+            )
+            cut.set()
+            turn.cancel()
+            return
+        await asyncio.sleep(3.0)
 
 
 def _execution_gate(
@@ -6271,6 +6389,48 @@ def _has_prior_attempt_activity(
         engine.dispose()
 
 
+def _settle_platform_grant(
+    database_url: str,
+    identity: dict[str, Any],
+    run_id: str,
+    tokens: int,
+) -> bool:
+    """Fold a platform run's metered spend into its durable grant counter.
+
+    No-op (True) for BYOK/unsigned runs. ``platform.settled`` markers make
+    the write idempotent across lease-loss re-finalization: a retried run
+    re-computes the same cumulative total and applies only the residue —
+    spend is never charged twice and never silently lost. False only when
+    the settle itself failed; the caller parks a pending-reconcile spool
+    so a later drain pass converges the grant counter too. A missing or
+    revoked grant counts as settled — no row left to charge, and the
+    run's own usage ledger still recorded the spend.
+    """
+    model = identity.get("model") if isinstance(identity, dict) else None
+    if not isinstance(model, dict):
+        return True
+    if str(model.get("credential_source") or "") != "platform":
+        return True
+    from rxycode_server.platform_quota.service import settle_grant
+
+    try:
+        settle_grant(
+            database_url,
+            tenant_id=str(identity.get("tenant_id") or ""),
+            user_id=str(identity.get("actor_id") or ""),
+            run_id=run_id,
+            tokens=int(tokens),
+        )
+        return True
+    except Exception:
+        _LOG.warning(
+            "run %s: platform grant settle failed; parked on spool",
+            run_id,
+            exc_info=True,
+        )
+        return False
+
+
 def _effects_settled_at_cancel(database_url: str, run_id: str) -> bool:
     """True when every side effect is accounted for at cancel time — the
     run's last attempt-lifecycle row is ``event/agent_done`` (attempt ran
@@ -6437,6 +6597,20 @@ async def execute_run(
                         ),
                         timeout=_LEASE_IO_BUDGET,
                     )
+                    # Platform-funded runs owe the grant counter the same
+                    # prior-attempt spend — a settle failure parks the same
+                    # journaled spool and converges on a later pass.
+                    if not await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _settle_platform_grant,
+                            cfg.database_url,
+                            identity,
+                            run_id,
+                            total0,
+                        ),
+                        timeout=_LEASE_IO_BUDGET,
+                    ):
+                        raise RuntimeError("platform grant settle failed")
                 except Exception:
                     _LOG.warning(
                         "run %s: cancelled-run ledger write failed",
@@ -7003,6 +7177,26 @@ async def execute_run(
                 turn=turn_task,
             )
         )
+        budget_watcher: "asyncio.Task[Any] | None" = None
+        budget_cut = asyncio.Event()
+        if (
+            str((identity.get("model") or {}).get("credential_source") or "")
+            == "platform"
+        ):
+            # Platform-funded runs get a mid-flight budget cutoff: once the
+            # grant's durable counter plus this run's uncharged metered
+            # spend reaches the cap, the turn is cancelled and settlement
+            # reconciles — overshoot is bounded by one metering poll,
+            # never an unbounded drain on the owner's plan.
+            budget_watcher = asyncio.create_task(
+                _platform_budget_watch(
+                    cfg.database_url,
+                    user_id=str(identity.get("actor_id") or ""),
+                    run_id=run_id,
+                    turn=turn_task,
+                    cut=budget_cut,
+                )
+            )
         # No outer wall clock here: the whole-turn execution budget lives in
         # the shared Harness (agent_v2._under_turn_budget), which accrues only
         # while the turn executes and asks the timeout engine before stopping.
@@ -7014,6 +7208,14 @@ async def execute_run(
             pass
         finally:
             lease_watcher.cancel()
+            if budget_watcher is not None:
+                budget_watcher.cancel()
+                try:
+                    await budget_watcher
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
             try:
                 await lease_watcher
             except _RunCancelled:
@@ -7026,6 +7228,16 @@ async def execute_run(
                 await turn_task
             except asyncio.CancelledError:
                 pass
+        if (
+            budget_cut.is_set()
+            and not turn_error
+            and not cancelled_by_request
+            and not lost_lease
+        ):
+            # The budget watch, not the child, ended this run — the honest
+            # terminal cause is the exhausted grant, not a generic crash.
+            turn_error = "platform grant budget exhausted"
+            turn_error_code = "PLATFORM_QUOTA_EXHAUSTED"
 
         if not turn_error and not cancelled_by_request and not lost_lease:
             result = _read_turn_result(workdir)
@@ -7404,6 +7616,21 @@ async def execute_run(
             ),
             timeout=_LEASE_IO_BUDGET,
         )
+        # Platform-funded runs fold the same cumulative metering total into
+        # the durable grant counter (idempotent via platform.settled). A
+        # settle failure is a durable-write failure: usage_error flips the
+        # terminal state honestly and the parked spool converges it later.
+        if not await asyncio.wait_for(
+            asyncio.to_thread(
+                _settle_platform_grant,
+                cfg.database_url,
+                identity,
+                run_id,
+                int(tokens),
+            ),
+            timeout=_LEASE_IO_BUDGET,
+        ):
+            raise RuntimeError("platform grant settle failed")
     except Exception as exc:
         usage_error = f"terminal usage write failed: {type(exc).__name__}: {exc}"
         _LOG.warning("run %s: %s", run_id, usage_error, exc_info=True)

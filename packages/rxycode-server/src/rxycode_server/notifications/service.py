@@ -709,6 +709,24 @@ def _fire_manual(db: Session, row: dict, *, reason: str) -> dict[str, str]:
     profile = row.get("permission_profile") or "confirm"
     if profile not in ("confirm", "full"):
         profile = "confirm"
+    # Same submission-time binding as the scheduled fire path — including
+    # the platform grant check (a stored "platform" ref resolves only
+    # while the owner still holds a grant).
+    model_snapshot = None
+    try:
+        from types import SimpleNamespace
+
+        from rxycode_server.byok.resolver import resolve_run_model
+
+        record = SimpleNamespace(
+            tenant_id=row["tenant_id"],
+            user_id=row.get("user_id") or row["tenant_id"],
+        )
+        model_snapshot = resolve_run_model(
+            db, record, row.get("model_ref") or None
+        )
+    except Exception:
+        model_snapshot = None
     bind_url = db.get_bind().url.render_as_string(hide_password=False)
     accepted = create_run(
         bind_url,
@@ -719,6 +737,8 @@ def _fire_manual(db: Session, row: dict, *, reason: str) -> dict[str, str]:
         permission_profile=profile,
         request_id=uuid.uuid4().hex,
         user_id=row.get("user_id") or row["tenant_id"],
+        model_snapshot=model_snapshot,
+        request_model_ref=row.get("model_ref") or None,
     )
     db.execute(
         text("UPDATE schedule_executions SET run_id = :run WHERE id = :id"),

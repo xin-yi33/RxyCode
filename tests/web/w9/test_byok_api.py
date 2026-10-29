@@ -90,6 +90,10 @@ def test_platform_catalogue_policy_unit(monkeypatch):
         def execute(self, _statement):
             return SimpleNamespace(all=lambda: [])
 
+        def scalars(self, _statement):
+            # grant_for_user lookup — this actor holds no grant row.
+            return SimpleNamespace(one_or_none=lambda: None)
+
     db = _DB()
     monkeypatch.setattr(models_api, "current_record", lambda _request: actor)
     monkeypatch.setenv("RXYCODE_PLATFORM_MODEL_USERS", "superuser")

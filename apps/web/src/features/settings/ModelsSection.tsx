@@ -214,6 +214,16 @@ export function ModelsSection() {
           </p>
         </div>
       ) : null}
+      {access.data?.platform_allowed && access.data.platform_quota ? (
+        <div className="rounded-lg border border-accent/40 bg-accent/10 p-4 text-sm">
+          <p className="font-medium">平台赠送额度</p>
+          <p className="mt-1 text-xs text-muted">
+            deepseek-v4.1-flash（OpenCode Go）· 剩余{" "}
+            {access.data.platform_quota.tokens_remaining.toLocaleString()} /{" "}
+            {access.data.platform_quota.token_cap.toLocaleString()} tokens
+          </p>
+        </div>
+      ) : null}
 
       <Card
         title="模型连接"

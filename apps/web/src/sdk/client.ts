@@ -228,6 +228,12 @@ export type ProviderPreset = {
 export type ModelsAccess = {
   require_byok: boolean
   platform_allowed: boolean
+  // 平台赠送额度计数器 —— 仅 platform_allowed 时非 null。
+  platform_quota?: {
+    token_cap: number
+    tokens_used: number
+    tokens_remaining: number
+  } | null
   byok_available: boolean
   default_model_ref: string | null
 }
@@ -296,8 +302,15 @@ export type ModelItem = {
   connection_id: string
   connection_name: string
   source: "byok" | "platform" | string
-  status: "available" | "revoked" | "no_key" | string
+  status: "available" | "revoked" | "no_key" | "exhausted" | string
   input_capabilities?: InputCapabilities
+  // 平台赠送额度（source === "platform" 时由服务端给出）：持久化计数器
+  // 快照 —— tokens_remaining 归零时 status 为 "exhausted"。
+  quota?: {
+    token_cap: number
+    tokens_used: number
+    tokens_remaining: number
+  } | null
 }
 
 export type ModelsCatalog = {

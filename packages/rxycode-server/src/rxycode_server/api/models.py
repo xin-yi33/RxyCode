@@ -237,15 +237,22 @@ def model_access(
 ) -> dict:
     record = current_record(request)
     user = db.get(User, record.user_id)
+    from rxycode_server.platform_quota.service import grant_for_user, quota_json
+
+    grant = grant_for_user(db, record.user_id)
+    platform_allowed = grant is not None
+    default_ref = user.default_model_ref if user else None
+    if default_ref == PLATFORM_MODEL_REF and not platform_allowed:
+        default_ref = None
+    elif platform_allowed and not default_ref:
+        # The grant is the implicit default — same rule as list_models.
+        default_ref = PLATFORM_MODEL_REF
     return {
         "require_byok": byok_enforced(getattr(request.app.state, "mode", None)),
-        "platform_allowed": False,
+        "platform_allowed": platform_allowed,
+        "platform_quota": quota_json(grant) if grant is not None else None,
         "byok_available": keyring_available(),
-        "default_model_ref": (
-            user.default_model_ref
-            if user and user.default_model_ref != PLATFORM_MODEL_REF
-            else None
-        ),
+        "default_model_ref": default_ref,
     }
 
 
@@ -618,6 +625,10 @@ def test_connection(
 
 @router.get("/api/v1/models")
 def list_models(request: Request, db: Session = Depends(db_session)) -> dict:
+    """The caller's pickable catalogue — BYOK rows plus the platform-funded
+    model ONLY when this user owns an active grant. Per-user output: a
+    non-holder can neither see nor submit the ``platform`` ref.
+    """
     record = current_record(request)
     rows = db.execute(
         select(UserModel, ModelConnection)
@@ -629,9 +640,22 @@ def list_models(request: Request, db: Session = Depends(db_session)) -> dict:
     ).all()
     user = db.get(User, record.user_id)
     default_ref = (user.default_model_ref if user else None) or None
-    if default_ref == PLATFORM_MODEL_REF:
-        default_ref = None
     models = [_model_json(model, conn) for model, conn in rows]
+    from rxycode_server.platform_quota.service import (
+        grant_for_user,
+        platform_catalog_item,
+    )
+
+    grant = grant_for_user(db, record.user_id)
+    if grant is not None:
+        models.insert(0, platform_catalog_item(grant))
+        if not default_ref:
+            # The grant IS the implicit default — matches the resolver's
+            # fallback so the picker shows what a bare submit would run.
+            default_ref = PLATFORM_MODEL_REF
+    elif default_ref == PLATFORM_MODEL_REF:
+        # Stale default — the grant is gone; don't offer a dead ref.
+        default_ref = None
     return {"models": models, "default_model_ref": default_ref}
 
 
@@ -650,7 +674,11 @@ def set_default_model(
     if not ref:
         user.default_model_ref = None
     elif ref == PLATFORM_MODEL_REF:
-        raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
+        from rxycode_server.platform_quota.service import grant_for_user
+
+        if grant_for_user(db, record.user_id) is None:
+            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
+        user.default_model_ref = ref
     else:
         model = db.get(UserModel, ref)
         if (

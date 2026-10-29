@@ -221,6 +221,21 @@ def create_run(
             if isinstance(decision, QuotaDecision):
                 raise QuotaRefused(decision)
             held_worker = decision.worker_id
+            if (
+                isinstance(model_snapshot, dict)
+                and str(model_snapshot.get("credential_source") or "") == "platform"
+            ):
+                # Platform-funded path: the grant row — not the ambient
+                # gate — is the admission authority. Under the per-user
+                # advisory lock the gate just took, the grant is re-read
+                # FOR UPDATE so ``tokens_used < token_cap`` cannot race a
+                # settling worker, and a second in-flight platform run
+                # for this user is refused before it can overspend. On
+                # refusal the held worker slot is returned by the
+                # ``finally`` below; the API layer maps the exception.
+                from rxycode_server.platform_quota.service import check_admission
+
+                check_admission(db, tenant_id=tenant_id, user_id=user)
             run_id = uuid.uuid4().hex
             event_id = uuid.uuid4().hex
             try:

@@ -75,18 +75,38 @@ def resolve_run_model(
 ) -> dict | None:
     """Resolve the submitted/defaulted model_ref into a run snapshot.
 
-    Web runs require a user-owned BYOK model. The legacy platform ref and
-    environment-based policy switches are intentionally not accepted.
+    Web runs require a user-owned BYOK model — EXCEPT the narrow platform
+    grant path: ``model_ref == "platform"`` resolves to the pinned
+    platform snapshot ONLY when the caller owns an active grant row.
+    Ownership is the durable platform_grants row; the legacy
+    ``RXYCODE_PLATFORM_MODEL_USERS`` allowlist grants nothing.
     """
     requested = str(model_ref or "").strip()
     if requested == PLATFORM_MODEL_REF:
-        raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
+        from rxycode_server.platform_quota.service import (
+            grant_for_user,
+            platform_snapshot,
+        )
+
+        if grant_for_user(db, record.user_id) is None:
+            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND")
+        return platform_snapshot()
     if requested:
         return _resolve_owned_model(db, record, requested)
 
     user = db.get(User, record.user_id)
     default_ref = str(user.default_model_ref or "") if user is not None else ""
-    if default_ref:
+    if default_ref == PLATFORM_MODEL_REF:
+        # Defaulted to the platform model — same grant check as an
+        # explicit ref; a stale default does not resurrect access.
+        from rxycode_server.platform_quota.service import (
+            grant_for_user,
+            platform_snapshot,
+        )
+
+        if grant_for_user(db, record.user_id) is not None:
+            return platform_snapshot()
+    elif default_ref:
         model = db.get(UserModel, default_ref)
         if (
             model is not None
@@ -94,4 +114,14 @@ def resolve_run_model(
             and model.owner_user_id == record.user_id
         ):
             return _resolve_owned_model(db, record, default_ref)
+    # Nothing explicit and no usable BYOK default: the grant holder's
+    # implicit model IS the platform grant — the free tier's first-send
+    # path. Non-holders keep the honest BYOK_REQUIRED refusal.
+    from rxycode_server.platform_quota.service import (
+        grant_for_user,
+        platform_snapshot,
+    )
+
+    if grant_for_user(db, record.user_id) is not None:
+        return platform_snapshot()
     raise HTTPException(status_code=403, detail="BYOK_REQUIRED")

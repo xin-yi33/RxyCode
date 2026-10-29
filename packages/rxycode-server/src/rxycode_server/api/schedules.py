@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -534,8 +535,37 @@ def run_now(
             if run is not None:
                 return {"run_id": run.id, "status": run.status, "session_id": run.session_id}
     from rxycode_server.notifications.service import _fire_manual
+    from rxycode_server.platform_quota.service import PlatformQuotaRefused
+    from rxycode_server.quotas.service import QuotaRefused
 
-    fired = _fire_manual(db, row, reason=f"manual:{payload.request_id or uuid.uuid4().hex}")
+    try:
+        fired = _fire_manual(db, row, reason=f"manual:{payload.request_id or uuid.uuid4().hex}")
+    except PlatformQuotaRefused as exc:
+        # Roll back the 'queued' ledger row _fire_manual already flushed —
+        # a refused fire must not journal a run that never existed.
+        db.rollback()
+        if exc.code == "PLATFORM_NOT_ALLOWED":
+            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND") from None
+        return JSONResponse(
+            status_code=429,
+            content={
+                "code": "QUOTA_EXCEEDED",
+                "reason": (
+                    "platform_quota"
+                    if exc.code == "PLATFORM_QUOTA_EXHAUSTED"
+                    else "concurrency"
+                ),
+            },
+        )
+    except QuotaRefused as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=429,
+            content={
+                "code": "QUOTA_EXCEEDED",
+                "reason": exc.decision.body.get("kind", "task"),
+            },
+        )
     return {
         "run_id": fired["run_id"],
         "status": "pending",

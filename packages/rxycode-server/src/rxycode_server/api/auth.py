@@ -537,6 +537,9 @@ def _local_account(db: Session) -> tuple[User, Organization]:
     db.add(org)
     db.add(Membership(id=uuid.uuid4().hex, tenant_id=org.tenant_id, user_id=user.id, role="owner"))
     db.flush()
+    # First-run local setup IS this deployment's one registration — the
+    # same atomic claim as the email/GitHub paths.
+    _claim_platform_slot(db, user.id, org.tenant_id)
     return user, org
 
 
@@ -553,7 +556,23 @@ def _github_account(db: Session, github_id: str) -> tuple[User, str]:
     db.add(org)
     db.add(Membership(id=uuid.uuid4().hex, tenant_id=org.tenant_id, user_id=user.id, role="owner"))
     db.flush()
+    _claim_platform_slot(db, user.id, org.tenant_id)
     return user, org.tenant_id
+
+
+def _claim_platform_slot(db: Session, user_id: str, tenant_id: str) -> None:
+    """Best-effort platform-grant claim inside the caller's transaction.
+
+    Never fatal to registration: a missing table (rolling deploy before
+    migrate runs) or a lost claim race leaves the user simply ungranted —
+    ``scripts/platform_slots.py`` backfills the gap.
+    """
+    try:
+        from rxycode_server.platform_quota.service import claim_slot
+
+        claim_slot(db, user_id=user_id, tenant_id=tenant_id)
+    except Exception:
+        log.warning("platform grant claim skipped for user %s", user_id, exc_info=True)
 
 
 def _tenant_for(db: Session, user_id: str) -> str:
@@ -779,6 +798,10 @@ def register(
         db.flush()
     except IntegrityError:
         raise HTTPException(status_code=409, detail="EMAIL_TAKEN") from None
+    # Platform free quota: claim the lowest open slot in the SAME
+    # transaction as the user row — registration and grant commit or roll
+    # back together; the 11th+ registrant simply gets no slot.
+    _claim_platform_slot(db, user.id, tenant_id)
     if limiter is not None:
         # Only now does the attempt count — the user row survived flush.
         limiter.record_register(ip)

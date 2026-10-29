@@ -30,6 +30,7 @@ from rxycode_server.persistence.models import (
     SessionRow,
     User,
 )
+from rxycode_server.platform_quota.service import PlatformQuotaRefused
 from rxycode_server.quotas.service import QuotaRefused
 from rxycode_server.runs.service import (
     RunAlreadyActive,
@@ -158,6 +159,24 @@ def _submit(
     except AttachmentError as exc:
         _discard(db, fresh_session)
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from None
+    except PlatformQuotaRefused as exc:
+        # Platform grant refusals (raised inside create_run under the user
+        # lock): a missing/revoked grant answers like an unknown ref —
+        # no existence leak; cap/active-run refusals are quota-shaped.
+        _discard(db, fresh_session)
+        if exc.code == "PLATFORM_NOT_ALLOWED":
+            raise HTTPException(status_code=404, detail="MODEL_NOT_FOUND") from None
+        return JSONResponse(
+            status_code=429,
+            content={
+                "code": "QUOTA_EXCEEDED",
+                "reason": (
+                    "platform_quota"
+                    if exc.code == "PLATFORM_QUOTA_EXHAUSTED"
+                    else "concurrency"
+                ),
+            },
+        )
     except QuotaRefused as exc:
         _discard(db, fresh_session)
         return JSONResponse(

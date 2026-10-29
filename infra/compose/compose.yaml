@@ -326,6 +326,13 @@ services:
       RXYCODE_BYOK_KEYRING_FILE: ${RXYCODE_BYOK_KEYRING_FILE:-}
       RXYCODE_PLATFORM_MODEL_USERS: ${RXYCODE_PLATFORM_MODEL_USERS:-}
       RXYCODE_BYOK_ALLOW_PRIVATE: ${RXYCODE_BYOK_ALLOW_PRIVATE:-}
+      # Platform free-quota credential (v1.4.6): owner-funded OpenCode Go
+      # key, read ONLY by this drain parent — the api service never gets
+      # it, confined turns never inherit it (their env is rebuilt from an
+      # allowlist; the egress proxy injects the auth upstream, scoped to
+      # the deepseek-v4.1-flash pin). Empty = platform runs fail honestly.
+      RXYCODE_PLATFORM_API_KEY: ${RXYCODE_PLATFORM_API_KEY:-}
+      RXYCODE_PLATFORM_BASE_URL: ${RXYCODE_PLATFORM_BASE_URL:-https://opencode.ai/zen/go/v1}
       RXYCODE_DATA_DIR: /work/data
       RXYCODE_UVLOOP: "0"
       PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
